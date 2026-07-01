@@ -1,0 +1,31 @@
+{
+  "default_a_share": {
+    "strategies": [
+      "moving_average_strategy.py",
+      "multi_trade_rebalance_strategy.py",
+      "mean_reversion_5_30_strategy.py",
+      "low_turnover_chip_concentration_reversal_strategy.py"
+    ],
+    "symbol": "000001.XSHE",
+    "benchmark": "000300.XSHG",
+    "start_date": "2020-01-01",
+    "end_date": "2026-12-31",
+    "short_windows": [5],
+    "long_windows": [20],
+    "initial_cash": 1000000
+  },
+  "grid_smoke": {
+    "strategies": [
+      "moving_average_strategy.py",
+      "multi_trade_rebalance_strategy.py",
+      "low_turnover_chip_concentration_reversal_strategy.py"
+    ],
+    "symbol": "000001.XSHE",
+    "benchmark": "000300.XSHG",
+    "start_date": "2020-01-01",
+    "end_date": "2026-12-31",
+    "short_windows": [3, 5],
+    "long_windows": [10, 20],
+    "initial_cash": 1000000
+  }
+}
