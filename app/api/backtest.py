@@ -296,8 +296,14 @@ def save_strategy(
         source_code=payload.source_code,
         parameters=payload.parameters,
         parameter_schema=payload.parameter_schema,
+        category=payload.category,
+        description=payload.description,
     )
     return StrategySaveResponsePayload(strategy=_to_strategy_payload(strategy))
+
+
+def archive_strategy(strategy_service: StrategyService, strategy_id: str) -> dict[str, Any]:
+    return {"strategy": strategy_service.archive_strategy(strategy_id)}
 
 
 def _to_strategy_payload(item: dict[str, Any]) -> StrategyDefinitionPayload:
@@ -766,15 +772,17 @@ def _mode_task_entry(mode: str, task: dict[str, Any]) -> dict[str, Any]:
     else:
         complete = str(task.get("status") or "") in {"completed", "partial_completed"}
         normalized_progress = {
-            "processed": universe_count if complete else 0,
+            "phase": str(progress.get("phase") or ("completed" if complete else "ready")),
+            "processed": int(progress.get("processed") or (universe_count if complete else 0)),
             "total": universe_count,
-            "percent": 100.0 if complete else 0.0,
+            "percent": float(progress.get("percent") or (100.0 if complete else 0.0)),
+            "prepared": int(progress.get("prepared") or 0),
             "entered": None,
-            "failed": len(list((task.get("summary") or {}).get("excluded") or [])),
+            "failed": int(progress.get("excluded") or (task.get("summary") or {}).get("excluded_symbol_count") or 0),
             "canceled": 0,
-            "elapsed_seconds": 0.0,
-            "throughput_per_minute": 0.0,
-            "estimated_remaining_seconds": None,
+            "elapsed_seconds": float(progress.get("elapsed_seconds") or 0.0),
+            "throughput_per_minute": float(progress.get("throughput_per_minute") or 0.0),
+            "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
         }
         mode_label = "共享资金池组合"
     task_id = str(task.get("task_id") or "")
@@ -798,6 +806,8 @@ def _mode_task_entry(mode: str, task: dict[str, Any]) -> dict[str, Any]:
         "run_id": task.get("run_id"),
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
+        "started_at": task.get("started_at"),
+        "finished_at": task.get("finished_at"),
         "links": {
             "detail": f"/api/backtest/{task_path}/{task_id}",
             "run": f"/api/backtest/{task_path}/{task_id}/run",
@@ -825,6 +835,13 @@ def build_backtest_routes(
             path="/api/backtest/strategies/{strategy_id}/versions",
             name="backtest_strategy_versions",
             handler=lambda strategy_id: list_strategy_versions(strategy_id, strategy_service),
+            request_model=None,
+        ),
+        RouteDefinition(
+            method="DELETE",
+            path="/api/backtest/strategies/{strategy_id}",
+            name="backtest_strategy_archive",
+            handler=lambda strategy_id: archive_strategy(strategy_service, strategy_id),
             request_model=None,
         ),
         RouteDefinition(

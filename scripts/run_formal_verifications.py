@@ -25,6 +25,7 @@ def main() -> None:
         "smoke_test_a_share_full_market_quality.py",
         "smoke_test_local_sqlite_backtest_runtime.py",
         "smoke_test_versioned_custom_strategies.py",
+        "smoke_test_strategy_library_crud.py",
         "smoke_test_independent_screening_backtest.py",
         "smoke_test_shared_portfolio_backtest.py",
         "smoke_test_backtest_mode_reports.py",
@@ -73,6 +74,9 @@ def main() -> None:
         "smoke_test_report_package_directory.py",
         "smoke_test_report_package_lifecycle.py",
         "smoke_test_report_package_export_manifest.py",
+        "smoke_test_backtest_workspace_ui.py",
+        "smoke_test_backtest_task_workflow_ui.py",
+    "smoke_test_backtest_task_usability.py",
     ]
     for script_name in scripts:
         print(f"[formal] running {script_name}")

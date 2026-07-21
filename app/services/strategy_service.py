@@ -28,6 +28,14 @@ _FORBIDDEN_CALLS = {
 }
 
 
+class _ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc_value, traceback))
+        finally:
+            self.close()
+
+
 class StrategyService:
     """Persist immutable strategy versions and resolve executable snapshots."""
 
@@ -57,6 +65,7 @@ class StrategyService:
                 JOIN strategy_versions AS v
                   ON v.strategy_id = d.strategy_id
                  AND v.version_number = d.active_version
+                WHERE d.archived = 0
                 ORDER BY d.updated_at DESC, d.strategy_id
                 """
             ).fetchall()
@@ -151,12 +160,13 @@ class StrategyService:
                 """
                 INSERT INTO strategy_definitions (
                     strategy_id, name, category, description, source_reference,
-                    editable, active_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'local-versioned-strategy', 1, ?, ?, ?)
+                    editable, archived, active_version, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'local-versioned-strategy', 1, 0, ?, ?, ?)
                 ON CONFLICT(strategy_id) DO UPDATE SET
                     name = excluded.name,
                     category = excluded.category,
                     description = excluded.description,
+                    archived = 0,
                     active_version = excluded.active_version,
                     updated_at = excluded.updated_at
                 """,
@@ -183,6 +193,18 @@ class StrategyService:
             )
         return self.resolve_version(normalized_id, f"v{version_number}")
 
+    def archive_strategy(self, strategy_id: str) -> dict[str, Any]:
+        normalized_id = _normalize_strategy_id(strategy_id)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE strategy_definitions SET archived = 1, updated_at = ? WHERE strategy_id = ? AND archived = 0",
+                (now, normalized_id),
+            )
+        if cursor.rowcount == 0:
+            raise KeyError(f"strategy not found: {normalized_id}")
+        return {"strategy_id": normalized_id, "status": "archived", "archived_at": now}
+
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
             connection.executescript(
@@ -194,6 +216,7 @@ class StrategyService:
                     description TEXT NOT NULL,
                     source_reference TEXT NOT NULL,
                     editable INTEGER NOT NULL,
+                    archived INTEGER NOT NULL DEFAULT 0,
                     active_version INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -218,14 +241,19 @@ class StrategyService:
                 );
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(strategy_definitions)").fetchall()}
+            if "archived" not in columns:
+                connection.execute("ALTER TABLE strategy_definitions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
 
     def _seed_builtin_strategies(self) -> None:
-        with self._connect() as connection:
-            existing = connection.execute("SELECT COUNT(*) FROM strategy_definitions").fetchone()[0]
-        if existing:
-            return
         for item in _builtin_strategies():
-            self.save_version(**item)
+            with self._connect() as connection:
+                existing = connection.execute(
+                    "SELECT 1 FROM strategy_definitions WHERE strategy_id = ?",
+                    (item["strategy_id"],),
+                ).fetchone()
+            if not existing:
+                self.save_version(**item)
 
     def _import_legacy_drafts_once(self) -> None:
         migration_id = "legacy-strategy-drafts-json-v1"
@@ -285,7 +313,7 @@ class StrategyService:
         }
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._database_path)
+        connection = sqlite3.connect(self._database_path, factory=_ClosingConnection)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -347,8 +375,63 @@ def _builtin_strategies() -> list[dict[str, Any]]:
     position_size = float(parameters.get("position_size", 1.0))
     return [position_size for bar in bars]
 '''
+    dual_ma_atr = '''def generate_target_weights(bars, parameters):
+    short_window = int(parameters.get("short_window", 5))
+    long_window = int(parameters.get("long_window", 20))
+    atr_window = int(parameters.get("atr_window", 14))
+    atr_multiplier = float(parameters.get("atr_multiplier", 2.0))
+    position_size = float(parameters.get("position_size", 1.0))
+    short_window = max(1, short_window)
+    long_window = max(short_window + 1, long_window)
+    atr_window = max(1, atr_window)
+    position_size = min(max(position_size, 0.0), 1.0)
+    closes = [float(bar.get("close") or 0.0) for bar in bars]
+    highs = [float(bar.get("high") or 0.0) for bar in bars]
+    lows = [float(bar.get("low") or 0.0) for bar in bars]
+    weights = [0.0 for bar in bars]
+    true_ranges = []
+    position = False
+    entry_price = 0.0
+    for index in range(len(bars)):
+        previous_close = closes[index - 1] if index > 0 else closes[index]
+        true_ranges.append(max(highs[index] - lows[index], abs(highs[index] - previous_close), abs(lows[index] - previous_close)))
+    def rolling_mean(values, end_index, window):
+        start_index = end_index - window + 1
+        if start_index < 0:
+            return None
+        return sum(values[start_index:end_index + 1]) / window
+    for index in range(len(bars)):
+        if index + 1 < long_window:
+            continue
+        short_ma = rolling_mean(closes, index, short_window)
+        long_ma = rolling_mean(closes, index, long_window)
+        previous_short_ma = rolling_mean(closes, index - 1, short_window)
+        previous_long_ma = rolling_mean(closes, index - 1, long_window)
+        atr = rolling_mean(true_ranges, index, atr_window) or 0.0
+        signal = 0
+        if short_ma is not None and long_ma is not None and previous_short_ma is not None and previous_long_ma is not None:
+            if short_ma > long_ma and previous_short_ma <= previous_long_ma:
+                signal = 1
+            elif short_ma < long_ma and previous_short_ma >= previous_long_ma:
+                signal = -1
+        close = closes[index]
+        if position and atr > 0.0 and close <= entry_price - atr_multiplier * atr:
+            position = False
+            entry_price = 0.0
+        elif signal == 1 and not position:
+            position = True
+            entry_price = close
+        elif signal == -1 and position:
+            position = False
+            entry_price = 0.0
+        weights[index] = position_size if position else 0.0
+        if index == len(bars) - 1:
+            weights[index] = 0.0
+    return weights
+'''
     return [
         {"strategy_id": "moving_average_strategy", "name": "双均线趋势策略", "source_code": moving_average, "parameters": {"short_window": 5, "long_window": 20, "position_size": 1.0}, "category": "趋势跟随", "description": "短长均线交叉的本地可执行策略。"},
         {"strategy_id": "risk_controlled_breakout", "name": "突破策略", "source_code": breakout, "parameters": {"breakout_window": 20, "max_position": 0.5}, "category": "趋势突破", "description": "突破前期高点时建立目标仓位。"},
         {"strategy_id": "buy_and_hold", "name": "买入持有基线", "source_code": buy_hold, "parameters": {"position_size": 1.0}, "category": "基线", "description": "用于验证策略执行差异的买入持有基线。"},
+        {"strategy_id": "dual_ma_atr_dynamic_stop", "name": "双均线 + ATR动态止损", "source_code": dual_ma_atr, "parameters": {"short_window": 5, "long_window": 20, "atr_window": 14, "atr_multiplier": 2.0, "position_size": 1.0, "commission": 0.0003}, "category": "趋势跟随 / 风险控制", "description": "MA5/MA20 金叉全仓买入、死叉清仓，持仓期间以开仓价减去 ATR14 的 2 倍作为动态止损线。"},
     ]

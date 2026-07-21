@@ -210,6 +210,8 @@ class StrategySaveRequestPayload:
     strategy_id: str
     name: str
     source_code: str
+    category: str = "自定义策略"
+    description: str = "本地自定义 Python 策略。"
     parameters: dict[str, Any] = field(default_factory=dict)
     parameter_schema: dict[str, Any] = field(default_factory=dict)
 

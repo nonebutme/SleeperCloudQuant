@@ -18,11 +18,28 @@ const sourceMatrix = [
   ["轻量回测体验", "backtrader-master", "冻结参考", "Web 回测体验/指标展示", "策略回测"],
 ];
 let selectedStrategy = null;
+let strategyCatalog = [];
 let currentScreeningTaskId = null;
 let screeningPollTimer = null;
 let currentPortfolioTaskId = null;
 let portfolioPollTimer = null;
 let currentModeTask = null;
+let currentBacktestView = "overview";
+let currentScreeningTask = null;
+let currentPortfolioTask = null;
+let modeTaskCatalog = [];
+let singleRunTimer = null;
+let singleRunState = {
+  status: "idle",
+  phase: "等待配置",
+  runId: "",
+  strategyName: "",
+  symbol: "",
+  startedAt: null,
+  elapsedSeconds: 0,
+  result: null,
+  error: "",
+};
 const newStrategyTemplate = `def generate_target_weights(bars, parameters):
     position_size = float(parameters.get("position_size", 1.0))
     return [position_size for bar in bars]
@@ -43,7 +60,8 @@ function setFeedback(message, kind = "") { globalFeedback.textContent = message;
 function buildQuery(params) { const search = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== "" && value != null) search.set(key, value); }); return search.toString(); }
 async function requestJson(path, options = {}) { const response = await fetch(path, { method: options.method || "GET", headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}) }, body: options.body }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.detail || `请求失败 (${response.status})`); return payload; }
 function activatePage(pageId) { document.querySelectorAll(".page-section").forEach((section) => section.classList.toggle("is-active", section.id === `page-${pageId}`)); document.querySelectorAll(".nav-tab").forEach((button) => button.classList.toggle("is-active", button.dataset.page === pageId)); $("#page-title").textContent = pageTitles[pageId] || "SleeperCloudQuant"; }
-function renderSummaryGrid(target, items) { target.innerHTML = items.map((item) => `<div class="summary-item"><strong>${item.label}</strong><span>${item.value}</span></div>`).join(""); }
+function financialToneForLabel(label, value) { const text = String(label || "").toLowerCase(); if (/(收益|回报|盈利|盈亏|年化|超额|return|profit|annual)/i.test(text)) return financialToneClass(value); if (/(回撤|亏损|损失|成本|drawdown|loss|cost)/i.test(text) && value !== "-" && value !== "--") return "market-fall"; return ""; }
+function renderSummaryGrid(target, items) { target.innerHTML = items.map((item) => '<div class="summary-item ' + (item.tone || financialToneForLabel(item.label, item.value)) + '"><strong>' + item.label + '</strong><span>' + item.value + '</span></div>').join(""); }
 function renderList(target, rows) { target.innerHTML = rows.length ? rows.map((item) => `<li>${item}</li>`).join("") : '<li class="empty-cell">暂无数据</li>'; }
 function renderCards(target, rows, titleKey, bodyKey, metaKey) { target.innerHTML = rows.map((row) => `<article class="definition-item"><h4>${row[titleKey] || row.name || row.role || row.speaker}</h4><p>${row[bodyKey] || row.summary || row.argument || row.view || ""}</p><span>${row[metaKey] || row.status || row.stance || row.model || ""}</span></article>`).join("") || '<div class="empty-cell">暂无数据</div>'; }
 function renderBarChart(target, rows, labelKey, valueKey) { if (!rows.length) { target.innerHTML = '<div class="empty-cell">暂无图表数据</div>'; return; } const max = Math.max(...rows.map((row) => Math.abs(Number(row[valueKey]) || 0)), 1); target.innerHTML = rows.map((row) => { const value = Number(row[valueKey]) || 0; const width = Math.max(6, Math.round(Math.abs(value) / max * 100)); return `<div class="bar-row"><span>${row[labelKey]}</span><div class="bar-track"><i style="width:${width}%"></i></div><strong>${value.toFixed(4)}</strong></div>`; }).join(""); }
@@ -105,7 +123,7 @@ function renderCandlestick(target, rows) {
   const step = (width - pad * 2) / rows.length;
   const candles = rows.map((row, index) => {
     const x = pad + index * step + step / 2; const openY = y(row.open); const closeY = y(row.close); const highY = y(row.high); const lowY = y(row.low);
-    const up = Number(row.close) >= Number(row.open); const color = up ? "#1d7a49" : "#a43d3d"; const bodyY = Math.min(openY, closeY); const bodyH = Math.max(3, Math.abs(openY - closeY));
+    const up = Number(row.close) >= Number(row.open); const color = up ? "#c43d3d" : "#16845b"; const bodyY = Math.min(openY, closeY); const bodyH = Math.max(3, Math.abs(openY - closeY));
     return `<g><line x1="${x}" x2="${x}" y1="${highY}" y2="${lowY}" stroke="${color}" stroke-width="2"/><rect x="${x - Math.min(18, step * 0.28)}" y="${bodyY}" width="${Math.min(36, step * 0.56)}" height="${bodyH}" fill="${color}"/><text x="${x}" y="${height - 6}" text-anchor="middle" class="kline-label">${row.date.slice(5)}</text></g>`;
   }).join("");
   target.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="K线图"><line x1="${pad}" x2="${width - pad}" y1="${pad}" y2="${pad}" class="grid-line"/><line x1="${pad}" x2="${width - pad}" y1="${height - pad}" y2="${height - pad}" class="grid-line"/><text x="4" y="${pad + 4}" class="axis-label">${max.toFixed(2)}</text><text x="4" y="${height - pad}" class="axis-label">${min.toFixed(2)}</text>${candles}</svg>`;
@@ -165,7 +183,7 @@ async function loadAShareDaily(values = {}) {
     { label: "来源", value: daily.provider || daily.source || "-" },
   ]);
   renderCandlestick($("#a-share-daily-chart"), [...rows].reverse());
-  $("#a-share-daily-body").innerHTML = rows.map((row) => "<tr><td>" + row.date + "</td><td>" + row.open + "</td><td>" + row.high + "</td><td>" + row.low + "</td><td>" + row.close + "</td><td>" + formatMarketNumber(row.volume) + "</td><td>" + formatMarketNumber(row.amount) + "</td><td>" + (row.change_pct ?? "-") + "</td><td>" + (row.turnover_rate ?? "-") + "</td></tr>").join("") || '<tr><td colspan="9" class="empty-cell">该区间没有行情</td></tr>';
+  $("#a-share-daily-body").innerHTML = rows.map((row) => { const tone = financialToneClass(row.change_pct); return "<tr><td>" + row.date + "</td><td>" + row.open + "</td><td>" + row.high + "</td><td>" + row.low + "</td><td>" + row.close + "</td><td>" + formatMarketNumber(row.volume) + "</td><td>" + formatMarketNumber(row.amount) + "</td><td class='" + tone + "'>" + (row.change_pct ?? "-") + "</td><td>" + (row.turnover_rate ?? "-") + "</td></tr>"; }).join("") || '<tr><td colspan="9" class="empty-cell">该区间没有行情</td></tr>';
   $("#a-share-daily-output").textContent = JSON.stringify({ status: daily.status, read_only: daily.read_only, symbol: daily.symbol, adjustment: daily.adjustment, total: daily.total, duplicate_rows_removed: daily.duplicate_rows_removed, limit: daily.limit, offset: daily.offset }, null, 2);
   return daily;
 }
@@ -297,25 +315,420 @@ async function createCurrentExperimentIndex() {
   await loadExperimentIndex();
   setFeedback(`实验索引已登记：${payload.experiment?.experiment_id || prefix}`, "success");
 }
+const backtestStatusMap = {
+  idle: { label: "尚未执行", tone: "idle" },
+  ready: { label: "待执行", tone: "ready" },
+  pending: { label: "排队中", tone: "running" },
+  running: { label: "运行中", tone: "running" },
+  pause_requested: { label: "正在暂停", tone: "running" },
+  paused: { label: "已暂停", tone: "paused" },
+  interrupted: { label: "已中断", tone: "warning" },
+  cancel_requested: { label: "正在取消", tone: "warning" },
+  canceled: { label: "已取消", tone: "muted" },
+  completed: { label: "已完成", tone: "success" },
+  partial_completed: { label: "部分完成", tone: "warning" },
+  partial_failed: { label: "部分失败", tone: "danger" },
+  failed: { label: "失败", tone: "danger" },
+  loading_result: { label: "载入结果", tone: "running" },
+};
+
+function backtestStatusInfo(status) {
+  return backtestStatusMap[status] || { label: status || "未知", tone: "muted" };
+}
+
+function clampPercent(value) {
+  return Math.max(0, Math.min(100, Number(value) || 0));
+}
+
+function formatTaskSeconds(value) {
+  const seconds = Math.max(0, Number(value) || 0);
+  if (seconds < 60) return seconds.toFixed(seconds < 10 ? 1 : 0) + " 秒";
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.floor(seconds % 60);
+  if (minutes < 60) return minutes + " 分 " + remainder + " 秒";
+  return Math.floor(minutes / 60) + " 小时 " + (minutes % 60) + " 分";
+}
+
+function formatTaskTimestamp(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).replace("T", " ").slice(0, 19);
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).format(date).replaceAll("/", "-");
+}
+
+function taskElapsedSeconds(task = {}) {
+  const raw = Number(task.progress?.elapsed_seconds || 0);
+  if (raw > 0) return raw;
+  if (!task.started_at) return 0;
+  const start = new Date(task.started_at).getTime();
+  const end = task.finished_at ? new Date(task.finished_at).getTime() : Date.now();
+  return Number.isFinite(start) && Number.isFinite(end) ? Math.max((end - start) / 1000, 0) : 0;
+}
+
+function newTaskId(prefix) {
+  const now = new Date();
+  const stamp = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0"),
+    String(now.getHours()).padStart(2, "0"), String(now.getMinutes()).padStart(2, "0"), String(now.getSeconds()).padStart(2, "0")].join("");
+  return prefix + "-" + stamp + "-" + Math.random().toString(36).slice(2, 6);
+}
+
+function shortTechnicalId(value) {
+  const text = String(value || "");
+  if (!text) return "-";
+  if (text.length <= 22) return text;
+  return text.slice(0, 12) + "..." + text.slice(-6);
+}
+
+function strategyDisplayName(strategyId) {
+  const id = String(strategyId || "");
+  return strategyCatalog.find((item) => item.strategy_id === id)?.name || id || "未命名策略";
+}
+
+function taskDisplayTitle(task = {}) {
+  const binding = task.strategy_binding || {};
+  const strategyId = binding.strategy_id || task.config?.strategy_id || "";
+  const strategy = binding.strategy_name || strategyDisplayName(strategyId);
+  const mode = task.mode_label || (task.mode === "shared-portfolio" ? "共享资金池" : "独立选股");
+  return task.name || (strategy + " · " + mode);
+}
+
+function taskExecutionLabel(task = {}) {
+  return "创建于 " + formatTaskTimestamp(task.created_at) + " · 批次 " + shortTechnicalId(task.task_id);
+}
+
+function financialToneClass(value) {
+  const number = Number(String(value ?? "").replace("%", ""));
+  if (!Number.isFinite(number) || number === 0) return "";
+  return number > 0 ? "market-rise" : "market-fall";
+}
+
+function taskProgressModel(task = {}, mode = "") {
+  const status = task.status || "idle";
+  const raw = task.progress || {};
+  const total = Number(raw.total ?? task.universe_count ?? task.universe?.length ?? 0);
+  let processed = Number(raw.processed ?? 0);
+  let percent = clampPercent(raw.percent);
+  if (!raw.percent && ["completed", "partial_completed", "partial_failed", "canceled"].includes(status)) {
+    processed = processed || total;
+    percent = 100;
+  }
+  const indeterminate = ["pending", "running", "pause_requested", "cancel_requested", "loading_result"].includes(status) && percent <= 0;
+  let phase = "尚未创建任务";
+  if (status === "ready") phase = "任务已创建，等待启动";
+  else if (status === "pending") phase = "任务已进入执行队列";
+  else if (status === "running" && mode === "independent-screening") phase = "正在并发执行逐股策略";
+  else if (status === "running" && mode === "shared-portfolio" && raw.phase === "preparing_symbols") phase = "正在逐股读取行情并计算策略信号";
+  else if (status === "running" && mode === "shared-portfolio" && raw.phase === "simulating_account") phase = "股票准备完成，正在推进共享账户交易日";
+  else if (status === "running" && mode === "shared-portfolio") phase = "正在执行共享资金池组合回测";
+  else if (status === "paused") phase = "任务已暂停，可继续执行";
+  else if (status === "completed") phase = "任务执行完成，结果可查看";
+  else if (status === "partial_completed") phase = "任务完成，部分标的未完整执行";
+  else if (status === "partial_failed") phase = "任务完成，但存在失败标的";
+  else if (status === "failed") phase = task.error_message || "任务执行失败";
+  else if (status === "canceled") phase = "任务已取消";
+  return {
+    status,
+    percent,
+    processed,
+    total,
+    phase,
+    indeterminate,
+    elapsed: taskElapsedSeconds(task),
+    eta: raw.estimated_remaining_seconds,
+    throughput: Number(raw.throughput_per_minute ?? 0),
+  };
+}
+
+function renderTaskProgress(targetOrSelector, model = {}) {
+  const target = typeof targetOrSelector === "string" ? $(targetOrSelector) : targetOrSelector;
+  if (!target) return;
+  const info = backtestStatusInfo(model.status);
+  const percent = clampPercent(model.percent);
+  const countText = model.total > 0 ? (model.processed || 0) + " / " + model.total : "阶段进度";
+  const etaText = model.eta == null ? "" : "预计剩余 " + formatTaskSeconds(model.eta);
+  const throughputText = model.throughput > 0 ? "吞吐 " + Number(model.throughput).toFixed(1) + "/分钟" : "";
+  const meta = [countText, model.elapsed > 0 ? "已耗时 " + formatTaskSeconds(model.elapsed) : "", throughputText, etaText].filter(Boolean).join(" · ");
+  target.className = "task-progress-shell is-" + info.tone + (model.indeterminate ? " is-indeterminate" : "");
+  target.innerHTML =
+    '<div class="task-progress-head"><div><strong>' + escapeHtml(info.label) + '</strong><span>' + escapeHtml(model.phase || "") + '</span></div>' +
+    '<b>' + (model.indeterminate ? "执行中" : Math.round(percent) + "%") + '</b></div>' +
+    '<div class="task-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.round(percent) + '"><i style="width:' + percent + '%"></i></div>' +
+    '<div class="task-progress-meta">' + escapeHtml(meta || "等待任务状态") + '</div>';
+}
+
+function renderSingleRunProgress() {
+  const running = ["running", "loading_result"].includes(singleRunState.status);
+  const elapsed = running && singleRunState.startedAt
+    ? (Date.now() - singleRunState.startedAt) / 1000
+    : singleRunState.elapsedSeconds;
+  renderTaskProgress("#single-run-progress", {
+    status: singleRunState.status,
+    percent: singleRunState.status === "completed" ? 100 : 0,
+    phase: singleRunState.phase,
+    indeterminate: running,
+    elapsed,
+    processed: singleRunState.status === "completed" ? 1 : 0,
+    total: 1,
+  });
+  const statusTarget = $("#single-run-status");
+  if (statusTarget) statusTarget.textContent = backtestStatusInfo(singleRunState.status).label;
+  renderActiveTaskOverview();
+  renderBacktestResultsContext();
+}
+
+function setSingleRunState(patch) {
+  singleRunState = { ...singleRunState, ...patch };
+  if (singleRunTimer) {
+    clearInterval(singleRunTimer);
+    singleRunTimer = null;
+  }
+  if (["running", "loading_result"].includes(singleRunState.status)) {
+    singleRunTimer = setInterval(renderSingleRunProgress, 500);
+  }
+  renderSingleRunProgress();
+  renderBacktestWorkspace();
+}
+
+function taskCardHtml(task, index) {
+  const mode = task.mode || "";
+  const progress = taskProgressModel(task, mode);
+  const status = backtestStatusInfo(task.status);
+  const binding = task.strategy_binding || {};
+  const dates = task.date_window || {};
+  const elapsed = taskElapsedSeconds(task);
+  const canRun = ["ready", "paused", "interrupted", "failed", "partial_failed"].includes(task.status);
+  const canResult = ["completed", "partial_completed", "partial_failed"].includes(task.status);
+  return '<article class="task-directory-item is-' + status.tone + '" data-mode-task-select="' + index + '">' +
+    '<div class="task-directory-main"><div><span class="task-mode-label">' + escapeHtml(task.mode_label || mode) + '</span><h4>' + escapeHtml(taskDisplayTitle(task)) + '</h4><small>' + escapeHtml(taskExecutionLabel(task)) + '</small></div>' +
+    '<span class="task-status-badge is-' + status.tone + '">' + escapeHtml(status.label) + '</span></div>' +
+    '<p>' + escapeHtml(binding.strategy_version || "") + ' · ' + escapeHtml(dates.start_date || "-") + " 至 " + escapeHtml(dates.end_date || "-") + ' · ' + (task.universe_count || progress.total || 0) + ' 只' + (elapsed > 0 ? ' · 耗时 ' + escapeHtml(formatTaskSeconds(elapsed)) : '') + '</p>' +
+    '<div class="task-card-progress"><div><i style="width:' + progress.percent + '%"></i></div><span>' + Math.round(progress.percent) + '% · ' + progress.processed + "/" + progress.total + '</span></div>' +
+    '<div class="task-id-row"><span title="' + escapeHtml(task.task_id) + '">任务编号 ' + escapeHtml(shortTechnicalId(task.task_id)) + '</span>' + (task.run_id ? '<span title="' + escapeHtml(task.run_id) + '">回测编号 ' + escapeHtml(shortTechnicalId(task.run_id)) + '</span>' : '') + '</div>' +
+    '<div class="task-directory-actions"><button type="button" data-mode-task-open="' + index + '">进入工作区</button>' +
+    '<button type="button" data-mode-task-run="' + index + '"' + (canRun ? "" : " disabled") + '>启动 / 恢复</button>' +
+    '<button type="button" data-mode-task-result="' + index + '"' + (canResult ? "" : " disabled") + '>查看结果</button></div></article>';
+}
+
+function activeModeTask(mode) {
+  const selected = mode === "independent-screening" ? currentScreeningTask : currentPortfolioTask;
+  return selected || modeTaskCatalog.find((task) => task.mode === mode) || null;
+}
+
+function modeOverviewItem(mode, title, view) {
+  const task = activeModeTask(mode);
+  if (!task) {
+    return '<article class="task-mode-item"><div><span class="task-mode-label">' + title + '</span><h4>尚无任务</h4><p>进入工作区配置并创建任务。</p></div><button type="button" data-overview-view="' + view + '">开始配置</button></article>';
+  }
+  const progress = taskProgressModel(task, mode);
+  const info = backtestStatusInfo(task.status);
+  const elapsed = taskElapsedSeconds(task);
+  return '<article class="task-mode-item is-' + info.tone + '"><div><span class="task-mode-label">' + title + '</span><h4>' + escapeHtml(taskDisplayTitle(task)) + '</h4><p>' + escapeHtml(info.label) + ' · ' + Math.round(progress.percent) + '% · ' + progress.processed + '/' + progress.total + (elapsed > 0 ? ' · ' + escapeHtml(formatTaskSeconds(elapsed)) : '') + '</p><small>' + escapeHtml(taskExecutionLabel(task)) + '</small></div><button type="button" data-overview-view="' + view + '">查看任务</button></article>';
+}
+
+function renderActiveTaskOverview() {
+  const target = $("#backtest-task-overview-active");
+  if (!target) return;
+  const singleInfo = backtestStatusInfo(singleRunState.status);
+  const singleTitle = singleRunState.runId ? ((singleRunState.strategyName || "单股策略") + " · " + (singleRunState.symbol || "-")) : "尚未执行";
+  const singleDetail = singleRunState.symbol
+    ? singleInfo.label + " · " + singleRunState.symbol + (singleRunState.elapsedSeconds ? " · " + formatTaskSeconds(singleRunState.elapsedSeconds) : "")
+    : "选择股票后开始快速验证";
+  target.innerHTML =
+    '<article class="task-mode-item is-' + singleInfo.tone + '"><div><span class="task-mode-label">单股测试</span><h4>' + escapeHtml(singleTitle) + '</h4><p>' + escapeHtml(singleDetail) + '</p></div><button type="button" data-overview-view="single">进入测试</button></article>' +
+    modeOverviewItem("independent-screening", "独立选股", "independent") +
+    modeOverviewItem("shared-portfolio", "共享资金池", "portfolio");
+  target.querySelectorAll("[data-overview-view]").forEach((button) => button.addEventListener("click", () => activateBacktestView(button.dataset.overviewView)));
+}
+
+function selectedResultContext() {
+  if (currentModeTask) return { kind: "mode", task: currentModeTask };
+  if (singleRunState.runId) return { kind: "single", task: singleRunState };
+  const completed = modeTaskCatalog.find((task) => ["completed", "partial_completed", "partial_failed"].includes(task.status));
+  return completed ? { kind: "mode", task: completed } : null;
+}
+
+function renderBacktestResultsContext() {
+  const target = $("#backtest-results-context");
+  const reportButton = $("#backtest-results-report");
+  if (!target || !reportButton) return;
+  const context = selectedResultContext();
+  if (!context) {
+    target.innerHTML = '<div class="empty-cell">请先完成或选择一个回测任务</div>';
+    reportButton.disabled = true;
+    return;
+  }
+  if (context.kind === "single") {
+    const task = context.task;
+    target.innerHTML = '<div class="results-context-main"><span class="task-mode-label">单股测试</span><h4>' + escapeHtml((task.strategyName || "单股策略") + " · " + (task.symbol || "-")) + '</h4><p title="' + escapeHtml(task.runId) + '">回测编号 ' + escapeHtml(shortTechnicalId(task.runId)) + ' · 已完成</p></div><span class="task-status-badge is-success">结果可查看</span>';
+    reportButton.disabled = false;
+    return;
+  }
+  const task = context.task;
+  const info = backtestStatusInfo(task.status);
+  const binding = task.strategy_binding || {};
+  target.innerHTML = '<div class="results-context-main"><span class="task-mode-label">' + escapeHtml(task.mode_label || task.mode) + '</span><h4>' + escapeHtml(taskDisplayTitle(task)) + '</h4><p title="' + escapeHtml(task.task_id) + '">' + escapeHtml(binding.strategy_version || "-") + ' · 任务编号 ' + escapeHtml(shortTechnicalId(task.task_id)) + ' · 耗时 ' + escapeHtml(taskElapsedSeconds(task) > 0 ? formatTaskSeconds(taskElapsedSeconds(task)) : "-") + '</p></div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span>';
+  reportButton.disabled = !["completed", "partial_completed", "partial_failed"].includes(task.status);
+}
+
+function activateBacktestView(view) {
+  currentBacktestView = view;
+  document.querySelectorAll("[data-backtest-view]").forEach((panel) => panel.classList.toggle("is-active", panel.dataset.backtestView === view));
+  document.querySelectorAll("[data-backtest-view-target]").forEach((button) => {
+    const active = button.dataset.backtestViewTarget === view;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  renderBacktestWorkspace();
+  if (view === "overview") renderActiveTaskOverview();
+  if (view === "results") renderBacktestResultsContext();
+}
+
+function renderBacktestWorkspace() {
+  const target = $("#backtest-context-summary");
+  if (!target) return;
+  const strategyName = selectedStrategy?.name || selectedStrategy?.strategy_id || "尚未选择";
+  const strategyVersion = selectedStrategy?.latest_version || "-";
+  const viewNames = { overview: "任务总览", single: "单股测试", strategy: "策略库", independent: "独立选股", portfolio: "共享资金池", results: "结果分析" };
+  const runningTask = [currentScreeningTask, currentPortfolioTask].find((task) => ["running", "pending"].includes(task?.status));
+  const resultContext = selectedResultContext();
+  renderSummaryGrid(target, [
+    { label: "当前策略", value: strategyName },
+    { label: "策略版本", value: strategyVersion },
+    { label: "当前工作区", value: viewNames[currentBacktestView] || currentBacktestView },
+    { label: "当前任务", value: runningTask ? taskDisplayTitle(runningTask) : (currentModeTask ? taskDisplayTitle(currentModeTask) : (singleRunState.symbol ? (singleRunState.strategyName || "单股策略") + " · " + singleRunState.symbol : "尚未选择")) },
+    { label: "执行状态", value: runningTask ? backtestStatusInfo(runningTask.status).label : backtestStatusInfo(singleRunState.status).label },
+    { label: "结果状态", value: resultContext ? "已有可查看结果" : "等待任务完成" },
+  ]);
+  const hasTask = singleRunState.status !== "idle" || Boolean(currentScreeningTaskId || currentPortfolioTaskId);
+  const isRunning = ["running", "loading_result"].includes(singleRunState.status) || Boolean(runningTask);
+  const hasResult = Boolean(resultContext);
+  const completed = {
+    strategy: Boolean(selectedStrategy),
+    mode: hasTask,
+    configure: hasTask,
+    run: isRunning || hasResult,
+    results: hasResult,
+  };
+  const currentStep = currentBacktestView === "strategy" ? "strategy"
+    : currentBacktestView === "overview" ? "mode"
+    : ["single", "independent", "portfolio"].includes(currentBacktestView) ? (isRunning ? "run" : "configure")
+    : "results";
+  document.querySelectorAll("[data-workflow-step]").forEach((step) => {
+    step.classList.toggle("is-complete", Boolean(completed[step.dataset.workflowStep]));
+    step.classList.toggle("is-current", step.dataset.workflowStep === currentStep);
+  });
+  $("#backtest-workspace-status").textContent = selectedStrategy ? strategyName + " / " + strategyVersion : "请先选择策略";
+}
+function renderBacktestConfigPreview(form, target, mode) {
+  if (!form || !target) return;
+  const values = Object.fromEntries(new FormData(form).entries());
+  const explicitSymbols = String(values.symbols || "").split(/[,，\s]+/).filter(Boolean);
+  const limit = Number(values.symbol_limit || 0);
+  const scope = explicitSymbols.length ? `指定 ${explicitSymbols.length} 只股票` : (values.market ? values.market : (limit > 0 ? `前 ${limit} 只 A 股` : "全部当前 A 股"));
+  const items = [
+    { label: "回测模式", value: mode === "independent" ? "独立资金逐股回测" : "单一共享资金池" },
+    { label: "策略", value: selectedStrategy?.name || selectedStrategy?.strategy_id || "请选择策略" },
+    { label: "股票范围", value: scope },
+    { label: "回测期间", value: `${values.start_date || "-"} 至 ${values.end_date || "-"}` },
+    { label: "复权", value: values.adjustment || "raw" },
+  ];
+  if (mode === "independent") items.push({ label: "执行资源", value: Number(values.max_workers || 0) ? `${values.max_workers} 并发` : "自动并发" });
+  else items.push({ label: "组合约束", value: `最多 ${values.max_positions || 10} 只 / 资金使用 ${Math.round(Number(values.portfolio_exposure || 0.95) * 100)}%` });
+  renderSummaryGrid(target, items);
+}
+
+function toggleAdvancedFields(form, button) {
+  const expanded = button.getAttribute("aria-expanded") === "true";
+  button.setAttribute("aria-expanded", String(!expanded));
+  button.textContent = expanded ? "高级参数" : "收起高级参数";
+  form.querySelectorAll(".advanced-field").forEach((field) => field.classList.toggle("is-hidden", expanded));
+}
+
+function setupAdvancedFields(form, names) {
+  names.forEach((name) => form.elements[name]?.closest("label")?.classList.add("advanced-field", "is-hidden"));
+}
+
+function updateScreeningActions(task = {}) {
+  const status = task.status || "not_found";
+  $("#screening-task-run").disabled = !["ready", "paused", "interrupted", "failed", "partial_failed"].includes(status);
+  $("#screening-task-pause").disabled = status !== "running";
+  $("#screening-task-cancel").disabled = !["ready", "running", "pause_requested", "paused", "interrupted"].includes(status);
+  renderBacktestWorkspace();
+}
+
+function updatePortfolioActions(task = {}) {
+  const status = task.status || "not_found";
+  $("#portfolio-task-run").disabled = !["ready", "interrupted", "failed"].includes(status);
+  renderBacktestWorkspace();
+}
+
+async function openBacktestWorkspaceView(view) {
+  activateBacktestView(view);
+  if (view === "overview") await loadBacktestModeTasks();
+  else if (view === "independent") await loadIndependentScreeningTasks();
+  else if (view === "portfolio") await loadSharedPortfolioTasks();
+  else if (view === "results") await refreshBacktestResults();
+}
+
+function bindBacktestWorkspace() {
+  document.querySelectorAll("[data-backtest-view-target]").forEach((button) => button.addEventListener("click", () => {
+    openBacktestWorkspaceView(button.dataset.backtestViewTarget).catch((error) => setFeedback(error.message, "error"));
+  }));
+  document.querySelectorAll("[data-backtest-view-jump]").forEach((button) => button.addEventListener("click", () => {
+    openBacktestWorkspaceView(button.dataset.backtestViewJump).catch((error) => setFeedback(error.message, "error"));
+  }));
+  const screeningForm = $("#screening-task-form");
+  const portfolioForm = $("#portfolio-task-form");
+  setupAdvancedFields(screeningForm, ["scheduler_batch_size", "retry_count", "initial_cash"]);
+  setupAdvancedFields(portfolioForm, ["max_workers", "initial_cash"]);
+  screeningForm.addEventListener("input", () => renderBacktestConfigPreview(screeningForm, $("#screening-config-preview"), "independent"));
+  portfolioForm.addEventListener("input", () => renderBacktestConfigPreview(portfolioForm, $("#portfolio-config-preview"), "portfolio"));
+  $("#screening-advanced-toggle").addEventListener("click", (event) => toggleAdvancedFields(screeningForm, event.currentTarget));
+  $("#portfolio-advanced-toggle").addEventListener("click", (event) => toggleAdvancedFields(portfolioForm, event.currentTarget));
+  renderBacktestConfigPreview(screeningForm, $("#screening-config-preview"), "independent");
+  renderBacktestConfigPreview(portfolioForm, $("#portfolio-config-preview"), "portfolio");
+  renderTaskProgress("#screening-live-progress", taskProgressModel({}, "independent-screening"));
+  renderTaskProgress("#portfolio-live-progress", taskProgressModel({}, "shared-portfolio"));
+  renderSingleRunProgress();
+  updateScreeningActions();
+  updatePortfolioActions();
+  activateBacktestView("overview");
+}
 function renderScreeningTask(task = {}) {
+  currentScreeningTask = task.task_id ? task : currentScreeningTask;
   const progress = task.progress || {};
   const execution = task.execution || {};
+  renderTaskProgress("#screening-live-progress", taskProgressModel(task, "independent-screening"));
   renderSummaryGrid($("#screening-progress"), [
-    { label: "状态", value: task.status || "unknown" },
+    { label: "状态", value: backtestStatusInfo(task.status).label },
     { label: "股票总数", value: progress.total ?? 0 },
     { label: "已处理", value: progress.processed ?? 0 },
     { label: "已建仓", value: progress.entered ?? 0 },
     { label: "未建仓", value: progress.no_entry ?? 0 },
     { label: "失败", value: progress.failed ?? 0 },
-    { label: "已取消", value: progress.canceled ?? 0 },
-    { label: "进度", value: `${progress.percent ?? 0}%` },
     { label: "有效并发", value: execution.effective_workers ?? "-" },
     { label: "调度批次", value: execution.batch_size ?? "-" },
-    { label: "吞吐/分钟", value: progress.throughput_per_minute ?? 0 },
-    { label: "已耗时", value: `${progress.elapsed_seconds ?? 0} 秒` },
-    { label: "预计剩余", value: progress.estimated_remaining_seconds == null ? "-" : `${progress.estimated_remaining_seconds} 秒` },
+    { label: "执行耗时", value: taskElapsedSeconds(task) > 0 ? formatTaskSeconds(taskElapsedSeconds(task)) : "尚未执行" },
+    { label: "创建时间", value: formatTaskTimestamp(task.created_at) },
   ]);
   $("#screening-summary").textContent = JSON.stringify({ config: task.config || {}, execution, summary: task.summary || {} }, null, 2);
+  if (currentModeTask?.mode === "independent-screening" && currentModeTask.task_id === task.task_id) {
+    currentModeTask = {
+      ...currentModeTask,
+      status: task.status,
+      progress,
+      execution,
+      updated_at: task.updated_at,
+      started_at: task.started_at,
+      finished_at: task.finished_at,
+    };
+  }
+  updateScreeningActions(task);
+  renderActiveTaskOverview();
+  renderBacktestResultsContext();
 }
 function renderScreeningEnteredResults(items = []) {
   const target = $("#screening-entered-results");
@@ -323,7 +736,7 @@ function renderScreeningEnteredResults(items = []) {
     target.innerHTML = '<div class="empty-cell">暂无建仓标的</div>';
     return;
   }
-  target.innerHTML = `<table><thead><tr><th>代码</th><th>名称</th><th>状态</th><th>总收益</th><th>年化收益</th><th>Run ID</th></tr></thead><tbody>${items.map((item) => `<tr><td>${item.symbol}</td><td>${item.name}</td><td>${item.status}</td><td>${item.metrics?.total_returns ?? "-"}</td><td>${item.metrics?.annualized_returns ?? "-"}</td><td>${item.run_id || "-"}</td></tr>`).join("")}</tbody></table>`;
+  target.innerHTML = '<table><thead><tr><th>代码</th><th>名称</th><th>状态</th><th>总收益</th><th>年化收益</th><th>回测编号</th></tr></thead><tbody>' + items.map((item) => '<tr><td>' + escapeHtml(item.symbol) + '</td><td>' + escapeHtml(item.name) + '</td><td>' + escapeHtml(item.status) + '</td><td class="' + financialToneClass(item.metrics?.total_returns) + '">' + (item.metrics?.total_returns ?? "-") + '</td><td class="' + financialToneClass(item.metrics?.annualized_returns) + '">' + (item.metrics?.annualized_returns ?? "-") + '</td><td title="' + escapeHtml(item.run_id || "") + '">' + escapeHtml(shortTechnicalId(item.run_id)) + '</td></tr>').join("") + '</tbody></table>';
 }
 async function loadIndependentScreeningTask(taskId, { schedule = true } = {}) {
   if (!taskId) return null;
@@ -344,43 +757,89 @@ async function loadIndependentScreeningTask(taskId, { schedule = true } = {}) {
 async function loadIndependentScreeningTasks() {
   const payload = await requestJson("/api/backtest/independent-screening-tasks?limit=20");
   const tasks = payload.tasks || [];
-  $("#screening-task-list").innerHTML = tasks.map((task) => `<article class="definition-item strategy-card" data-screening-task="${task.task_id}"><h4>${task.config?.name || task.task_id}</h4><p>${task.config?.strategy_id || "-"} ${task.config?.strategy_version || ""} / ${task.config?.adjustment || "raw"}</p><span>${task.status} / ${task.progress?.processed || 0} / ${task.progress?.total || 0} / 建仓 ${task.progress?.entered || 0}</span></article>`).join("") || '<div class="empty-cell">暂无独立选股任务</div>';
-  document.querySelectorAll("[data-screening-task]").forEach((card) => card.addEventListener("click", () => loadIndependentScreeningTask(card.dataset.screeningTask)));
+  $("#screening-task-list").innerHTML = tasks.map((task) => {
+    const progress = taskProgressModel(task, "independent-screening");
+    const info = backtestStatusInfo(task.status);
+    return '<article class="compact-task-row is-' + info.tone + '" data-screening-task="' + escapeHtml(task.task_id) + '">' +
+      '<div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span><h4>' + escapeHtml(strategyDisplayName(task.config?.strategy_id) + " · 独立选股") + '</h4><p>' + escapeHtml(taskExecutionLabel(task)) + ' · ' + progress.total + ' 只' + (taskElapsedSeconds(task) > 0 ? ' · 耗时 ' + escapeHtml(formatTaskSeconds(taskElapsedSeconds(task))) : '') + '</p></div>' +
+      '<div class="task-card-progress"><div><i style="width:' + progress.percent + '%"></i></div><span>' + Math.round(progress.percent) + '% · ' + progress.processed + '/' + progress.total + '</span></div></article>';
+  }).join("") || '<div class="empty-cell">暂无独立选股任务</div>';
+  document.querySelectorAll("[data-screening-task]").forEach((card) => card.addEventListener("click", async () => {
+    const task = tasks.find((item) => item.task_id === card.dataset.screeningTask);
+    currentModeTask = task ? {
+      task_id: task.task_id,
+      mode: "independent-screening",
+      mode_label: "独立选股",
+      name: task.config?.name || task.task_id,
+      status: task.status,
+      strategy_binding: { strategy_id: task.config?.strategy_id, strategy_version: task.config?.strategy_version },
+      date_window: task.config?.date_window || {},
+      universe_count: task.progress?.total || 0,
+      progress: task.progress || {},
+      execution: task.execution || {},
+      created_at: task.created_at,
+      updated_at: task.updated_at,
+      started_at: task.started_at,
+      finished_at: task.finished_at,
+      links: {
+        report: "/api/reporting/backtest-modes/independent-screening/" + encodeURIComponent(task.task_id),
+      },
+    } : null;
+    await loadIndependentScreeningTask(card.dataset.screeningTask);
+    renderModeTaskSelection(currentModeTask);
+  }));
   if (!currentScreeningTaskId && tasks.length) await loadIndependentScreeningTask(tasks[0].task_id, { schedule: false });
   return tasks;
 }
 async function createIndependentScreeningTask(event) {
   event.preventDefault();
-  const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-  const backtestForm = Object.fromEntries(new FormData($("#backtest-run-form")).entries());
-  const body = {
-    task_id: values.task_id,
-    name: `${selectedStrategy?.name || "策略"} 独立选股`,
-    strategy_id: selectedStrategy?.strategy_id || backtestForm.strategy_id || "moving_average_strategy",
-    strategy_version: selectedStrategy?.latest_version || backtestForm.strategy_version || "v1",
-    symbols: String(values.symbols || "").split(/[,，\s]+/).filter(Boolean),
-    market: values.market || "",
-    start_date: values.start_date,
-    end_date: values.end_date,
-    adjustment: values.adjustment || "raw",
-    benchmark: backtestForm.benchmark || "000300.XSHG",
-    initial_cash: Number(values.initial_cash || 1000000),
-    parameters: collectStrategyParameters(),
-    max_workers: Number(values.max_workers || 4),
-    retry_count: Number(values.retry_count || 1),
-    symbol_limit: Number(values.symbol_limit || 0),
-    scheduler_batch_size: Number(values.scheduler_batch_size || 0),
-  };
-  const payload = await requestJson("/api/backtest/independent-screening-tasks", { method: "POST", body: JSON.stringify(body) });
-  currentScreeningTaskId = payload.task?.task_id;
-  renderScreeningTask(payload.task || {});
-  await loadIndependentScreeningTasks();
-  setFeedback(`独立选股任务已创建：${currentScreeningTaskId}`, "success");
+  const form = event.currentTarget;
+  const submit = event.submitter || form.querySelector('button[type="submit"]');
+  const originalLabel = submit?.textContent || "创建任务";
+  if (submit) { submit.disabled = true; submit.textContent = "正在创建..."; }
+  setFeedback("正在创建独立选股任务，请稍候");
+  try {
+    const values = Object.fromEntries(new FormData(form).entries());
+    const backtestForm = Object.fromEntries(new FormData($("#backtest-run-form")).entries());
+    const body = {
+      task_id: values.task_id || newTaskId("screening"),
+      name: (selectedStrategy?.name || "策略") + " 独立选股",
+      strategy_id: selectedStrategy?.strategy_id || backtestForm.strategy_id || "moving_average_strategy",
+      strategy_version: selectedStrategy?.latest_version || backtestForm.strategy_version || "v1",
+      symbols: String(values.symbols || "").split(/[,，\s]+/).filter(Boolean),
+      market: values.market || "",
+      start_date: values.start_date,
+      end_date: values.end_date,
+      adjustment: values.adjustment || "raw",
+      benchmark: backtestForm.benchmark || "000300.XSHG",
+      initial_cash: Number(values.initial_cash || 1000000),
+      parameters: collectStrategyParameters(),
+      max_workers: Number(values.max_workers || 4),
+      retry_count: Number(values.retry_count || 1),
+      symbol_limit: Number(values.symbol_limit || 0),
+      scheduler_batch_size: Number(values.scheduler_batch_size || 0),
+    };
+    const payload = await requestJson("/api/backtest/independent-screening-tasks", { method: "POST", body: JSON.stringify(body) });
+    currentScreeningTaskId = payload.task?.task_id;
+    renderScreeningTask(payload.task || {});
+    await loadIndependentScreeningTasks();
+    await loadBacktestModeTasks();
+    currentModeTask = modeTaskCatalog.find((task) => task.mode === "independent-screening" && task.task_id === currentScreeningTaskId) || currentModeTask;
+    renderModeTaskSelection(currentModeTask);
+    form.elements.task_id.value = "";
+    setFeedback("独立选股任务已创建：" + taskDisplayTitle(currentModeTask || {}), "success");
+  } catch (error) {
+    setFeedback("独立选股创建失败：" + error.message, "error");
+    throw error;
+  } finally {
+    if (submit) { submit.disabled = false; submit.textContent = originalLabel; }
+  }
 }
 async function runIndependentScreeningTask() {
   if (!currentScreeningTaskId) throw new Error("请先创建或选择独立选股任务");
   await requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(currentScreeningTaskId)}/run`, { method: "POST", body: JSON.stringify({ wait: false }) });
   await loadIndependentScreeningTask(currentScreeningTaskId);
+  await loadBacktestModeTasks();
   setFeedback(`独立选股任务已启动：${currentScreeningTaskId}`, "success");
 }
 async function controlIndependentScreeningTask(action) {
@@ -394,17 +853,37 @@ async function controlIndependentScreeningTask(action) {
   setFeedback(`独立选股任务控制已提交：${action}`, "success");
 }
 function renderPortfolioTask(task = {}) {
+  currentPortfolioTask = task.task_id ? task : currentPortfolioTask;
   const summary = task.summary || {};
   const metrics = summary.metrics || {};
+  const progressTask = task;
+  renderTaskProgress("#portfolio-live-progress", taskProgressModel(progressTask, "shared-portfolio"));
   renderSummaryGrid($("#portfolio-task-progress"), [
-    { label: "状态", value: task.status || "unknown" },
+    { label: "状态", value: backtestStatusInfo(task.status).label },
     { label: "冻结股票", value: task.universe_count ?? 0 },
-    { label: "实际执行", value: summary.executed_symbol_count ?? 0 },
-    { label: "组合收益", value: metrics.total_returns ?? "-" },
-    { label: "最大回撤", value: metrics.max_drawdown ?? "-" },
+    { label: "已处理股票", value: (task.progress || {}).processed ?? 0 },
+    { label: "可执行股票", value: (task.progress || {}).prepared ?? summary.executed_symbol_count ?? 0 },
+    { label: "排除股票", value: (task.progress || {}).excluded ?? summary.excluded_symbol_count ?? 0 },
+    { label: "执行耗时", value: taskElapsedSeconds(task) > 0 ? formatTaskSeconds(taskElapsedSeconds(task)) : "尚未执行" },
+    { label: "组合收益", value: metrics.total_returns ?? "-", tone: financialToneClass(metrics.total_returns) },
+    { label: "最大回撤", value: metrics.max_drawdown ?? "-", tone: financialToneClass(metrics.max_drawdown) },
     { label: "成交数", value: summary.trade_count ?? 0 },
   ]);
   $("#portfolio-task-summary").textContent = JSON.stringify({ config: task.config || {}, summary, run_id: task.run_id, error_message: task.error_message }, null, 2);
+  if (currentModeTask?.mode === "shared-portfolio" && currentModeTask.task_id === task.task_id) {
+    currentModeTask = {
+      ...currentModeTask,
+      status: task.status,
+      run_id: task.run_id,
+      progress: progressTask.progress,
+      updated_at: task.updated_at,
+      started_at: task.started_at,
+      finished_at: task.finished_at,
+    };
+  }
+  updatePortfolioActions(task);
+  renderActiveTaskOverview();
+  renderBacktestResultsContext();
 }
 async function loadSharedPortfolioTask(taskId, { schedule = true } = {}) {
   if (!taskId) return null;
@@ -421,73 +900,135 @@ async function loadSharedPortfolioTask(taskId, { schedule = true } = {}) {
 async function loadSharedPortfolioTasks() {
   const payload = await requestJson("/api/backtest/shared-portfolio-tasks?limit=20");
   const tasks = payload.tasks || [];
-  $("#portfolio-task-list").innerHTML = tasks.map((task) => `<article class="definition-item strategy-card" data-portfolio-task="${task.task_id}"><h4>${task.config?.name || task.task_id}</h4><p>${task.config?.strategy_id || "-"} ${task.config?.strategy_version || ""} / ${task.universe_count || 0} 只 / 最多持仓 ${task.config?.max_positions || "-"}</p><span>${task.status} / ${task.run_id || "尚未运行"}</span>${task.run_id ? `<div class="button-row"><button type="button" data-portfolio-report="${task.run_id}">打开报告</button></div>` : ""}</article>`).join("") || '<div class="empty-cell">暂无共享资金池组合任务</div>';
-  document.querySelectorAll("[data-portfolio-task]").forEach((card) => card.addEventListener("click", () => loadSharedPortfolioTask(card.dataset.portfolioTask)));
-  document.querySelectorAll("[data-portfolio-report]").forEach((button) => button.addEventListener("click", async (event) => {
-    event.stopPropagation();
-    const runId = button.dataset.portfolioReport;
-    activatePage("reporting");
-    $('#reporting-query-form input[name="run_id"]').value = runId;
-    await loadReports(runId, "phase1-batch-001");
+  $("#portfolio-task-list").innerHTML = tasks.map((task) => {
+    const progress = taskProgressModel(task, "shared-portfolio");
+    const info = backtestStatusInfo(task.status);
+    return '<article class="compact-task-row is-' + info.tone + '" data-portfolio-task="' + escapeHtml(task.task_id) + '">' +
+      '<div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span><h4>' + escapeHtml(strategyDisplayName(task.config?.strategy_id) + " · 共享资金池") + '</h4><p>' + escapeHtml(taskExecutionLabel(task)) + ' · ' + (task.universe_count || 0) + ' 只 · 最多持仓 ' + (task.config?.max_positions || "-") + (taskElapsedSeconds(task) > 0 ? ' · 耗时 ' + escapeHtml(formatTaskSeconds(taskElapsedSeconds(task))) : '') + '</p></div>' +
+      '<div class="task-card-progress"><div><i style="width:' + progress.percent + '%"></i></div><span>' + Math.round(progress.percent) + '% · ' + progress.processed + '/' + progress.total + '</span></div></article>';
+  }).join("") || '<div class="empty-cell">暂无共享资金池任务</div>';
+  document.querySelectorAll("[data-portfolio-task]").forEach((card) => card.addEventListener("click", async () => {
+    const task = tasks.find((item) => item.task_id === card.dataset.portfolioTask);
+    currentModeTask = task ? {
+      task_id: task.task_id,
+      mode: "shared-portfolio",
+      mode_label: "共享资金池",
+      name: task.config?.name || task.task_id,
+      status: task.status,
+      strategy_binding: { strategy_id: task.config?.strategy_id, strategy_version: task.config?.strategy_version },
+      date_window: task.config?.date_window || {},
+      universe_count: task.universe_count || 0,
+      run_id: task.run_id,
+      progress: task.progress || {},
+      created_at: task.created_at,
+      updated_at: task.updated_at,
+      started_at: task.started_at,
+      finished_at: task.finished_at,
+      links: {
+        report: "/api/reporting/backtest-modes/shared-portfolio/" + encodeURIComponent(task.task_id),
+      },
+    } : null;
+    await loadSharedPortfolioTask(card.dataset.portfolioTask);
+    renderModeTaskSelection(currentModeTask);
   }));
   if (!currentPortfolioTaskId && tasks.length) await loadSharedPortfolioTask(tasks[0].task_id, { schedule: false });
   return tasks;
 }
 async function createSharedPortfolioTask(event) {
   event.preventDefault();
-  const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-  const backtestForm = Object.fromEntries(new FormData($("#backtest-run-form")).entries());
-  const body = {
-    task_id: values.task_id,
-    name: `${selectedStrategy?.name || "策略"} 共享资金池组合`,
-    strategy_id: selectedStrategy?.strategy_id || backtestForm.strategy_id || "moving_average_strategy",
-    strategy_version: selectedStrategy?.latest_version || backtestForm.strategy_version || "v1",
-    symbols: String(values.symbols || "").split(/[,，\s]+/).filter(Boolean),
-    market: values.market || "",
-    start_date: values.start_date,
-    end_date: values.end_date,
-    adjustment: values.adjustment || "raw",
-    benchmark: backtestForm.benchmark || "000300.XSHG",
-    initial_cash: Number(values.initial_cash || 1000000),
-    parameters: collectStrategyParameters(),
-    max_workers: Number(values.max_workers || 4),
-    symbol_limit: Number(values.symbol_limit || 0),
-    max_positions: Number(values.max_positions || 10),
-    portfolio_exposure: Number(values.portfolio_exposure || 0.95),
-    commission_rate: Number(backtestForm.commission_rate || 0.0003),
-    min_commission: Number(backtestForm.min_commission || 5),
-    tax_rate: Number(backtestForm.tax_rate || 0.001),
-    slippage_rate: Number(backtestForm.slippage_rate || 0.0005),
-  };
-  const payload = await requestJson("/api/backtest/shared-portfolio-tasks", { method: "POST", body: JSON.stringify(body) });
-  currentPortfolioTaskId = payload.task?.task_id;
-  renderPortfolioTask(payload.task || {});
-  await loadSharedPortfolioTasks();
-  setFeedback(`共享资金池组合任务已创建：${currentPortfolioTaskId}`, "success");
+  const form = event.currentTarget;
+  const submit = event.submitter || form.querySelector('button[type="submit"]');
+  const originalLabel = submit?.textContent || "创建组合任务";
+  if (submit) { submit.disabled = true; submit.textContent = "正在创建..."; }
+  setFeedback("正在创建共享资金池任务，请稍候");
+  try {
+    const values = Object.fromEntries(new FormData(form).entries());
+    const backtestForm = Object.fromEntries(new FormData($("#backtest-run-form")).entries());
+    const body = {
+      task_id: values.task_id || newTaskId("portfolio"),
+      name: (selectedStrategy?.name || "策略") + " 共享资金池组合",
+      strategy_id: selectedStrategy?.strategy_id || backtestForm.strategy_id || "moving_average_strategy",
+      strategy_version: selectedStrategy?.latest_version || backtestForm.strategy_version || "v1",
+      symbols: String(values.symbols || "").split(/[,，\s]+/).filter(Boolean),
+      market: values.market || "",
+      start_date: values.start_date,
+      end_date: values.end_date,
+      adjustment: values.adjustment || "raw",
+      benchmark: backtestForm.benchmark || "000300.XSHG",
+      initial_cash: Number(values.initial_cash || 1000000),
+      parameters: collectStrategyParameters(),
+      max_workers: Number(values.max_workers || 4),
+      symbol_limit: Number(values.symbol_limit || 0),
+      max_positions: Number(values.max_positions || 10),
+      portfolio_exposure: Number(values.portfolio_exposure || 0.95),
+      commission_rate: Number(backtestForm.commission_rate || 0.0003),
+      min_commission: Number(backtestForm.min_commission || 5),
+      tax_rate: Number(backtestForm.tax_rate || 0.001),
+      slippage_rate: Number(backtestForm.slippage_rate || 0.0005),
+    };
+    const payload = await requestJson("/api/backtest/shared-portfolio-tasks", { method: "POST", body: JSON.stringify(body) });
+    currentPortfolioTaskId = payload.task?.task_id;
+    renderPortfolioTask(payload.task || {});
+    await loadSharedPortfolioTasks();
+    await loadBacktestModeTasks();
+    currentModeTask = modeTaskCatalog.find((task) => task.mode === "shared-portfolio" && task.task_id === currentPortfolioTaskId) || currentModeTask;
+    renderModeTaskSelection(currentModeTask);
+    form.elements.task_id.value = "";
+    setFeedback("共享资金池任务已创建：" + taskDisplayTitle(currentModeTask || {}), "success");
+  } catch (error) {
+    setFeedback("共享资金池创建失败：" + error.message, "error");
+    throw error;
+  } finally {
+    if (submit) { submit.disabled = false; submit.textContent = originalLabel; }
+  }
 }
 async function runSharedPortfolioTask() {
   if (!currentPortfolioTaskId) throw new Error("请先创建或选择共享资金池组合任务");
   await requestJson(`/api/backtest/shared-portfolio-tasks/${encodeURIComponent(currentPortfolioTaskId)}/run`, { method: "POST", body: JSON.stringify({ wait: false }) });
   await loadSharedPortfolioTask(currentPortfolioTaskId);
+  await loadBacktestModeTasks();
   setFeedback(`共享资金池组合任务已启动：${currentPortfolioTaskId}`, "success");
 }
 
-async function selectBacktestModeTask(task) {
+function renderModeTaskSelection(task) {
+  const target = $("#mode-task-directory-detail");
+  if (!target) return;
+  if (!task) {
+    target.innerHTML = '<div class="empty-cell">选择任务查看执行详情</div>';
+    return;
+  }
+  const progress = taskProgressModel(task, task.mode);
+  const info = backtestStatusInfo(task.status);
+  const binding = task.strategy_binding || {};
+  const dates = task.date_window || {};
+  const elapsed = taskElapsedSeconds(task);
+  target.innerHTML =
+    '<div class="task-selection-head"><div><span class="task-mode-label">' + escapeHtml(task.mode_label || task.mode) + '</span><h4>' + escapeHtml(taskDisplayTitle(task)) + '</h4><small>' + escapeHtml(taskExecutionLabel(task)) + '</small></div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span></div>' +
+    '<div class="task-selection-grid"><div><span>策略版本</span><strong>' + escapeHtml(binding.strategy_version || "-") + '</strong></div><div><span>回测期间</span><strong>' + escapeHtml(dates.start_date || "-") + ' 至 ' + escapeHtml(dates.end_date || "-") + '</strong></div><div><span>股票范围</span><strong>' + (task.universe_count || progress.total || 0) + ' 只</strong></div><div><span>执行进度</span><strong>' + Math.round(progress.percent) + '% · ' + progress.processed + '/' + progress.total + '</strong></div><div><span>执行耗时</span><strong>' + (elapsed > 0 ? escapeHtml(formatTaskSeconds(elapsed)) : "尚未执行") + '</strong></div><div><span>创建时间</span><strong>' + escapeHtml(formatTaskTimestamp(task.created_at)) + '</strong></div><div><span>任务编号</span><strong title="' + escapeHtml(task.task_id) + '">' + escapeHtml(shortTechnicalId(task.task_id)) + '</strong></div><div><span>回测编号</span><strong title="' + escapeHtml(task.run_id || "") + '">' + escapeHtml(shortTechnicalId(task.run_id)) + '</strong></div></div>' +
+    '<div class="task-card-progress is-large"><div><i style="width:' + progress.percent + '%"></i></div><span>' + escapeHtml(progress.phase) + '</span></div>';
+}
+
+async function selectBacktestModeTask(task, options = {}) {
   currentModeTask = task;
-  $("#mode-task-directory-detail").textContent = JSON.stringify(task, null, 2);
+  renderModeTaskSelection(task);
   if (task.mode === "independent-screening") {
     currentScreeningTaskId = task.task_id;
-    await loadIndependentScreeningTask(task.task_id, { schedule: false });
+    await loadIndependentScreeningTask(task.task_id, { schedule: options.schedule !== false });
   } else {
     currentPortfolioTaskId = task.task_id;
-    await loadSharedPortfolioTask(task.task_id, { schedule: false });
+    await loadSharedPortfolioTask(task.task_id, { schedule: options.schedule !== false });
   }
+  if (options.openWorkspace) activateBacktestView(task.mode === "independent-screening" ? "independent" : "portfolio");
+  renderActiveTaskOverview();
+  renderBacktestResultsContext();
 }
 
 async function runBacktestModeTask(task) {
+  currentModeTask = task;
   await requestJson(task.links.run, { method: "POST", body: JSON.stringify({ wait: false }) });
+  await selectBacktestModeTask({ ...task, status: "running" });
   await loadBacktestModeTasks();
-  setFeedback(`回测任务已启动 / 恢复：${task.task_id}`, "success");
+  setFeedback("回测任务已启动 / 恢复：" + task.task_id, "success");
 }
 
 async function openBacktestModeReport(task) {
@@ -498,11 +1039,48 @@ async function openBacktestModeReport(task) {
   await loadBacktestModeReport();
 }
 
+async function showBacktestTaskResults(task) {
+  currentModeTask = task;
+  renderModeTaskSelection(task);
+  activateBacktestView("results");
+  renderBacktestResultsContext();
+  if (task.mode === "shared-portfolio" && task.run_id) {
+    await loadBacktestResultPanel(task.run_id);
+  }
+}
+
+async function refreshBacktestResults() {
+  const context = selectedResultContext();
+  renderBacktestResultsContext();
+  if (!context) return;
+  if (context.kind === "single" && context.task.runId) {
+    await loadBacktestResultPanel(context.task.runId);
+  } else if (context.kind === "mode") {
+    await selectBacktestModeTask(context.task, { schedule: false });
+    if (context.task.mode === "shared-portfolio" && context.task.run_id) {
+      await loadBacktestResultPanel(context.task.run_id);
+    }
+  }
+}
+
+async function openSelectedBacktestReport() {
+  const context = selectedResultContext();
+  if (!context) return;
+  if (context.kind === "mode") {
+    await openBacktestModeReport(context.task);
+    return;
+  }
+  activatePage("reporting");
+  $('#reporting-query-form input[name="run_id"]').value = context.task.runId;
+  await loadReports(context.task.runId, "phase1-batch-001");
+}
+
 async function loadBacktestModeTasks(values = null) {
   const form = $("#mode-task-directory-form");
   const query = values || Object.fromEntries(new FormData(form).entries());
-  const payload = await requestJson(`/api/backtest/mode-tasks?${buildQuery(query)}`);
+  const payload = await requestJson("/api/backtest/mode-tasks?" + buildQuery(query));
   const tasks = payload.tasks || [];
+  modeTaskCatalog = tasks;
   const summary = payload.summary || {};
   renderSummaryGrid($("#mode-task-directory-summary"), [
     { label: "任务总数", value: summary.task_count || 0 },
@@ -512,31 +1090,33 @@ async function loadBacktestModeTasks(values = null) {
     { label: "已完成", value: (summary.status_counts?.completed || 0) + (summary.status_counts?.partial_completed || 0) },
     { label: "异常", value: (summary.status_counts?.failed || 0) + (summary.status_counts?.partial_failed || 0) },
   ]);
-  $("#mode-task-directory-list").innerHTML = tasks.map((task, index) => {
-    const progress = task.progress || {};
-    const binding = task.strategy_binding || {};
-    const dateWindow = task.date_window || {};
-    return `<article class="definition-item strategy-card" data-mode-task-select="${index}"><h4>${task.mode_label} / ${task.name}</h4><p>${binding.strategy_id || "-"} ${binding.strategy_version || ""} / ${dateWindow.start_date || "-"} 至 ${dateWindow.end_date || "-"} / ${task.adjustment}</p><span>${task.status} / ${progress.processed || 0} / ${progress.total || 0} / ${progress.percent || 0}% / ${progress.throughput_per_minute || 0}/分钟 / 剩余 ${progress.estimated_remaining_seconds ?? "-"} 秒</span><div class="button-row"><button type="button" data-mode-task-run="${index}">启动 / 恢复</button><button type="button" data-mode-task-report="${index}">打开报告</button></div></article>`;
-  }).join("") || '<div class="empty-cell">暂无符合条件的双模式回测任务</div>';
-  document.querySelectorAll("[data-mode-task-select]").forEach((card) => card.addEventListener("click", () => selectBacktestModeTask(tasks[Number(card.dataset.modeTaskSelect)]).catch((error) => setFeedback(error.message, "error"))));
+  $("#mode-task-directory-list").innerHTML = tasks.map(taskCardHtml).join("") || '<div class="empty-cell">暂无符合条件的回测任务</div>';
+  document.querySelectorAll("[data-mode-task-select]").forEach((card) => card.addEventListener("click", () => {
+    selectBacktestModeTask(tasks[Number(card.dataset.modeTaskSelect)], { schedule: false }).catch((error) => setFeedback(error.message, "error"));
+  }));
+  document.querySelectorAll("[data-mode-task-open]").forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    selectBacktestModeTask(tasks[Number(button.dataset.modeTaskOpen)], { openWorkspace: true }).catch((error) => setFeedback(error.message, "error"));
+  }));
   document.querySelectorAll("[data-mode-task-run]").forEach((button) => button.addEventListener("click", (event) => {
     event.stopPropagation();
     runBacktestModeTask(tasks[Number(button.dataset.modeTaskRun)]).catch((error) => setFeedback(error.message, "error"));
   }));
-  document.querySelectorAll("[data-mode-task-report]").forEach((button) => button.addEventListener("click", (event) => {
+  document.querySelectorAll("[data-mode-task-result]").forEach((button) => button.addEventListener("click", (event) => {
     event.stopPropagation();
-    openBacktestModeReport(tasks[Number(button.dataset.modeTaskReport)]).catch((error) => setFeedback(error.message, "error"));
+    showBacktestTaskResults(tasks[Number(button.dataset.modeTaskResult)]).catch((error) => setFeedback(error.message, "error"));
   }));
   if (currentModeTask) {
     const refreshed = tasks.find((task) => task.task_id === currentModeTask.task_id && task.mode === currentModeTask.mode);
     if (refreshed) {
       currentModeTask = refreshed;
-      $("#mode-task-directory-detail").textContent = JSON.stringify(refreshed, null, 2);
+      renderModeTaskSelection(refreshed);
     }
   }
+  renderActiveTaskOverview();
+  renderBacktestResultsContext();
   return tasks;
 }
-
 function renderStrategyResearchTasks(tasks = []) {
   const target = $("#strategy-research-list");
   if (!target) return;
@@ -584,20 +1164,55 @@ async function createStrategyResearchTask() {
   await loadExperimentIndex();
   setFeedback(`研究任务已创建：${payload.task?.task_id || "unknown"}`, "success");
 }
-async function loadStrategies() {
-  const payload = await requestJson("/api/backtest/strategies");
-  const strategies = payload.strategies || [];
-  $("#strategy-library").innerHTML = strategies.map((strategy) => `<article class="definition-item strategy-card" data-strategy="${strategy.strategy_id}"><h4>${strategy.name}</h4><p>${strategy.description}</p><span>${strategy.category} / ${strategy.source_reference} / ${strategy.latest_version || "v1"} / 共 ${strategy.version_count || 1} 版</span></article>`).join("");
-  document.querySelectorAll(".strategy-card").forEach((card) => card.addEventListener("click", () => selectStrategy(strategies.find((item) => item.strategy_id === card.dataset.strategy))));
-  if (selectedStrategy) {
-    const refreshed = strategies.find((item) => item.strategy_id === selectedStrategy.strategy_id);
-    if (refreshed) await selectStrategy(refreshed);
-  } else if (strategies.length) {
-    await selectStrategy(strategies[0]);
+async function loadStrategies({ selectId = null } = {}) {
+  const feedback = $("#strategy-library-feedback");
+  feedback.textContent = "正在加载策略库...";
+  feedback.className = "inline-status";
+  try {
+    const payload = await requestJson("/api/backtest/strategies");
+    strategyCatalog = payload.strategies || [];
+    const categories = [...new Set(strategyCatalog.map((item) => item.category).filter(Boolean))].sort();
+    const categorySelect = $("#strategy-library-category");
+    const currentCategory = categorySelect.value;
+    categorySelect.innerHTML = '<option value="">全部分类</option>' + categories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("");
+    categorySelect.value = categories.includes(currentCategory) ? currentCategory : "";
+    renderStrategyLibrary();
+    const targetId = selectId || selectedStrategy?.strategy_id || strategyCatalog[0]?.strategy_id;
+    const target = strategyCatalog.find((item) => item.strategy_id === targetId);
+    if (target) await selectStrategy(target);
+    else if (!strategyCatalog.length) startNewStrategy();
+    feedback.textContent = strategyCatalog.length ? "策略库已加载" : "策略库为空，请新建策略。";
+    feedback.className = `inline-status ${strategyCatalog.length ? "is-success" : "is-warning"}`;
+    Promise.allSettled([loadStrategyResearchTasks(), loadExperimentIndex()]);
+    return strategyCatalog;
+  } catch (error) {
+    strategyCatalog = [];
+    $("#strategy-library").innerHTML = `<div class="empty-cell">策略库加载失败：${escapeHtml(error.message)}</div>`;
+    $("#strategy-library-count").textContent = "加载失败";
+    feedback.textContent = `${error.message}，请点击刷新重试。`;
+    feedback.className = "inline-status is-error";
+    return [];
   }
-  await loadStrategyResearchTasks();
-  await loadExperimentIndex();
-  return strategies;
+}
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+}
+function renderStrategyLibrary() {
+  const search = $("#strategy-library-search").value.trim().toLowerCase();
+  const category = $("#strategy-library-category").value;
+  const filtered = strategyCatalog.filter((strategy) => {
+    const matchesSearch = !search || `${strategy.name} ${strategy.strategy_id} ${strategy.description}`.toLowerCase().includes(search);
+    return matchesSearch && (!category || strategy.category === category);
+  });
+  $("#strategy-library-count").textContent = `${filtered.length} / ${strategyCatalog.length} 个策略`;
+  $("#strategy-library").innerHTML = filtered.length ? filtered.map((strategy) => {
+    const active = selectedStrategy?.strategy_id === strategy.strategy_id;
+    return `<button type="button" class="strategy-library-item${active ? " is-selected" : ""}" data-strategy-id="${escapeHtml(strategy.strategy_id)}"><span class="strategy-library-item-main"><strong>${escapeHtml(strategy.name)}</strong><small>${escapeHtml(strategy.strategy_id)}</small></span><span class="strategy-library-item-meta"><em>${escapeHtml(strategy.category)}</em><span>${escapeHtml(strategy.latest_version || "v1")} · ${strategy.version_count || 1} 个版本</span></span><span class="strategy-library-item-description">${escapeHtml(strategy.description || "暂无说明")}</span></button>`;
+  }).join("") : '<div class="empty-cell">没有符合条件的策略</div>';
+}
+function strategyParameterLabel(key) {
+  const labels = { short_window: "短均线周期", long_window: "长均线周期", atr_window: "ATR 周期", atr_multiplier: "ATR 止损倍数", position_size: "目标仓位", commission: "手续费率", breakout_window: "突破周期", max_position: "最大仓位" };
+  return labels[key] || key;
 }
 function coerceParameterValue(value, spec = {}) {
   if (spec.type === "integer") return Number.parseInt(value, 10);
@@ -619,90 +1234,125 @@ function renderParameterForm(strategy) {
   const parameters = strategy.parameters || {};
   const entries = Object.entries(schema);
   if (!entries.length) {
-    $("#strategy-parameter-schema").innerHTML = '<div class="empty-cell">暂无参数 schema</div>';
+    $("#strategy-parameter-schema").innerHTML = '<div class="empty-cell">暂无可配置参数</div>';
     return;
   }
   $("#strategy-parameter-schema").innerHTML = entries.map(([key, spec]) => {
     const value = parameters[key] ?? "";
+    const label = strategyParameterLabel(key);
     if (spec.type === "enum") {
-      return `<label class="summary-item"><strong>${key}</strong><select data-param-key="${key}">${(spec.options || []).map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`).join("")}</select></label>`;
+      return `<label class="strategy-parameter-field"><span>${escapeHtml(label)}</span><select data-param-key="${escapeHtml(key)}">${(spec.options || []).map((option) => `<option value="${escapeHtml(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}</select></label>`;
     }
     if (spec.type === "boolean") {
-      return `<label class="summary-item"><strong>${key}</strong><input data-param-key="${key}" type="checkbox" ${value ? "checked" : ""}></label>`;
+      return `<label class="strategy-parameter-field strategy-toggle-field"><span>${escapeHtml(label)}</span><input data-param-key="${escapeHtml(key)}" type="checkbox" ${value ? "checked" : ""}></label>`;
     }
-    const type = spec.type === "integer" || spec.type === "number" ? "number" : "text";
+    const numeric = spec.type === "integer" || spec.type === "number";
+    const type = numeric ? "number" : "text";
     const step = spec.type === "integer" ? "1" : "any";
-    return `<label class="summary-item"><strong>${key}</strong><input data-param-key="${key}" type="${type}" step="${step}" value="${value}"></label>`;
+    const min = spec.min == null ? "" : ` min="${spec.min}"`;
+    const max = spec.max == null ? "" : ` max="${spec.max}"`;
+    return `<label class="strategy-parameter-field"><span>${escapeHtml(label)}</span><input data-param-key="${escapeHtml(key)}" type="${type}" step="${step}"${min}${max} value="${escapeHtml(value)}"><small>${escapeHtml(key)}</small></label>`;
   }).join("");
 }
+function setStrategyCategory(category) {
+  const select = $("#strategy-draft-category");
+  if (![...select.options].some((option) => option.value === category)) select.add(new Option(category, category));
+  select.value = category || "自定义策略";
+}
 async function selectStrategy(strategy) {
+  if (!strategy) return;
   selectedStrategy = strategy;
+  renderBacktestWorkspace();
+  renderBacktestConfigPreview($("#screening-task-form"), $("#screening-config-preview"), "independent");
+  renderBacktestConfigPreview($("#portfolio-task-form"), $("#portfolio-config-preview"), "portfolio");
+  renderStrategyLibrary();
   $("#strategy-name-input").value = strategy.strategy_id;
   $("#strategy-id-input").value = strategy.strategy_id;
   $("#strategy-version-input").value = strategy.latest_version || "v1";
   $("#strategy-draft-id").value = strategy.strategy_id;
+  $("#strategy-draft-id").readOnly = true;
   $("#strategy-draft-name").value = strategy.name;
-  $("#strategy-editor-meta").textContent = `${strategy.name} / ${strategy.category} / ${strategy.latest_version || "v1"} / ${strategy.validation_status || "unknown"}`;
+  setStrategyCategory(strategy.category);
+  $("#strategy-draft-description").value = strategy.description || "";
+  $("#strategy-editor-meta").textContent = `${strategy.name} / ${strategy.latest_version || "v1"} / ${strategy.validation_status || "unknown"}`;
+  $("#strategy-editor-state").textContent = "已选择";
+  $("#strategy-delete").disabled = false;
   $("#strategy-editor").value = strategy.source_code || "";
   renderParameterForm(strategy);
   try {
     const history = await requestJson(`/api/backtest/strategies/${encodeURIComponent(strategy.strategy_id)}/versions`);
     const versions = history.versions || [];
-    $("#strategy-version-history").innerHTML = versions.map((version, index) => `<article class="definition-item"><h4>${version.latest_version} / ${version.saved_at || ""}</h4><p>SHA-256 ${version.source_sha256 || "未记录"}</p><span>${version.validation_status || "unknown"} / ${version.execution_contract || "unknown"}</span><button type="button" data-strategy-version="${index}">载入此版本</button></article>`).join("") || '<div class="empty-cell">暂无版本历史</div>';
-    document.querySelectorAll("[data-strategy-version]").forEach((button) => button.addEventListener("click", () => selectStrategy(versions[Number(button.dataset.strategyVersion)])));
-  } catch (_) {
-    $("#strategy-version-history").innerHTML = '<div class="empty-cell">版本历史暂不可用</div>';
+    $("#strategy-version-history").innerHTML = versions.slice().reverse().map((version, index) => `<button type="button" class="strategy-version-item${version.latest_version === strategy.latest_version ? " is-current" : ""}" data-strategy-version-index="${versions.length - index - 1}"><strong>${escapeHtml(version.latest_version)}</strong><span>${escapeHtml(version.saved_at || "")}</span><small>${escapeHtml((version.source_sha256 || "").slice(0, 12))}</small></button>`).join("") || '<div class="empty-cell">暂无版本历史</div>';
+    $("#strategy-version-history").querySelectorAll("[data-strategy-version-index]").forEach((button) => button.addEventListener("click", () => selectStrategy(versions[Number(button.dataset.strategyVersionIndex)])));
+  } catch (error) {
+    $("#strategy-version-history").innerHTML = `<div class="empty-cell">版本历史加载失败：${escapeHtml(error.message)}</div>`;
   }
 }
 function startNewStrategy() {
-  const strategy = {
-    strategy_id: "custom_strategy",
-    name: "自定义策略",
-    category: "自定义策略",
-    description: "本地自定义 Python 策略",
-    parameters: { position_size: 1.0 },
-    parameter_schema: { position_size: { type: "number", min: 0, max: 1 } },
-    source_code: newStrategyTemplate,
-    latest_version: "未保存",
-    version_count: 0,
-    validation_status: "pending",
-  };
-  selectedStrategy = strategy;
-  $("#strategy-draft-id").value = strategy.strategy_id;
-  $("#strategy-draft-name").value = strategy.name;
-  $("#strategy-editor").value = strategy.source_code;
+  selectedStrategy = { strategy_id: "custom_strategy", name: "自定义策略", category: "自定义策略", description: "", parameters: { position_size: 1.0 }, parameter_schema: { position_size: { type: "number", min: 0, max: 1 } }, source_code: newStrategyTemplate, latest_version: "未保存", version_count: 0, validation_status: "pending" };
+  renderStrategyLibrary();
+  renderBacktestWorkspace();
+  $("#strategy-draft-id").value = "custom_strategy";
+  $("#strategy-draft-id").readOnly = false;
+  $("#strategy-draft-name").value = "自定义策略";
+  setStrategyCategory("自定义策略");
+  $("#strategy-draft-description").value = "";
+  $("#strategy-editor").value = newStrategyTemplate;
   $("#strategy-editor-meta").textContent = "新策略 / 尚未保存";
+  $("#strategy-editor-state").textContent = "新建中";
+  $("#strategy-delete").disabled = true;
   $("#strategy-version-history").innerHTML = '<div class="empty-cell">保存后生成 v1</div>';
   $("#strategy-validation-output").textContent = "等待策略校验";
-  renderParameterForm(strategy);
+  $("#strategy-validation-output").className = "inline-status";
+  renderParameterForm(selectedStrategy);
+  $("#strategy-draft-name").focus();
 }
 async function validateStrategySource() {
-  const payload = await requestJson("/api/backtest/strategies/validate", {
-    method: "POST",
-    body: JSON.stringify({ source_code: $("#strategy-editor").value }),
-  });
+  const payload = await requestJson("/api/backtest/strategies/validate", { method: "POST", body: JSON.stringify({ source_code: $("#strategy-editor").value }) });
   const validation = payload.validation || {};
-  $("#strategy-validation-output").textContent = JSON.stringify(validation, null, 2);
+  const issues = (validation.issues || []).map((item) => `${item.line ? `第 ${item.line} 行：` : ""}${item.message}`).join("；");
+  $("#strategy-validation-output").textContent = validation.ok ? `校验通过 · ${validation.contract || "target-weights-v1"}` : `校验失败 · ${issues || "请检查策略源码"}`;
+  $("#strategy-validation-output").className = `inline-status ${validation.ok ? "is-success" : "is-error"}`;
   setFeedback(validation.ok ? "策略代码校验通过" : "策略代码校验未通过", validation.ok ? "success" : "error");
   return validation;
 }
 async function saveStrategyDraft() {
+  const strategyId = $("#strategy-draft-id").value.trim();
+  const name = $("#strategy-draft-name").value.trim();
+  if (!strategyId || !name) {
+    setFeedback("策略 ID 和策略名称不能为空", "error");
+    return;
+  }
   const validation = await validateStrategySource();
   if (!validation.ok) return;
-  const body = {
-    strategy_id: $("#strategy-draft-id").value.trim(),
-    name: $("#strategy-draft-name").value.trim(),
-    source_code: $("#strategy-editor").value,
-    parameters: collectStrategyParameters(),
-    parameter_schema: selectedStrategy?.parameter_schema || {},
-  };
+  const body = { strategy_id: strategyId, name, category: $("#strategy-draft-category").value, description: $("#strategy-draft-description").value.trim(), source_code: $("#strategy-editor").value, parameters: collectStrategyParameters(), parameter_schema: selectedStrategy?.parameter_schema || {} };
   const payload = await requestJson("/api/backtest/strategies/save-draft", { method: "POST", body: JSON.stringify(body) });
   selectedStrategy = payload.strategy;
-  await loadStrategies();
-  await selectStrategy(payload.strategy);
+  await loadStrategies({ selectId: payload.strategy.strategy_id });
   setFeedback(`策略版本已保存：${payload.strategy.name} ${payload.strategy.latest_version}`, "success");
 }
-function buildRqalphaLocalConfig(formValues = {}) {
+async function archiveSelectedStrategy() {
+  const strategyId = selectedStrategy?.strategy_id;
+  if (!strategyId || selectedStrategy?.latest_version === "未保存") return;
+  if (!window.confirm(`确认删除策略“${selectedStrategy.name}”？历史版本和既有回测引用会保留。`)) return;
+  await requestJson(`/api/backtest/strategies/${encodeURIComponent(strategyId)}`, { method: "DELETE" });
+  selectedStrategy = null;
+  await loadStrategies();
+  setFeedback(`策略已从策略库删除：${strategyId}`, "success");
+}
+function bindStrategyManager() {
+  $("#strategy-library").addEventListener("click", (event) => {
+    const item = event.target.closest("[data-strategy-id]");
+    if (item) selectStrategy(strategyCatalog.find((strategy) => strategy.strategy_id === item.dataset.strategyId));
+  });
+  $("#strategy-library-search").addEventListener("input", renderStrategyLibrary);
+  $("#strategy-library-category").addEventListener("change", renderStrategyLibrary);
+  $("#strategy-library-refresh").addEventListener("click", () => loadStrategies().then(() => setFeedback("策略库已刷新", "success")));
+  $("#strategy-new").addEventListener("click", startNewStrategy);
+  $("#strategy-validate").addEventListener("click", () => validateStrategySource().catch((error) => setFeedback(error.message, "error")));
+  $("#strategy-save-draft").addEventListener("click", () => saveStrategyDraft().catch((error) => setFeedback(error.message, "error")));
+  $("#strategy-delete").addEventListener("click", () => archiveSelectedStrategy().catch((error) => setFeedback(error.message, "error")));
+}function buildRqalphaLocalConfig(formValues = {}) {
   return {
     strategy_template: formValues.rqalpha_strategy_template || "handle_bar_ma_cross",
     commission_rate: Number(formValues.commission_rate ?? 0.0003),
@@ -720,7 +1370,7 @@ async function loadBacktestResultPanel(runId) {
   const result = payload.result || {};
   const summary = result.summary || {};
   renderSummaryGrid($("#backtest-result-panel-summary"), [
-    { label: "Run ID", value: summary.run_id || result.run_id || runId },
+    { label: "回测编号", value: shortTechnicalId(summary.run_id || result.run_id || runId) },
     { label: "状态", value: summary.status || result.status || "unknown" },
     { label: "策略", value: summary.strategy_name || "-" },
     { label: "标的", value: summary.universe || "-" },
@@ -804,16 +1454,72 @@ async function runBacktest(payload) {
   payload.strategy_version = payload.strategy_version || selectedStrategy?.latest_version || "v1";
   payload.parameters = collectStrategyParameters();
   payload.extra_config = { ...(payload.extra_config || {}), rqalpha_local: buildRqalphaLocalConfig(payload) };
-  delete payload.rqalpha_strategy_template; delete payload.commission_rate; delete payload.tax_rate; delete payload.min_commission; delete payload.slippage_rate; delete payload.benchmark_alignment;
-  const resultPayload = await requestJson("/api/backtest/run-once", { method: "POST", body: JSON.stringify(payload) });
-  const result = resultPayload.result || {};
-  renderSummaryGrid($("#backtest-run-summary"), [{ label: "Run ID", value: result.run_id || payload.run_id }, { label: "策略", value: result.strategy_name || payload.strategy_name }, { label: "策略版本", value: `${payload.strategy_id} / ${payload.strategy_version}` }, { label: "状态", value: result.status || "unknown" }, { label: "基准", value: result.benchmark || payload.benchmark }]);
-  $("#backtest-run-output").textContent = JSON.stringify({ result, strategy_binding: { strategy_id: payload.strategy_id, strategy_version: payload.strategy_version }, parameters: payload.parameters, rqalpha_local: payload.extra_config?.rqalpha_local }, null, 2);
-  const jump = $("#backtest-jump-reporting");
-  jump.disabled = false;
-  jump.dataset.runId = result.run_id || payload.run_id;
-  await loadBacktestResultPanel(result.run_id || payload.run_id);
-  return result;
+  delete payload.rqalpha_strategy_template;
+  delete payload.commission_rate;
+  delete payload.tax_rate;
+  delete payload.min_commission;
+  delete payload.slippage_rate;
+  delete payload.benchmark_alignment;
+  currentModeTask = null;
+  setSingleRunState({
+    status: "running",
+    phase: "正在读取行情并执行策略",
+    runId: payload.run_id,
+    strategyName: selectedStrategy?.name || payload.strategy_name || payload.strategy_id,
+    symbol: payload.symbol,
+    startedAt: Date.now(),
+    elapsedSeconds: 0,
+    result: null,
+    error: "",
+  });
+  try {
+    const resultPayload = await requestJson("/api/backtest/run-once", { method: "POST", body: JSON.stringify(payload) });
+    const result = resultPayload.result || {};
+    setSingleRunState({
+      status: "loading_result",
+      phase: "回测计算完成，正在载入指标和交易明细",
+      runId: result.run_id || payload.run_id,
+      result,
+    });
+    renderSummaryGrid($("#backtest-run-summary"), [
+      { label: "回测编号", value: shortTechnicalId(result.run_id || payload.run_id) },
+      { label: "策略", value: result.strategy_name || payload.strategy_name },
+      { label: "策略版本", value: payload.strategy_id + " / " + payload.strategy_version },
+      { label: "状态", value: backtestStatusInfo(result.status || "completed").label },
+      { label: "基准", value: result.benchmark || payload.benchmark },
+    ]);
+    $("#backtest-run-output").textContent = JSON.stringify({
+      result,
+      strategy_binding: { strategy_id: payload.strategy_id, strategy_version: payload.strategy_version },
+      parameters: payload.parameters,
+      rqalpha_local: payload.extra_config?.rqalpha_local,
+    }, null, 2);
+    const jump = $("#backtest-jump-reporting");
+    jump.disabled = false;
+    jump.dataset.runId = result.run_id || payload.run_id;
+    await loadBacktestResultPanel(result.run_id || payload.run_id);
+    const elapsed = singleRunState.startedAt ? (Date.now() - singleRunState.startedAt) / 1000 : 0;
+    setSingleRunState({
+      status: result.status === "failed" ? "failed" : "completed",
+      phase: result.status === "failed" ? "单股回测执行失败" : "单股回测完成，结果已载入",
+      elapsedSeconds: elapsed,
+      startedAt: null,
+      result,
+      error: result.error_message || "",
+    });
+    activateBacktestView("results");
+    return result;
+  } catch (error) {
+    const elapsed = singleRunState.startedAt ? (Date.now() - singleRunState.startedAt) / 1000 : 0;
+    setSingleRunState({
+      status: "failed",
+      phase: "单股回测失败：" + error.message,
+      elapsedSeconds: elapsed,
+      startedAt: null,
+      error: error.message,
+    });
+    throw error;
+  }
 }
 function buildParameterGrid(parameters) {
   const grid = {};
@@ -925,8 +1631,8 @@ async function runCurrentParameterMatrixTask() {
 function formatPercent(value) { const n = Number(value); if (!Number.isFinite(n)) return "--"; return `${(Math.abs(n) <= 2 ? n * 100 : n).toFixed(2)}%`; }
 function metricValue(metrics, keys, fallback) { for (const key of keys) { if (metrics[key] != null) return metrics[key]; } return fallback; }
 function scoreLevel(score) { if (score >= 85) return { text: "优秀", cls: "excellent" }; if (score >= 75) return { text: "良好", cls: "good" }; if (score >= 60) return { text: "合格", cls: "normal" }; return { text: "待优化", cls: "bad" }; }
-function renderMiniBars(rows) { const max = Math.max(...rows.map((row) => Math.abs(Number(row.value) || 0)), 1); return `<svg viewBox="0 0 420 170" role="img"><line x1="38" x2="400" y1="130" y2="130" stroke="#d9e1e8"/>${rows.map((row, index) => { const value = Number(row.value) || 0; const h = Math.max(4, Math.abs(value) / max * 92); const x = 54 + index * (320 / Math.max(rows.length, 1)); const y = value >= 0 ? 130 - h : 130; const color = value >= 0 ? "#1d7a49" : "#a43d3d"; return `<rect x="${x}" y="${y}" width="34" height="${h}" fill="${color}"/><text x="${x + 17}" y="152" text-anchor="middle" font-size="11" fill="#5d6b78">${row.label}</text><text x="${x + 17}" y="${Math.max(14, y - 6)}" text-anchor="middle" font-size="11" fill="#17202a">${row.display || value}</text>`; }).join("")}</svg>`; }
-function renderMiniLine(rows, danger = false) { const values = rows.map((row) => Number(row.value) || 0); const max = Math.max(...values, 1); const min = Math.min(...values, 0); const span = max - min || 1; const points = rows.map((row, index) => { const x = 38 + index * (350 / Math.max(rows.length - 1, 1)); const y = 130 - ((Number(row.value) || 0) - min) / span * 100; return `${x},${y}`; }).join(" "); return `<svg viewBox="0 0 420 170" role="img"><line x1="38" x2="400" y1="130" y2="130" stroke="#d9e1e8"/><polyline points="${points}" fill="none" stroke="${danger ? "#a43d3d" : "#315f9f"}" stroke-width="3"/>${rows.map((row, index) => { const x = 38 + index * (350 / Math.max(rows.length - 1, 1)); const y = 130 - ((Number(row.value) || 0) - min) / span * 100; return `<circle cx="${x}" cy="${y}" r="4" fill="${danger ? "#a43d3d" : "#315f9f"}"/><text x="${x}" y="152" text-anchor="middle" font-size="11" fill="#5d6b78">${row.label}</text>`; }).join("")}</svg>`; }
+function renderMiniBars(rows) { const max = Math.max(...rows.map((row) => Math.abs(Number(row.value) || 0)), 1); return `<svg viewBox="0 0 420 170" role="img"><line x1="38" x2="400" y1="130" y2="130" stroke="#d9e1e8"/>${rows.map((row, index) => { const value = Number(row.value) || 0; const h = Math.max(4, Math.abs(value) / max * 92); const x = 54 + index * (320 / Math.max(rows.length, 1)); const y = value >= 0 ? 130 - h : 130; const color = value >= 0 ? "#c43d3d" : "#16845b"; return `<rect x="${x}" y="${y}" width="34" height="${h}" fill="${color}"/><text x="${x + 17}" y="152" text-anchor="middle" font-size="11" fill="#5d6b78">${row.label}</text><text x="${x + 17}" y="${Math.max(14, y - 6)}" text-anchor="middle" font-size="11" fill="#17202a">${row.display || value}</text>`; }).join("")}</svg>`; }
+function renderMiniLine(rows, danger = false) { const values = rows.map((row) => Number(row.value) || 0); const max = Math.max(...values, 1); const min = Math.min(...values, 0); const span = max - min || 1; const points = rows.map((row, index) => { const x = 38 + index * (350 / Math.max(rows.length - 1, 1)); const y = 130 - ((Number(row.value) || 0) - min) / span * 100; return `${x},${y}`; }).join(" "); return `<svg viewBox="0 0 420 170" role="img"><line x1="38" x2="400" y1="130" y2="130" stroke="#d9e1e8"/><polyline points="${points}" fill="none" stroke="${danger ? "#16845b" : "#315f9f"}" stroke-width="3"/>${rows.map((row, index) => { const x = 38 + index * (350 / Math.max(rows.length - 1, 1)); const y = 130 - ((Number(row.value) || 0) - min) / span * 100; return `<circle cx="${x}" cy="${y}" r="4" fill="${danger ? "#16845b" : "#315f9f"}"/><text x="${x}" y="152" text-anchor="middle" font-size="11" fill="#5d6b78">${row.label}</text>`; }).join("")}</svg>`; }
 function renderRadar(target, dimensions) { const cx = 360, cy = 160, radius = 108; const pointsFor = (scale) => dimensions.map((item, index) => { const angle = -Math.PI / 2 + index * Math.PI * 2 / dimensions.length; return `${cx + Math.cos(angle) * radius * scale},${cy + Math.sin(angle) * radius * scale}`; }).join(" "); const dataPoints = dimensions.map((item, index) => { const angle = -Math.PI / 2 + index * Math.PI * 2 / dimensions.length; const scale = item.score / 100; return { x: cx + Math.cos(angle) * radius * scale, y: cy + Math.sin(angle) * radius * scale, lx: cx + Math.cos(angle) * (radius + 42), ly: cy + Math.sin(angle) * (radius + 28), label: item.short, score: item.score }; }); target.innerHTML = `<svg viewBox="0 0 720 320" role="img" aria-label="策略7维评分雷达图">${[0.2,0.4,0.6,0.8,1].map((s) => `<polygon class="radar-grid" points="${pointsFor(s)}"/>`).join("")}${dimensions.map((_, index) => { const angle = -Math.PI / 2 + index * Math.PI * 2 / dimensions.length; return `<line class="radar-axis" x1="${cx}" y1="${cy}" x2="${cx + Math.cos(angle) * radius}" y2="${cy + Math.sin(angle) * radius}"/>`; }).join("")}<polygon class="radar-shape" points="${dataPoints.map((p) => `${p.x},${p.y}`).join(" ")}"/>${dataPoints.map((p) => `<circle class="radar-point" cx="${p.x}" cy="${p.y}" r="4"/><text class="radar-label" x="${p.lx}" y="${p.ly}" text-anchor="middle">${p.label} ${p.score}</text>`).join("")}</svg>`; }
 function buildSevenDimensionReport(run) { const metrics = run.metrics || {}; const yearly = run.yearly_returns || []; const trades = run.trades || []; const positions = run.positions || []; const totalReturn = Number(metricValue(metrics, ["total_returns", "total_return"], 0.128)); const sharpe = Number(metricValue(metrics, ["sharpe", "sharpe_ratio"], 1.12)); const maxDrawdown = Math.abs(Number(metricValue(metrics, ["max_drawdown", "drawdown"], 0.086))); const annualReturn = Number(metricValue(metrics, ["annual_return", "annual_returns"], totalReturn)); const winYears = yearly.filter((row) => Number(row.portfolio_return) > Number(row.benchmark_return || 0)).length; const yearWinRate = yearly.length ? winYears / yearly.length : 0.8; const avgPositionCount = Math.max(positions.length, 3); const dimensions = [{ key:"return", short:"收益真实", title:"维度1：收益真实性", score: Math.min(95, Math.round(70 + Math.max(0, annualReturn) * 120)), level:null, metrics:[["总收益率", formatPercent(totalReturn)],["年化收益率", formatPercent(annualReturn)],["年度胜率", formatPercent(yearWinRate)],["样本内外偏差", "演示 3.98%"]], chart: renderMiniBars((yearly.length ? yearly : [{year:"2020", portfolio_return:0.12, benchmark_return:0.08},{year:"2021", portfolio_return:0.08, benchmark_return:0.04},{year:"2022", portfolio_return:-0.03, benchmark_return:-0.06}]).map((row) => ({ label: String(row.year), value: Number(row.portfolio_return || 0) * 100, display: formatPercent(row.portfolio_return || 0) }))) }, { key:"risk", short:"风险可控", title:"维度2：风险可控性", score: Math.max(55, Math.round(92 - maxDrawdown * 160)), metrics:[["最大回撤", formatPercent(maxDrawdown)],["年化波动率", formatPercent(metricValue(metrics,["volatility","annual_volatility"],0.116))],["最大连续亏损月", "演示 4个月"],["回撤修复时间", "演示 2.1个月"]], chart: renderMiniLine([{label:"起始",value:0},{label:"低点",value:maxDrawdown*100},{label:"修复",value:maxDrawdown*55},{label:"当前",value:maxDrawdown*30}], true) }, { key:"riskReturn", short:"性价比", title:"维度3：风险调整收益", score: Math.min(92, Math.round(60 + sharpe * 18)), metrics:[["Sharpe", sharpe.toFixed(2)],["Calmar", (annualReturn / Math.max(maxDrawdown, 0.01)).toFixed(2)],["Sortino", (sharpe * 1.22).toFixed(2)],["基准 Sharpe", "演示 0.78"]], chart: renderMiniBars([{label:"Sharpe",value:sharpe,display:sharpe.toFixed(2)},{label:"Calmar",value:annualReturn / Math.max(maxDrawdown,0.01),display:(annualReturn / Math.max(maxDrawdown,0.01)).toFixed(2)},{label:"Sortino",value:sharpe*1.22,display:(sharpe*1.22).toFixed(2)}]) }, { key:"stable", short:"收益稳定", title:"维度4：收益稳定性", score: Math.round(65 + yearWinRate * 25), metrics:[["年度胜率", formatPercent(yearWinRate)],["月度胜率", "演示 61.67%"],["平均盈亏比", "演示 1.86"],["最大连续盈利月", "演示 5个月"]], chart: renderMiniBars([{label:"2020",value:3.2},{label:"2021",value:1.8},{label:"2022",value:-1.4},{label:"2023",value:2.1},{label:"2024",value:2.7}]) }, { key:"attr", short:"归因合理", title:"维度5：业绩归因合理性", score: 84, metrics:[["牛市年化", "演示 32.56%"],["熊市年化", "演示 -4.23%"],["震荡市年化", "演示 11.89%"],["主因子贡献", "演示 82%"]], chart: renderMiniBars([{label:"牛市",value:32.56},{label:"熊市",value:-4.23},{label:"震荡",value:11.89}]) }, { key:"cost", short:"成本容量", title:"维度6：成本与容量适配性", score: Math.max(62, 82 - Math.round(trades.length / 3)), metrics:[["交易笔数", trades.length || "演示 2"],["成本侵蚀率", "演示 1.57%"],["容量上限", "演示 5亿"],["滑点冲击", "演示 0.32%"]], chart: renderMiniLine([{label:"0%",value:15.9},{label:"0.03%",value:14.3},{label:"0.06%",value:13.1},{label:"0.1%",value:11.6},{label:"0.2%",value:8.8}]) }, { key:"diverse", short:"持仓分散", title:"维度7：持仓分散度", score: Math.min(92, 72 + avgPositionCount * 4), metrics:[["单票最大权重", "演示 3.33%"],["行业最大占比", "演示 28%"],["平均持仓数", avgPositionCount],["跌停冲击", "演示 0.33%"]], chart: renderMiniBars([{label:"换手",value:360},{label:"单票",value:3.33},{label:"行业",value:28},{label:"冲击",value:0.33}]) }]; dimensions.forEach((item) => { item.level = scoreLevel(item.score); }); return dimensions; }
 function renderEvaluationChart(chart) { const rows = chart?.rows || []; if (!rows.length) return '<div class="empty-cell">暂无图表数据</div>'; if ((chart.kind || "").startsWith("line")) return renderMiniLine(rows, chart.kind === "line-danger"); return renderMiniBars(rows); }
@@ -993,7 +1699,7 @@ function renderStrategyDiagnostics(normalized) {
   ];
   $("#report-conclusion").innerHTML = conclusions.map((text, index) => `<p><strong>${index + 1}. </strong>${text}</p>`).join("") + ((normalized?.notes || []).length ? `<p><strong>数据质量：</strong>${normalized.notes.join("；")}</p>` : "");
 }
-function renderTable(rows, columns) { return `<div class="table-wrap"><table><thead><tr>${columns.map((c) => `<th>${c.label}</th>`).join("")}</tr></thead><tbody>${(rows || []).map((row) => `<tr>${columns.map((c) => `<td>${row[c.key] ?? ""}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${columns.length}" class="empty-cell">暂无数据</td></tr>`}</tbody></table></div>`; }function renderReportAIWorkflow(replay) {
+function renderTable(rows, columns) { return '<div class="table-wrap"><table><thead><tr>' + columns.map((c) => '<th>' + c.label + '</th>').join("") + '</tr></thead><tbody>' + ((rows || []).map((row) => '<tr>' + columns.map((c) => '<td class="' + financialToneForLabel(c.label, row[c.key]) + '">' + (row[c.key] ?? "") + '</td>').join("") + '</tr>').join("") || '<tr><td colspan="' + columns.length + '" class="empty-cell">暂无数据</td></tr>') + '</tbody></table></div>'; }function renderReportAIWorkflow(replay) {
   if (!replay?.linked) {
     renderSummaryGrid($("#report-ai-workflow-summary"), [{ label: "关联状态", value: "未关联" }, { label: "原因", value: replay?.reason || "暂无 AI workflow" }]);
     $("#report-ai-workflow-timeline").innerHTML = '<div class="empty-cell">暂无 AI workflow 阶段留痕</div>';
@@ -1156,7 +1862,7 @@ function renderComparisonBarSvg(rows, key, { title, danger = false, percent = fa
   const max = Math.max(...values.map((value) => Math.abs(value)), 1);
   const width = 520, height = 210, pad = 34;
   const barW = Math.max(18, Math.min(46, (width - pad * 2) / Math.max(rows.length, 1) - 12));
-  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${title || key}"><text x="${pad}" y="20" class="axis-label">${title || key}</text><line x1="${pad}" x2="${width - pad}" y1="150" y2="150" class="grid-line"/>${rows.map((row, index) => { const value = Number(row[key]) || 0; const h = Math.max(4, Math.abs(value) / max * 104); const x = pad + index * ((width - pad * 2) / Math.max(rows.length, 1)) + 8; const y = value >= 0 ? 150 - h : 150; const color = danger ? "#a43d3d" : (value >= 0 ? "#1d7a49" : "#a43d3d"); const display = percent ? formatPercent(value) : String(Math.round(value * 100) / 100); return `<rect x="${x}" y="${y}" width="${barW}" height="${h}" fill="${color}"/><text x="${x + barW / 2}" y="${Math.max(34, y - 6)}" text-anchor="middle" font-size="11" fill="#17202a">${display}</text><text x="${x + barW / 2}" y="174" text-anchor="middle" font-size="10" fill="#5d6b78">${shortRunLabel(row.run_id)}</text>`; }).join("")}</svg>`;
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${title || key}"><text x="${pad}" y="20" class="axis-label">${title || key}</text><line x1="${pad}" x2="${width - pad}" y1="150" y2="150" class="grid-line"/>${rows.map((row, index) => { const value = Number(row[key]) || 0; const h = Math.max(4, Math.abs(value) / max * 104); const x = pad + index * ((width - pad * 2) / Math.max(rows.length, 1)) + 8; const y = value >= 0 ? 150 - h : 150; const color = danger ? "#16845b" : (value >= 0 ? "#c43d3d" : "#16845b"); const display = percent ? formatPercent(value) : String(Math.round(value * 100) / 100); return `<rect x="${x}" y="${y}" width="${barW}" height="${h}" fill="${color}"/><text x="${x + barW / 2}" y="${Math.max(34, y - 6)}" text-anchor="middle" font-size="11" fill="#17202a">${display}</text><text x="${x + barW / 2}" y="174" text-anchor="middle" font-size="10" fill="#5d6b78">${shortRunLabel(row.run_id)}</text>`; }).join("")}</svg>`;
 }
 function renderExperimentComparisonCharts(comparison = {}) {
   const rows = comparison.rows || [];
@@ -1493,9 +2199,32 @@ async function retryMarketProviderSyncTask(taskId) {
   setFeedback(`同步任务重试完成：${payload.task?.status || "unknown"}`, payload.task?.status === "completed" ? "success" : "error");
 }
 async function saveConfigDraft() { let settings; try { settings = JSON.parse($("#config-draft-editor").value || "{}"); } catch (error) { setFeedback("配置草稿必须是有效 JSON", "error"); return; } const payload = await requestJson("/api/config/runtime-draft", { method: "POST", body: JSON.stringify({ settings }) }); await loadConfig(); setFeedback(`配置草稿已保存：${payload.draft.saved_at || "local"}`, "success"); }
-async function loadDashboard() { const [market, factors, reports, ai, config, strategies] = await Promise.all([loadMarket(), loadFactors(), loadReports(), runAI(), loadConfig(), loadStrategies()]); renderSummaryGrid($("#dashboard-metrics"), [{ label: "行情记录", value: market.rows.length }, { label: "交易日", value: market.calendar.days.length }, { label: "因子定义", value: factors.definitions.definitions.length }, { label: "策略库", value: strategies.length }, { label: "回测状态", value: reports.detail.detail.status || "completed" }, { label: "AI 报告", value: ai.status || "generated" }, { label: "配置源", value: config.status.status.data_sources.length }, { label: "仓库映射", value: sourceMatrix.length }]); renderSummaryGrid($("#dashboard-backtest"), [{ label: "Run", value: reports.detail.detail.run_id || "phase1-demo-run-001" }, { label: "Strategy", value: reports.detail.detail.strategy_name || "moving_average_strategy" }, { label: "Metrics", value: Object.keys(reports.detail.detail.metrics || {}).join(", ") }]); }
-
-function bindEvents() { document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareWorkspace().then(() => setFeedback("A 股真实数据库已加载", "success")).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); $("#market-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", async (event) => { event.preventDefault(); await runBacktest(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测已完成", "success"); }); $("#strategy-save-draft").addEventListener("click", saveStrategyDraft); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", createIndependentScreeningTask); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立选股任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", createSharedPortfolioTask); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("共享资金池组合任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const strategyNew = $("#strategy-new"); if (strategyNew) strategyNew.addEventListener("click", startNewStrategy); const strategyValidate = $("#strategy-validate"); if (strategyValidate) strategyValidate.addEventListener("click", validateStrategySource); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare) experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
+async function loadDashboard() {
+  const strategies = await loadStrategies();
+  const [market, factors, reports, ai, config] = await Promise.all([
+    loadMarket(),
+    loadFactors(),
+    loadReports(),
+    runAI(),
+    loadConfig(),
+  ]);
+  renderSummaryGrid($("#dashboard-metrics"), [
+    { label: "行情记录", value: market.rows.length },
+    { label: "交易日", value: market.calendar.days.length },
+    { label: "因子定义", value: factors.definitions.definitions.length },
+    { label: "策略库", value: strategies.length },
+    { label: "回测状态", value: reports.detail.detail.status || "completed" },
+    { label: "AI 报告", value: ai.status || "generated" },
+    { label: "配置源", value: config.status.status.data_sources.length },
+    { label: "仓库映射", value: sourceMatrix.length },
+  ]);
+  renderSummaryGrid($("#dashboard-backtest"), [
+    { label: "Run", value: reports.detail.detail.run_id || "phase1-demo-run-001" },
+    { label: "Strategy", value: reports.detail.detail.strategy_name || "moving_average_strategy" },
+    { label: "Metrics", value: Object.keys(reports.detail.detail.metrics || {}).join(", ") },
+  ]);
+}
+function bindEvents() { bindBacktestWorkspace(); bindStrategyManager(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareWorkspace().then(() => setFeedback("A 股真实数据库已加载", "success")).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); $("#market-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await runBacktest(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("单股回测已完成，已进入结果分析", "success"); } catch (error) { setFeedback(error.message, "error"); } }); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立选股任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("共享资金池组合任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
 function bindBacktestResultControls() {
   const prev = $("#backtest-table-prev");
   const next = $("#backtest-table-next");
@@ -1506,7 +2235,7 @@ function bindBacktestResultControls() {
   if (exportJson) exportJson.addEventListener("click", () => exportBacktestResultTable("json"));
   if (exportCsv) exportCsv.addEventListener("click", () => exportBacktestResultTable("csv"));
 }
-async function main() { bindEvents(); bindBacktestResultControls(); renderTraceability(); renderAcceptanceMatrix(); try { await loadDashboard(); await loadBacktestModeTasks(); setFeedback("MVP 数据加载完成", "success"); } catch (error) { setFeedback(error.message, "error"); } }
+async function main() { bindEvents(); bindBacktestResultControls(); renderTraceability(); renderAcceptanceMatrix(); const requestedPage = new URLSearchParams(window.location.search).get("page"); if (requestedPage && pageTitles[requestedPage]) activatePage(requestedPage); try { await loadDashboard(); await loadBacktestModeTasks(); setFeedback("MVP 数据加载完成", "success"); } catch (error) { setFeedback(error.message, "error"); } }
 main();
 
 

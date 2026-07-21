@@ -56,6 +56,9 @@ def create_http_handler(app: SimpleApiApp) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             self._handle_request("POST")
 
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._handle_request("DELETE")
+
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
             return None
 

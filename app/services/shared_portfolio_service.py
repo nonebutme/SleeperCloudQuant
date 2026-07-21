@@ -100,10 +100,17 @@ class SharedPortfolioService:
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO portfolio_tasks (
-                    task_id, status, config_json, universe_json, summary_json,
+                    task_id, status, config_json, universe_json, summary_json, progress_json,
                     run_id, error_message, created_at, updated_at, started_at, finished_at
-                ) VALUES (?, 'ready', ?, ?, '{}', NULL, NULL, ?, ?, NULL, NULL)""",
-                (normalized_task_id, _dump(config), _dump(universe), now, now),
+                ) VALUES (?, 'ready', ?, ?, '{}', ?, NULL, NULL, ?, ?, NULL, NULL)""",
+                (
+                    normalized_task_id,
+                    _dump(config),
+                    _dump(universe),
+                    _dump({"phase": "ready", "processed": 0, "total": len(universe), "percent": 0.0}),
+                    now,
+                    now,
+                ),
             )
         return self.get_task(normalized_task_id)
 
@@ -142,12 +149,28 @@ class SharedPortfolioService:
         if row is None:
             return {"task_id": task_id, "status": "not_found"}
         universe = _load(row["universe_json"])
+        progress = dict(_load(row["progress_json"]) or {})
+        total = len(universe)
+        processed = min(max(int(progress.get("processed") or 0), 0), total)
+        elapsed = _elapsed_seconds(row["started_at"], row["finished_at"])
+        throughput = processed / elapsed * 60.0 if elapsed > 0 else 0.0
+        remaining = max(total - processed, 0)
+        calculated_percent = round(processed / total * 90.0, 2) if total else 0.0
+        progress.update({
+            "processed": processed,
+            "total": total,
+            "percent": float(progress.get("percent", calculated_percent)),
+            "elapsed_seconds": round(elapsed, 2),
+            "throughput_per_minute": round(throughput, 2),
+            "estimated_remaining_seconds": round(remaining / (throughput / 60.0), 2) if throughput > 0 and remaining else None,
+        })
         return {
             "task_id": row["task_id"],
             "status": row["status"],
             "config": _load(row["config_json"]),
             "universe": universe,
             "universe_count": len(universe),
+            "progress": progress,
             "summary": _load(row["summary_json"]),
             "run_id": row["run_id"],
             "error_message": row["error_message"],
@@ -183,9 +206,17 @@ class SharedPortfolioService:
             strategy = self._strategy_service.resolve_version(
                 str(config["strategy_id"]), str(config["strategy_version"])
             )
-            prepared, excluded = self._prepare_symbols(universe, config, strategy)
+            prepared, excluded = self._prepare_symbols(task_id, universe, config, strategy)
             if not prepared:
                 raise RuntimeError("no symbols have usable local bars and strategy signals")
+            self._update_progress(
+                task_id,
+                phase="simulating_account",
+                processed=len(universe),
+                total=len(universe),
+                prepared=len(prepared),
+                excluded=len(excluded),
+            )
             raw_result, metrics = _run_shared_account(prepared, config, strategy, excluded)
             finished_at = _utc_now()
             self._persist_result(run_id, config, raw_result, metrics, started_at, finished_at)
@@ -208,6 +239,14 @@ class SharedPortfolioService:
                        finished_at=?, error_message=NULL WHERE task_id=?""",
                     (status, _dump(summary), finished_at, finished_at, task_id),
                 )
+            self._update_progress(
+                task_id,
+                phase="completed",
+                processed=len(universe),
+                total=len(universe),
+                prepared=len(prepared),
+                excluded=len(excluded),
+            )
         except Exception as exc:
             finished_at = _utc_now()
             message = f"{type(exc).__name__}: {exc}"
@@ -234,7 +273,7 @@ class SharedPortfolioService:
                 )
 
     def _prepare_symbols(
-        self, universe: list[dict[str, Any]], config: dict[str, Any], strategy: dict[str, Any]
+        self, task_id: str, universe: list[dict[str, Any]], config: dict[str, Any], strategy: dict[str, Any]
     ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
         prepared: dict[str, dict[str, Any]] = {}
         excluded: list[dict[str, str]] = []
@@ -261,6 +300,8 @@ class SharedPortfolioService:
                 return symbol, None, f"{type(exc).__name__}: {exc}"
 
         workers = max(1, min(int(config.get("max_workers") or 4), 16, len(universe)))
+        processed = 0
+        update_interval = max(1, min(25, len(universe) // 200 or 1))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="portfolio-prepare") as executor:
             futures = [executor.submit(prepare, item) for item in universe]
             for future in as_completed(futures):
@@ -269,6 +310,16 @@ class SharedPortfolioService:
                     excluded.append({"symbol": symbol, "reason": str(error)})
                 else:
                     prepared[symbol] = payload
+                processed += 1
+                if processed % update_interval == 0 or processed == len(universe):
+                    self._update_progress(
+                        task_id,
+                        phase="preparing_symbols",
+                        processed=processed,
+                        total=len(universe),
+                        prepared=len(prepared),
+                        excluded=len(excluded),
+                    )
         return prepared, sorted(excluded, key=lambda row: row["symbol"])
 
     def _persist_result(
@@ -339,11 +390,45 @@ class SharedPortfolioService:
         return collected
 
     def _set_running(self, task_id: str, run_id: str, now: str) -> None:
+        task = self.get_task(task_id)
+        total = int(task.get("universe_count") or 0)
         with self._connect() as connection:
             connection.execute(
                 """UPDATE portfolio_tasks SET status='running', run_id=?, error_message=NULL,
-                   started_at=COALESCE(started_at, ?), updated_at=? WHERE task_id=?""",
-                (run_id, now, now, task_id),
+                   progress_json=?, started_at=?, finished_at=NULL, updated_at=? WHERE task_id=?""",
+                (
+                    run_id,
+                    _dump({"phase": "preparing_symbols", "processed": 0, "total": total, "percent": 0.0}),
+                    now,
+                    now,
+                    task_id,
+                ),
+            )
+
+    def _update_progress(
+        self,
+        task_id: str,
+        *,
+        phase: str,
+        processed: int,
+        total: int,
+        prepared: int,
+        excluded: int,
+    ) -> None:
+        stock_percent = int(processed) / int(total) * 90.0 if total else 0.0
+        overall_percent = 100.0 if phase == "completed" else (95.0 if phase == "simulating_account" else stock_percent)
+        progress = {
+            "phase": phase,
+            "processed": int(processed),
+            "total": int(total),
+            "percent": round(overall_percent, 2),
+            "prepared": int(prepared),
+            "excluded": int(excluded),
+        }
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE portfolio_tasks SET progress_json=?, updated_at=? WHERE task_id=?",
+                (_dump(progress), _utc_now(), task_id),
             )
 
     def _ensure_schema(self) -> None:
@@ -355,6 +440,7 @@ class SharedPortfolioService:
                     config_json TEXT NOT NULL,
                     universe_json TEXT NOT NULL,
                     summary_json TEXT NOT NULL,
+                    progress_json TEXT NOT NULL DEFAULT '{}',
                     run_id TEXT,
                     error_message TEXT,
                     created_at TEXT NOT NULL,
@@ -363,6 +449,9 @@ class SharedPortfolioService:
                     finished_at TEXT
                 )"""
             )
+            columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(portfolio_tasks)").fetchall()}
+            if "progress_json" not in columns:
+                connection.execute("ALTER TABLE portfolio_tasks ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'")
 
     def _recover_interrupted_tasks(self) -> None:
         with self._connect() as connection:
@@ -652,6 +741,17 @@ def _bounded(value: Any, minimum: float, maximum: float) -> float:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _elapsed_seconds(started_at: str | None, finished_at: str | None) -> float:
+    if not started_at:
+        return 0.0
+    try:
+        start = datetime.fromisoformat(str(started_at))
+        end = datetime.fromisoformat(str(finished_at)) if finished_at else datetime.now(timezone.utc)
+        return max((end - start).total_seconds(), 0.0)
+    except ValueError:
+        return 0.0
 
 
 def _dump(value: Any) -> str:

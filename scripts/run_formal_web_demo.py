@@ -1,4 +1,4 @@
-﻿"""Run the formal local API shell and serve the web-app MVP on one origin."""
+"""Run the formal local API shell and serve the web-app MVP on one origin."""
 
 from __future__ import annotations
 
@@ -36,6 +36,13 @@ def main() -> None:
                 content_length = int(self.headers.get("Content-Length") or "0")
                 body = self.rfile.read(content_length) if content_length > 0 else b""
                 self._handle_api_request(method="POST", path=parsed.path, query=parsed.query, body=body)
+                return
+            self.send_error(501, "Unsupported method")
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/"):
+                self._handle_api_request(method="DELETE", path=parsed.path, query=parsed.query, body=None)
                 return
             self.send_error(501, "Unsupported method")
 

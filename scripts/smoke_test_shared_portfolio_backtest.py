@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 from _project_bootstrap import ensure_project_root_on_sys_path
@@ -45,7 +46,7 @@ def main() -> None:
         benchmark="000300.XSHG",
         initial_cash=100_000,
         parameters={},
-        max_workers=2,
+        max_workers=1,
         symbol_limit=0,
         max_positions=2,
         portfolio_exposure=0.9,
@@ -54,7 +55,23 @@ def main() -> None:
         tax_rate=0.001,
         slippage_rate=0.0005,
     )
+    service.start_task(task["task_id"], wait=False)
+    observed_intermediate = False
+    for _ in range(80):
+        snapshot = service.get_task(task["task_id"])
+        progress = snapshot.get("progress") or {}
+        if snapshot.get("status") == "running" and 0 < int(progress.get("processed") or 0) < int(progress.get("total") or 0):
+            observed_intermediate = True
+            break
+        if snapshot.get("status") in {"completed", "partial_completed", "failed"}:
+            break
+        time.sleep(0.02)
     completed = service.start_task(task["task_id"], wait=True)
+    if not observed_intermediate:
+        raise SystemExit("shared portfolio smoke failed: no intermediate stock progress was observable")
+    final_progress = completed.get("progress") or {}
+    if int(final_progress.get("processed") or 0) != 2 or float(final_progress.get("percent") or 0) != 100.0:
+        raise SystemExit(f"shared portfolio smoke failed: final progress mismatch: {final_progress}")
     if completed["status"] != "completed":
         raise SystemExit(f"shared portfolio smoke failed: {completed}")
     run_id = completed["run_id"]
@@ -90,6 +107,7 @@ class FakeCanonicalMarketService:
         return {"status": "ready", "total": len(rows), "items": page}
 
     def get_a_share_price_history(self, *, symbol: str, adjustment: str, start_date: str, end_date: str):
+        time.sleep(0.12)
         base = 10.0 if symbol == "000001" else 20.0
         return [
             {"date": date, "open": base + index, "high": base + index + 0.5, "low": base + index - 0.5, "close": base + index, "volume": 1_000_000}
