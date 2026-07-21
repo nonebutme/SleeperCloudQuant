@@ -1,6 +1,8 @@
-"""Service-layer facade for formal backtest execution."""
+﻿"""Service-layer facade for formal backtest execution."""
 
 from __future__ import annotations
+
+from collections.abc import Mapping
 
 from backtest_kernel import RunSingleBacktest, RunSingleBacktestRequest
 from domain.backtest.models import BacktestResultSummary, BacktestRunRequest
@@ -14,6 +16,13 @@ class BacktestService:
         self._use_case = use_case
 
     def run_once(self, request: BacktestRunRequest) -> BacktestResultSummary:
+        summary, _ = self.run_once_with_raw_result(request)
+        return summary
+
+    def run_once_with_raw_result(
+        self,
+        request: BacktestRunRequest,
+    ) -> tuple[BacktestResultSummary, Mapping[str, object]]:
         result = self._use_case.execute(
             RunSingleBacktestRequest(
                 run_id=request.run_id,
@@ -28,12 +37,15 @@ class BacktestService:
                 extra_config=request.extra_config,
             )
         )
-        return BacktestResultSummary(
-            run_id=result.run_id,
-            strategy_name=result.strategy_name,
-            status=BacktestRunStatus(str(result.status)),
-            start_date=result.start_date,
-            end_date=result.end_date,
-            benchmark=result.benchmark,
-            metrics=dict(result.metrics),
+        return (
+            BacktestResultSummary(
+                run_id=result.run_id,
+                strategy_name=result.strategy_name,
+                status=BacktestRunStatus(str(result.status)),
+                start_date=result.start_date,
+                end_date=result.end_date,
+                benchmark=result.benchmark,
+                metrics=dict(result.metrics),
+            ),
+            dict(result.raw_result),
         )

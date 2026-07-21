@@ -1,0 +1,5 @@
+# Stage 59 real A-share incremental data dependencies.
+# pandas 3.0.4 was yanked; keep the latest stable compatible release.
+akshare==1.18.64
+pandas==3.0.3
+pycryptodome==3.23.0

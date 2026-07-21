@@ -551,6 +551,11 @@ SleeperCloudQuant/
 4. 再拼 `reporting`
 5. 最后拼 `web-app` 与 `ai`
 
+### 12.1 当前推进补充说明（截至 Batch 61）
+
+- 已确认：阶段 5：报告层（reporting） 当前已形成阶段性冻结基线，基线文档为 docs/architecture/reporting-phase5-freeze-baseline.md。
+- 已确认：若没有新的 reporting 消费需求、前端真实接入需求，或 smoke / formal verification 暴露的实际缺口，默认不继续扩展 reporting 字段与只读 endpoint。
+- 已确认：若继续推进当前主线开发，优先转向 阶段 6：报告存储与模板边界，而不是回到 阶段 5 做细碎读取面扩展。
 ## 十三、下一份建议文档
 
 在本方案之后，建议下一步补一份更细的执行文档，命名建议：

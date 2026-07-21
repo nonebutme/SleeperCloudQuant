@@ -1,4 +1,4 @@
-"""Minimal reporting-domain models."""
+﻿"""Minimal reporting-domain models."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ class BacktestRunDetailModel:
     benchmark: str | None
     start_date: str | None
     end_date: str | None
+    strategy_id: str | None = None
+    extra_config: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
     account_value_chart: list[dict[str, Any]] = field(default_factory=list)
     trade_activity_chart: list[dict[str, Any]] = field(default_factory=list)
@@ -55,3 +57,7 @@ class BatchExperimentSummaryModel:
     rows: list[BatchExperimentRowModel] = field(default_factory=list)
     yearly_rows: list[dict[str, Any]] = field(default_factory=list)
     failures: list[dict[str, Any]] = field(default_factory=list)
+    failure_type_counts: dict[str, int] = field(default_factory=dict)
+    failure_stage_counts: dict[str, int] = field(default_factory=dict)
+    failure_code_counts: dict[str, int] = field(default_factory=dict)
+

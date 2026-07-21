@@ -114,6 +114,79 @@ class SqliteRuntimeStore(ReportingStore):
                     finished_at TEXT,
                     parameters_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS report_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    report_type TEXT NOT NULL,
+                    report_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_report_snapshots_run_type
+                ON report_snapshots (run_id, report_type, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS ai_workflow_runs (
+                    workflow_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    analysis_date TEXT,
+                    report_id TEXT,
+                    status TEXT NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    provider_mode TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ai_workflow_runs_symbol_generated
+                ON ai_workflow_runs (symbol, generated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_ai_workflow_runs_report_generated
+                ON ai_workflow_runs (report_id, generated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS report_packages (
+                    package_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    workflow_id TEXT,
+                    snapshot_id TEXT,
+                    created_at TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_report_packages_run_created
+                ON report_packages (run_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS local_data_assets (
+                    asset_key TEXT PRIMARY KEY,
+                    dataset TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    data_version TEXT,
+                    quality_status TEXT,
+                    coverage_status TEXT,
+                    row_count INTEGER,
+                    start_date TEXT,
+                    end_date TEXT,
+                    latest_synced_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_local_data_assets_symbol
+                ON local_data_assets (dataset, symbol, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS backtest_input_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    data_version TEXT,
+                    bound_at TEXT NOT NULL,
+                    asset_key TEXT,
+                    payload_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_backtest_input_snapshots_run
+                ON backtest_input_snapshots (run_id, bound_at DESC);
                 """
             )
 
@@ -447,6 +520,555 @@ class SqliteRuntimeStore(ReportingStore):
                 ),
             )
 
+
+    def save_backtest_input_snapshot(
+        self,
+        *,
+        run_id: str,
+        data_asset_trace: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Persist one run input snapshot and refresh the local data asset directory."""
+
+        self.ensure_schema()
+        trace = dict(data_asset_trace or {})
+        asset = dict(trace.get("asset") or {}) if isinstance(trace.get("asset"), Mapping) else {}
+        dataset = str(asset.get("dataset") or "price_history")
+        symbol = str(trace.get("symbol") or asset.get("symbol") or "")
+        data_version = _optional_text(asset.get("data_version"))
+        bound_at = str(trace.get("bound_at") or asset.get("latest_synced_at") or "") or "not_recorded"
+        asset_key = f"{dataset}:{symbol}:{data_version or 'unknown'}"
+        snapshot_id = f"{run_id}:{asset_key}"
+        payload = {
+            "snapshot_id": snapshot_id,
+            "run_id": run_id,
+            "asset_key": asset_key,
+            "trace": trace,
+            "asset": asset,
+            "manifest": trace.get("manifest") or {},
+        }
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO local_data_assets (
+                    asset_key,
+                    dataset,
+                    symbol,
+                    data_version,
+                    quality_status,
+                    coverage_status,
+                    row_count,
+                    start_date,
+                    end_date,
+                    latest_synced_at,
+                    updated_at,
+                    payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(asset_key) DO UPDATE SET
+                    quality_status = excluded.quality_status,
+                    coverage_status = excluded.coverage_status,
+                    row_count = excluded.row_count,
+                    start_date = excluded.start_date,
+                    end_date = excluded.end_date,
+                    latest_synced_at = excluded.latest_synced_at,
+                    updated_at = excluded.updated_at,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    asset_key,
+                    dataset,
+                    symbol,
+                    data_version,
+                    _optional_text(asset.get("quality_status")),
+                    _optional_text(asset.get("coverage_status")),
+                    _optional_int(asset.get("row_count")),
+                    _optional_text(asset.get("start_date")),
+                    _optional_text(asset.get("end_date")),
+                    _optional_text(asset.get("latest_synced_at")),
+                    bound_at,
+                    self._dump_json(payload),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO backtest_input_snapshots (
+                    snapshot_id,
+                    run_id,
+                    dataset,
+                    symbol,
+                    data_version,
+                    bound_at,
+                    asset_key,
+                    payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_id) DO UPDATE SET
+                    dataset = excluded.dataset,
+                    symbol = excluded.symbol,
+                    data_version = excluded.data_version,
+                    bound_at = excluded.bound_at,
+                    asset_key = excluded.asset_key,
+                    payload_json = excluded.payload_json
+                """,
+                (snapshot_id, run_id, dataset, symbol, data_version, bound_at, asset_key, self._dump_json(payload)),
+            )
+        return payload
+
+    def fetch_backtest_input_snapshot(self, run_id: str) -> Mapping[str, Any] | None:
+        self.ensure_schema()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM backtest_input_snapshots
+                WHERE run_id = ?
+                ORDER BY bound_at DESC, snapshot_id DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = self._load_json(row["payload_json"])
+        return {
+            "snapshot_id": row["snapshot_id"],
+            "run_id": row["run_id"],
+            "dataset": row["dataset"],
+            "symbol": row["symbol"],
+            "data_version": row["data_version"],
+            "bound_at": row["bound_at"],
+            "asset_key": row["asset_key"],
+            "payload": payload,
+        }
+
+    def fetch_local_data_assets(
+        self,
+        *,
+        symbol: str | None = None,
+        dataset: str | None = None,
+        data_version: str | None = None,
+        quality_status: str | None = None,
+        coverage_status: str | None = None,
+        limit: int = 100,
+    ) -> Sequence[Mapping[str, Any]]:
+        self.ensure_schema()
+        safe_limit = max(1, min(int(limit), 500))
+        filters: list[str] = []
+        values: list[Any] = []
+        for column, value in (
+            ("symbol", symbol),
+            ("dataset", dataset),
+            ("data_version", data_version),
+            ("quality_status", quality_status),
+            ("coverage_status", coverage_status),
+        ):
+            if value:
+                filters.append(f"{column} = ?")
+                values.append(str(value))
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        query = f"""
+                    SELECT *
+                    FROM local_data_assets
+                    {where_clause}
+                    ORDER BY updated_at DESC, asset_key DESC
+                    LIMIT ?
+                    """
+        values.append(safe_limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(values)).fetchall()
+        return [
+            {
+                "asset_key": row["asset_key"],
+                "dataset": row["dataset"],
+                "symbol": row["symbol"],
+                "data_version": row["data_version"],
+                "quality_status": row["quality_status"],
+                "coverage_status": row["coverage_status"],
+                "row_count": row["row_count"],
+                "start_date": row["start_date"],
+                "end_date": row["end_date"],
+                "latest_synced_at": row["latest_synced_at"],
+                "updated_at": row["updated_at"],
+                "payload": self._load_json(row["payload_json"]),
+            }
+            for row in rows
+        ]
+    def save_ai_workflow_run(
+        self,
+        *,
+        workflow_id: str,
+        symbol: str,
+        analysis_date: str | None,
+        report_id: str | None,
+        status: str,
+        generated_at: str,
+        provider_mode: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Persist one AI workflow trace for later review."""
+
+        self.ensure_schema()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO ai_workflow_runs (
+                    workflow_id,
+                    symbol,
+                    analysis_date,
+                    report_id,
+                    status,
+                    generated_at,
+                    provider_mode,
+                    payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workflow_id) DO UPDATE SET
+                    symbol = excluded.symbol,
+                    analysis_date = excluded.analysis_date,
+                    report_id = excluded.report_id,
+                    status = excluded.status,
+                    generated_at = excluded.generated_at,
+                    provider_mode = excluded.provider_mode,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    workflow_id,
+                    symbol,
+                    analysis_date,
+                    report_id,
+                    status,
+                    generated_at,
+                    provider_mode,
+                    self._dump_json(payload),
+                ),
+            )
+
+    def fetch_ai_workflow_run(self, workflow_id: str) -> Mapping[str, Any] | None:
+        self.ensure_schema()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM ai_workflow_runs WHERE workflow_id = ?",
+                (workflow_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._to_ai_workflow_run(row)
+
+    def fetch_ai_workflow_runs(
+        self,
+        *,
+        symbol: str | None = None,
+        limit: int = 20,
+    ) -> Sequence[Mapping[str, Any]]:
+        self.ensure_schema()
+        normalized_limit = max(1, min(int(limit), 100))
+        with self._connect() as connection:
+            if symbol:
+                rows = connection.execute(
+                    """
+                    SELECT *
+                    FROM ai_workflow_runs
+                    WHERE symbol = ?
+                    ORDER BY generated_at DESC, workflow_id DESC
+                    LIMIT ?
+                    """,
+                    (symbol, normalized_limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT *
+                    FROM ai_workflow_runs
+                    ORDER BY generated_at DESC, workflow_id DESC
+                    LIMIT ?
+                    """,
+                    (normalized_limit,),
+                ).fetchall()
+        return [self._to_ai_workflow_run(row) for row in rows]
+
+    def fetch_ai_workflow_runs_by_report(
+        self,
+        *,
+        report_id: str,
+        symbol: str | None = None,
+        limit: int = 20,
+    ) -> Sequence[Mapping[str, Any]]:
+        self.ensure_schema()
+        normalized_limit = max(1, min(int(limit), 100))
+        with self._connect() as connection:
+            if symbol:
+                rows = connection.execute(
+                    """
+                    SELECT *
+                    FROM ai_workflow_runs
+                    WHERE report_id = ? AND symbol = ?
+                    ORDER BY generated_at DESC, workflow_id DESC
+                    LIMIT ?
+                    """,
+                    (report_id, symbol, normalized_limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT *
+                    FROM ai_workflow_runs
+                    WHERE report_id = ?
+                    ORDER BY generated_at DESC, workflow_id DESC
+                    LIMIT ?
+                    """,
+                    (report_id, normalized_limit),
+                ).fetchall()
+        return [self._to_ai_workflow_run(row) for row in rows]
+
+    def save_report_package(
+        self,
+        *,
+        package_id: str,
+        run_id: str,
+        workflow_id: str | None,
+        snapshot_id: str | None,
+        created_at: str,
+        title: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Persist one research report package binding run, AI workflow, and snapshots."""
+
+        self.ensure_schema()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO report_packages (
+                    package_id,
+                    run_id,
+                    workflow_id,
+                    snapshot_id,
+                    created_at,
+                    title,
+                    payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(package_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    workflow_id = excluded.workflow_id,
+                    snapshot_id = excluded.snapshot_id,
+                    created_at = excluded.created_at,
+                    title = excluded.title,
+                    payload_json = excluded.payload_json
+                """,
+                (package_id, run_id, workflow_id, snapshot_id, created_at, title, self._dump_json(payload)),
+            )
+
+    def fetch_report_package(self, package_id: str) -> Mapping[str, Any] | None:
+        self.ensure_schema()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM report_packages WHERE package_id = ?",
+                (package_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._to_report_package(row)
+
+
+    def update_report_package_payload(self, package_id: str, payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        current = self.fetch_report_package(package_id)
+        if current is None:
+            return None
+        self.ensure_schema()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE report_packages
+                SET payload_json = ?
+                WHERE package_id = ?
+                """,
+                (self._dump_json(payload), package_id),
+            )
+        return self.fetch_report_package(package_id)
+    def fetch_report_packages(self, run_id: str) -> Sequence[Mapping[str, Any]]:
+        rows = self._fetch_rows(
+            """
+            SELECT *
+            FROM report_packages
+            WHERE run_id = ?
+            ORDER BY created_at DESC, package_id DESC
+            """,
+            (run_id,),
+        )
+        return [self._to_report_package(row) for row in rows]
+
+
+    def fetch_report_package_directory(self, *, run_id: str | None = None, limit: int = 20) -> Sequence[Mapping[str, Any]]:
+        self.ensure_schema()
+        normalized_limit = max(1, min(int(limit or 20), 200))
+        if run_id:
+            rows = self._fetch_rows(
+                """
+                SELECT *
+                FROM report_packages
+                WHERE run_id = ?
+                ORDER BY created_at DESC, package_id DESC
+                LIMIT ?
+                """,
+                (run_id, normalized_limit),
+            )
+        else:
+            rows = self._fetch_rows(
+                """
+                SELECT *
+                FROM report_packages
+                ORDER BY created_at DESC, package_id DESC
+                LIMIT ?
+                """,
+                (normalized_limit,),
+            )
+        return [self._to_report_package(row) for row in rows]
+    def _to_report_package(self, row: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {
+            "package_id": row["package_id"],
+            "run_id": row["run_id"],
+            "workflow_id": row["workflow_id"],
+            "snapshot_id": row["snapshot_id"],
+            "created_at": row["created_at"],
+            "title": row["title"],
+            "payload": self._load_json(row["payload_json"]),
+        }
+    def _to_ai_workflow_run(self, row: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {
+            "workflow_id": row["workflow_id"],
+            "symbol": row["symbol"],
+            "analysis_date": row["analysis_date"],
+            "report_id": row["report_id"],
+            "status": row["status"],
+            "generated_at": row["generated_at"],
+            "provider_mode": row["provider_mode"],
+            "payload": self._load_json(row["payload_json"]),
+        }
+    def save_report_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        run_id: str,
+        report_type: str,
+        report_version: str,
+        created_at: str,
+        title: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Persist one immutable report snapshot."""
+
+        self.ensure_schema()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO report_snapshots (
+                    snapshot_id,
+                    run_id,
+                    report_type,
+                    report_version,
+                    created_at,
+                    title,
+                    payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    report_type = excluded.report_type,
+                    report_version = excluded.report_version,
+                    created_at = excluded.created_at,
+                    title = excluded.title,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    snapshot_id,
+                    run_id,
+                    report_type,
+                    report_version,
+                    created_at,
+                    title,
+                    self._dump_json(payload),
+                ),
+            )
+
+    def fetch_report_snapshot(self, snapshot_id: str) -> Mapping[str, Any] | None:
+        self.ensure_schema()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM report_snapshots WHERE snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._to_report_snapshot(row)
+
+    def fetch_report_snapshots(
+        self,
+        *,
+        run_id: str,
+        report_type: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        if report_type is None:
+            return self._fetch_rows(
+                """
+                SELECT snapshot_id, run_id, report_type, report_version, created_at, title, payload_json
+                FROM report_snapshots
+                WHERE run_id = ?
+                ORDER BY created_at DESC, snapshot_id DESC
+                """,
+                (run_id,),
+            )
+        return self._fetch_rows(
+            """
+            SELECT snapshot_id, run_id, report_type, report_version, created_at, title, payload_json
+            FROM report_snapshots
+            WHERE run_id = ? AND report_type = ?
+            ORDER BY created_at DESC, snapshot_id DESC
+            """,
+            (run_id, report_type),
+        )
+
+    def _to_report_snapshot(self, row: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {
+            "snapshot_id": row["snapshot_id"],
+            "run_id": row["run_id"],
+            "report_type": row["report_type"],
+            "report_version": row["report_version"],
+            "created_at": row["created_at"],
+            "title": row["title"],
+            "payload": self._load_json(row["payload_json"]),
+        }
+
+    def fetch_backtest_runs_by_prefix(self, run_id_prefix: str) -> Sequence[Mapping[str, Any]]:
+        """Fetch backtest runs whose IDs share one parameter-scan prefix."""
+
+        rows = self._fetch_rows(
+            """
+            SELECT *
+            FROM backtest_runs
+            WHERE run_id LIKE ?
+            ORDER BY run_id
+            """,
+            (f"{run_id_prefix}%",),
+        )
+        return [
+            {
+                "run_id": row["run_id"],
+                "strategy_name": row["strategy_name"],
+                "strategy_id": row["strategy_id"],
+                "status": row["status"],
+                "benchmark": row["benchmark"],
+                "universe": row["universe"],
+                "start_date": row["start_date"],
+                "end_date": row["end_date"],
+                "created_at": row["created_at"],
+                "completed_at": row["completed_at"],
+                "parameters": self._load_json(row["parameters_json"]),
+                "extra_config": self._load_json(row["extra_config_json"]),
+                "raw_result": self._load_json(row["raw_result_json"]),
+                "error_message": row["error_message"],
+            }
+            for row in rows
+        ]
     def fetch_backtest_run(self, run_id: str) -> Mapping[str, Any] | None:
         self.ensure_schema()
         with self._connect() as connection:
@@ -582,11 +1204,14 @@ class SqliteRuntimeStore(ReportingStore):
         self.ensure_schema()
         with self._connect() as connection:
             rows = connection.execute(sql, parameters).fetchall()
+        if "payload_json" in rows[0] if rows else False:
+            return [self._to_report_snapshot(row) for row in rows]
         return [dict(row) for row in rows]
 
     @contextmanager
     def _connect(self) -> Any:
-        connection = sqlite3.connect(self._database_path)
+        connection = sqlite3.connect(self._database_path, timeout=30)
+        connection.execute("PRAGMA busy_timeout=30000")
         connection.row_factory = sqlite3.Row
         try:
             yield connection
@@ -609,3 +1234,24 @@ class SqliteRuntimeStore(ReportingStore):
         if value in (None, ""):
             return None
         return float(value)
+
+
+def _optional_text(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
+
+
+
+
+
+
+

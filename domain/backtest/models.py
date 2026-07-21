@@ -1,4 +1,4 @@
-"""Minimal backtest-domain models."""
+﻿"""Minimal backtest-domain models."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ class BacktestRunRequest:
     frequency: str = "1d"
     parameters: dict[str, Any] = field(default_factory=dict)
     extra_config: dict[str, Any] = field(default_factory=dict)
+    strategy_id: str | None = None
+    strategy_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,3 +37,30 @@ class BacktestResultSummary:
     end_date: str
     benchmark: str
     metrics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class BatchBacktestRunRequest:
+    """Service-facing request model for one batch backtest experiment."""
+
+    experiment_id: str
+    profile: str = "custom_batch"
+    runs: list[BacktestRunRequest] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class BatchBacktestRunSummary:
+    """Minimal batch execution summary returned by the service layer."""
+
+    experiment_id: str
+    profile: str
+    status: str
+    started_at: str
+    finished_at: str | None
+    request_count: int
+    success_count: int
+    failure_count: int
+    run_ids: list[str] = field(default_factory=list)
+    successful_run_ids: list[str] = field(default_factory=list)
+    failures: list[dict[str, Any]] = field(default_factory=list)
+

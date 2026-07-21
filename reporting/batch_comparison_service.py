@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -43,6 +44,9 @@ class BatchExperimentSummary:
     rows: Sequence[BatchExperimentRow]
     yearly_rows: Sequence[Mapping[str, Any]]
     failures: Sequence[Mapping[str, Any]]
+    failure_type_counts: Mapping[str, int]
+    failure_stage_counts: Mapping[str, int]
+    failure_code_counts: Mapping[str, int]
 
 
 class BatchComparisonService:
@@ -109,6 +113,7 @@ class BatchComparisonService:
             )
             for index, row in enumerate(sorted_rows)
         ]
+        failures = tuple(self._coerce_sequence(parameters.get("failures")))
         return BatchExperimentSummary(
             experiment_id=str(experiment["run_id"]),
             profile=str(experiment.get("strategy_name") or parameters.get("profile") or "--"),
@@ -124,7 +129,10 @@ class BatchComparisonService:
             failure_count=int(parameters.get("failure_count") or 0),
             rows=ranked_rows,
             yearly_rows=tuple(yearly_rows),
-            failures=tuple(self._coerce_sequence(parameters.get("failures"))),
+            failures=failures,
+            failure_type_counts=self._count_failure_types(failures),
+            failure_stage_counts=self._count_failure_values(failures, "failure_stage"),
+            failure_code_counts=self._count_failure_values(failures, "failure_code"),
         )
 
     def _build_row(
@@ -196,6 +204,22 @@ class BatchComparisonService:
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
             return []
         return [dict(item) for item in value if isinstance(item, Mapping)]
+
+    @staticmethod
+    def _count_failure_types(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, int]:
+        return BatchComparisonService._count_failure_values(rows, "failure_type")
+
+    @staticmethod
+    def _count_failure_values(
+        rows: Sequence[Mapping[str, Any]],
+        field_name: str,
+    ) -> Mapping[str, int]:
+        counts: Counter[str] = Counter()
+        for row in rows:
+            field_value = row.get(field_name)
+            if isinstance(field_value, str) and field_value:
+                counts[field_value] += 1
+        return dict(sorted(counts.items()))
 
     @staticmethod
     def _to_optional_text(value: Any) -> str | None:

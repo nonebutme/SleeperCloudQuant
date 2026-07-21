@@ -1,4 +1,4 @@
-﻿"""HTTP runtime adapter for the minimal formal API shell."""
+"""HTTP runtime adapter for the minimal formal API shell."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ class DispatchError(Exception):
         self.message = message
 
 
-
 def dispatch_request(
     app: SimpleApiApp,
     *,
@@ -37,18 +36,14 @@ def dispatch_request(
     route, path_params = _match_route(app.routes, method=method, path=path)
     payload = _build_route_payload(route, query_string=query_string, body=body)
     try:
-        if payload is None and path_params:
-            result = route.handler(*path_params.values())
-        elif payload is None:
-            result = route.handler()
-        else:
-            result = route.handler(payload)
-    except TypeError:
-        result = route.handler(*path_params.values())
+        result = _invoke_route_handler(route, payload=payload, path_params=path_params)
+    except ValueError as exc:
+        raise DispatchError(400, str(exc)) from exc
+    except KeyError as exc:
+        raise DispatchError(404, str(exc)) from exc
     if result is None:
         return 404, {"detail": "resource not found"}
     return 200, _to_jsonable(result)
-
 
 
 def create_http_handler(app: SimpleApiApp) -> type[BaseHTTPRequestHandler]:
@@ -91,7 +86,6 @@ def create_http_handler(app: SimpleApiApp) -> type[BaseHTTPRequestHandler]:
     return AppHandler
 
 
-
 def create_http_server(
     app: SimpleApiApp,
     *,
@@ -101,7 +95,6 @@ def create_http_server(
     """Create a stdlib HTTP server for the provided app shell."""
 
     return ThreadingHTTPServer((host, port), create_http_handler(app))
-
 
 
 def _match_route(
@@ -119,7 +112,6 @@ def _match_route(
     raise DispatchError(404, f"no route for {method} {path}")
 
 
-
 def _match_path_pattern(pattern: str, path: str) -> tuple[bool, dict[str, str]]:
     pattern_parts = [part for part in pattern.strip("/").split("/") if part]
     path_parts = [part for part in path.strip("/").split("/") if part]
@@ -135,6 +127,17 @@ def _match_path_pattern(pattern: str, path: str) -> tuple[bool, dict[str, str]]:
     return True, params
 
 
+def _invoke_route_handler(
+    route: RouteDefinition,
+    *,
+    payload: Any,
+    path_params: dict[str, str],
+) -> Any:
+    args = tuple(path_params.values())
+    if payload is None:
+        return route.handler(*args)
+    return route.handler(payload, *args)
+
 
 def _build_route_payload(
     route: RouteDefinition,
@@ -149,16 +152,29 @@ def _build_route_payload(
             key: values[-1]
             for key, values in parse_qs(query_string, keep_blank_values=True).items()
         }
-        return route.request_model(**raw_query)
+        return _instantiate_request_model(route, raw_query)
     if route.method.upper() == "POST":
-        if body is None:
-            raise DispatchError(400, "missing request body")
-        raw_body = json.loads(body.decode("utf-8") or "{}")
-        if not isinstance(raw_body, dict):
-            raise DispatchError(400, "request body must be a JSON object")
-        return route.request_model(**raw_body)
+        return _instantiate_request_model(route, _load_json_object(body))
     return None
 
+
+def _instantiate_request_model(route: RouteDefinition, payload: dict[str, Any]) -> Any:
+    try:
+        return route.request_model(**payload)
+    except (TypeError, ValueError) as exc:
+        raise DispatchError(400, "invalid request parameters") from exc
+
+
+def _load_json_object(body: bytes | None) -> dict[str, Any]:
+    if body is None:
+        raise DispatchError(400, "missing request body")
+    try:
+        raw_body = json.loads(body.decode("utf-8") or "{}")
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise DispatchError(400, "request body must be valid JSON") from exc
+    if not isinstance(raw_body, dict):
+        raise DispatchError(400, "request body must be a JSON object")
+    return raw_body
 
 
 def _to_jsonable(value: Any) -> Any:

@@ -1,5 +1,15 @@
-"""Backtest domain models."""
+﻿"""Backtest domain models."""
 
-from .models import BacktestResultSummary, BacktestRunRequest
+from .models import (
+    BacktestResultSummary,
+    BacktestRunRequest,
+    BatchBacktestRunRequest,
+    BatchBacktestRunSummary,
+)
 
-__all__ = ["BacktestResultSummary", "BacktestRunRequest"]
+__all__ = [
+    "BacktestResultSummary",
+    "BacktestRunRequest",
+    "BatchBacktestRunRequest",
+    "BatchBacktestRunSummary",
+]
