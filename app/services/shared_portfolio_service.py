@@ -136,10 +136,26 @@ class SharedPortfolioService:
     def list_tasks(self, *, limit: int = 30) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT task_id FROM portfolio_tasks ORDER BY created_at DESC LIMIT ?",
+                "SELECT task_id FROM portfolio_tasks WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
                 (max(1, min(int(limit), 200)),),
             ).fetchall()
         return [self.get_task(str(row["task_id"])) for row in rows]
+
+    def delete_task(self, task_id: str, *, reason: str = "用户从 Web 工作台删除") -> dict[str, Any]:
+        task = self.get_task(task_id)
+        if task.get("status") == "not_found":
+            return task
+        if task.get("deleted_at"):
+            return task
+        if task.get("status") in {"pending", "running", "pause_requested", "cancel_requested"}:
+            raise ValueError("running task must be canceled before deletion")
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE portfolio_tasks SET deleted_at=?, deleted_reason=?, updated_at=? WHERE task_id=?",
+                (now, str(reason or "用户从 Web 工作台删除")[:500], now, task_id),
+            )
+        return self.get_task(task_id)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -178,6 +194,8 @@ class SharedPortfolioService:
             "updated_at": row["updated_at"],
             "started_at": row["started_at"],
             "finished_at": row["finished_at"],
+            "deleted_at": row["deleted_at"],
+            "deleted_reason": row["deleted_reason"],
         }
 
     def _execute_task(self, task_id: str) -> None:
@@ -446,12 +464,18 @@ class SharedPortfolioService:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
-                    finished_at TEXT
+                    finished_at TEXT,
+                    deleted_at TEXT,
+                    deleted_reason TEXT
                 )"""
             )
             columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(portfolio_tasks)").fetchall()}
             if "progress_json" not in columns:
                 connection.execute("ALTER TABLE portfolio_tasks ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'")
+            if "deleted_at" not in columns:
+                connection.execute("ALTER TABLE portfolio_tasks ADD COLUMN deleted_at TEXT")
+            if "deleted_reason" not in columns:
+                connection.execute("ALTER TABLE portfolio_tasks ADD COLUMN deleted_reason TEXT")
 
     def _recover_interrupted_tasks(self) -> None:
         with self._connect() as connection:

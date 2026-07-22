@@ -48,9 +48,12 @@ let currentReportRunId = "phase1-demo-run-001";
 let currentReportExperimentId = "phase1-batch-001";
 let currentScanRunIdPrefix = "";
 let selectedReportPackageId = "";
+let currentReportWorkflowId = "";
 let currentBacktestResultRunId = "";
 let currentBacktestRunIdPrefix = "";
 let currentBacktestTableOffset = 0;
+let currentIndustrySortMode = "default";
+let currentIndependentModeReport = null;
 let aShareWorkspaceLoaded = false;
 const currentBacktestTableLimit = 5;
 const $ = (selector) => document.querySelector(selector);
@@ -283,8 +286,23 @@ async function loadFactors(params = { index_code: "000300.XSHG", trade_date: "20
 function renderExperimentIndex(experiments = []) {
   const target = $("#backtest-experiment-index-list");
   if (!target) return;
-  target.innerHTML = experiments.map((item) => `<article class="definition-item"><h4>${item.name || item.experiment_id}</h4><p>${item.run_id_prefix || "-"}；${(item.tags || []).join(", ")}</p><span>${item.status || "unknown"} / ${item.primary_run_id || "无主 run"}</span><button type="button" data-experiment-review="${item.experiment_id || item.run_id_prefix}">生成复盘</button></article>`).join("") || '<div class="empty-cell">暂无实验索引</div>';
+  target.innerHTML = experiments.map((item) => `<article class="definition-item"><h4>${item.name || item.experiment_id}</h4><p>${item.run_id_prefix || "-"}\uff1b${(item.tags || []).join(", ")}</p><span>${item.status || "unknown"} / ${item.primary_run_id || "\u65e0\u4e3b run"}</span><button type="button" data-experiment-review="${item.experiment_id || item.run_id_prefix}">\u751f\u6210\u5b9e\u9a8c\u590d\u76d8\u62a5\u544a</button></article>`).join("") || '<div class="empty-cell">\u6682\u65e0\u5b9e\u9a8c\u7d22\u5f15</div>';
+  target.querySelectorAll(".definition-item").forEach((card, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "danger-button";
+    button.dataset.experimentDelete = experiments[index]?.experiment_id || "";
+    button.textContent = "\u5220\u9664";
+    card.append(button);
+  });
   document.querySelectorAll("[data-experiment-review]").forEach((button) => button.addEventListener("click", () => createExperimentReviewPackage(button.dataset.experimentReview)));
+  document.querySelectorAll("[data-experiment-delete]").forEach((button) => button.addEventListener("click", () => deleteExperimentIndex(button.dataset.experimentDelete).catch((error) => setFeedback(error.message, "error"))));
+}
+async function deleteExperimentIndex(experimentId) {
+  if (!experimentId || !window.confirm(`\u786e\u8ba4\u5220\u9664\u5b9e\u9a8c\u7d22\u5f15 ${experimentId}\uff1f\u5220\u9664\u540e\u4ecd\u4fdd\u7559\u5ba1\u8ba1\u8bb0\u5f55\u3002`)) return;
+  await requestJson(`/api/backtest/experiments/index/${encodeURIComponent(experimentId)}`, { method: "DELETE" });
+  await loadExperimentIndex();
+  setFeedback(`\u5b9e\u9a8c\u7d22\u5f15\u5df2\u5220\u9664\uff1a${experimentId}`, "success");
 }
 async function loadExperimentIndex() {
   const payload = await requestJson("/api/backtest/experiments");
@@ -553,17 +571,20 @@ function selectedResultContext() {
 function renderBacktestResultsContext() {
   const target = $("#backtest-results-context");
   const reportButton = $("#backtest-results-report");
+  const deleteButton = $("#backtest-results-delete");
   if (!target || !reportButton) return;
   const context = selectedResultContext();
   if (!context) {
     target.innerHTML = '<div class="empty-cell">请先完成或选择一个回测任务</div>';
     reportButton.disabled = true;
+    if (deleteButton) deleteButton.disabled = true;
     return;
   }
   if (context.kind === "single") {
     const task = context.task;
     target.innerHTML = '<div class="results-context-main"><span class="task-mode-label">单股测试</span><h4>' + escapeHtml((task.strategyName || "单股策略") + " · " + (task.symbol || "-")) + '</h4><p title="' + escapeHtml(task.runId) + '">回测编号 ' + escapeHtml(shortTechnicalId(task.runId)) + ' · 已完成</p></div><span class="task-status-badge is-success">结果可查看</span>';
     reportButton.disabled = false;
+    if (deleteButton) deleteButton.disabled = !["completed", "failed"].includes(task.status);
     return;
   }
   const task = context.task;
@@ -571,6 +592,7 @@ function renderBacktestResultsContext() {
   const binding = task.strategy_binding || {};
   target.innerHTML = '<div class="results-context-main"><span class="task-mode-label">' + escapeHtml(task.mode_label || task.mode) + '</span><h4>' + escapeHtml(taskDisplayTitle(task)) + '</h4><p title="' + escapeHtml(task.task_id) + '">' + escapeHtml(binding.strategy_version || "-") + ' · 任务编号 ' + escapeHtml(shortTechnicalId(task.task_id)) + ' · 耗时 ' + escapeHtml(taskElapsedSeconds(task) > 0 ? formatTaskSeconds(taskElapsedSeconds(task)) : "-") + '</p></div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span>';
   reportButton.disabled = !["completed", "partial_completed", "partial_failed"].includes(task.status);
+  if (deleteButton) deleteButton.disabled = !taskCanDelete(task);
 }
 
 function activateBacktestView(view) {
@@ -591,7 +613,7 @@ function renderBacktestWorkspace() {
   if (!target) return;
   const strategyName = selectedStrategy?.name || selectedStrategy?.strategy_id || "尚未选择";
   const strategyVersion = selectedStrategy?.latest_version || "-";
-  const viewNames = { overview: "任务总览", single: "单股测试", strategy: "策略库", independent: "独立选股", portfolio: "共享资金池", results: "结果分析" };
+  const viewNames = { single: "单股回测", strategy: "策略库", independent: "独立选股", portfolio: "共享资金池", research: "研究实验", results: "结果详情" };
   const runningTask = [currentScreeningTask, currentPortfolioTask].find((task) => ["running", "pending"].includes(task?.status));
   const resultContext = selectedResultContext();
   renderSummaryGrid(target, [
@@ -670,10 +692,92 @@ async function openBacktestWorkspaceView(view) {
   if (view === "overview") await loadBacktestModeTasks();
   else if (view === "independent") await loadIndependentScreeningTasks();
   else if (view === "portfolio") await loadSharedPortfolioTasks();
+  else if (view === "research") await Promise.all([loadStrategyResearchTasks(), loadExperimentIndex()]);
   else if (view === "results") await refreshBacktestResults();
 }
 
+function backtestQueryDateDefaults() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  const start = `${now.getFullYear()}-01-01`;
+  const end = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`;
+  document.querySelectorAll("input[name=\"start_date\"]").forEach((input) => { input.value = start; });
+  document.querySelectorAll("input[name=\"end_date\"]").forEach((input) => { input.value = end; });
+  document.querySelectorAll("select[name=\"adjustment\"]").forEach((select) => { select.value = "qfq"; });
+}
+function renderSingleRunHistory(runs = []) {
+  const target = $("#single-run-history");
+  if (!target) return;
+  target.innerHTML = runs.length ? runs.map((run) => `<article class="compact-task-row ${run.run_id === currentBacktestResultRunId ? "is-selected" : ""}" data-single-history-run="${escapeHtml(run.run_id)}"><div><span class="task-status-badge is-${backtestStatusInfo(run.status).tone}">${escapeHtml(backtestStatusInfo(run.status).label)}</span><h4>${escapeHtml(run.strategy_name || run.run_id)}</h4><p>${escapeHtml(run.run_id)} · ${escapeHtml(run.universe || "-")} · ${formatTaskTimestamp(run.created_at)}</p></div><div class="task-row-actions"><button type="button" data-single-result="${escapeHtml(run.run_id)}">查看结果</button><button type="button" class="danger-button" data-single-delete="${escapeHtml(run.run_id)}">删除</button></div></article>`).join("") : '<div class="empty-cell">暂无单股历史任务</div>';
+  target.querySelectorAll("[data-single-result]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); currentModeTask = null; hideIndependentResultSelector(); target.querySelectorAll("[data-single-history-run]").forEach((card) => card.classList.toggle("is-selected", card.dataset.singleHistoryRun === button.dataset.singleResult)); loadBacktestResultPanel(button.dataset.singleResult).then(() => openBacktestWorkspaceView("results")).catch((error) => setFeedback(error.message, "error")); }));
+  target.querySelectorAll("[data-single-delete]").forEach((button) => button.addEventListener("click", async (event) => { event.stopPropagation(); if (!window.confirm("确认删除该单股回测历史任务？删除后仅从工作台隐藏。")) return; await requestJson(`/api/backtest/results/${encodeURIComponent(button.dataset.singleDelete)}`, { method: "DELETE" }); if (currentBacktestResultRunId === button.dataset.singleDelete) { currentBacktestResultRunId = ""; } await loadSingleRunHistory(); setFeedback("单股历史任务已删除", "success"); }));
+}
+async function loadSingleRunHistory() { const payload = await requestJson("/api/backtest/runs"); const runs = (payload.runs || []).filter((run) => !run.extra_config?.screening_task_id && run.extra_config?.mode !== "shared_cash_portfolio" && run.extra_config?.portfolio_mode !== "shared_cash"); renderSingleRunHistory(runs); return runs; }
+function configurePcBacktestWorkspace() {
+  backtestQueryDateDefaults();
+  document.querySelector(".backtest-workflow")?.remove();
+  document.querySelector('[data-backtest-view="overview"]')?.setAttribute("hidden", "hidden");
+  document.querySelector('[data-backtest-view-target="overview"]')?.remove();
+
+  const researchTab = document.querySelector('[data-backtest-view-target="results"]');
+  if (researchTab) {
+    researchTab.dataset.backtestViewTarget = "research";
+    researchTab.textContent = "研究实验";
+  }
+  const tabContainer = document.querySelector(".backtest-view-tabs");
+  ["strategy", "single", "independent", "portfolio", "research"].forEach((view) => {
+    const tab = document.querySelector(`[data-backtest-view-target="${view}"]`);
+    if (tabContainer && tab) tabContainer.append(tab);
+  });
+  const researchList = $("#strategy-research-list")?.closest("[data-backtest-view]");
+  const experimentList = $("#backtest-experiment-index-list")?.closest("[data-backtest-view]");
+  if (researchList) {
+    researchList.dataset.backtestView = "research";
+    const title = researchList.querySelector("h3");
+    if (title) title.textContent = "\u53ef\u590d\u7528\u7814\u7a76\u65b9\u6848";
+  }
+  if (experimentList) {
+    experimentList.dataset.backtestView = "research";
+    const title = experimentList.querySelector("h3");
+    if (title) title.textContent = "\u7814\u7a76\u5b9e\u9a8c\u76ee\u5f55";
+  }
+
+  const strategyActions = $("#strategy-parameter-scan")?.closest(".secondary-actions");
+  const scanOutput = $("#strategy-scan-output");
+  const matrixOutput = $("#strategy-matrix-output");
+  if (strategyActions && researchList) {
+    const panel = document.createElement("section");
+    panel.className = "panel panel-wide backtest-view-panel research-tools-panel";
+    panel.dataset.backtestView = "research";
+    panel.innerHTML = '<div class="panel-header"><div><h3>高级参数研究</h3><p>高级研究能力集中在此，不影响日常策略编辑与三类回测任务。</p></div></div>' +
+      '<div class="research-experiment-grid"><article><h4>快速参数敏感性测试</h4><p>围绕当前数值参数生成少量组合，观察参数变化对单股结果的影响。</p></article>' +
+      '<article><h4>参数组合批量测试</h4><p>创建可保存、可重复执行的参数组合任务，并按收益风险指标排序。</p></article>' +
+      '<article><h4>固化本次参数对比</h4><p>保存参数、指标、排名与最佳组合，不会再次运行回测。</p></article></div>';
+    researchList.parentElement.insertBefore(panel, researchList);
+    panel.append(strategyActions, scanOutput, matrixOutput);
+    $("#strategy-parameter-scan").textContent = "开始敏感性测试";
+    $("#strategy-matrix-create").textContent = "创建组合任务";
+    $("#strategy-matrix-run").textContent = "执行组合任务";
+    $("#strategy-scan-save-snapshot").textContent = "固化参数对比";
+    const matrixDelete = document.createElement("button");
+    matrixDelete.id = "strategy-matrix-delete";
+    matrixDelete.type = "button";
+    matrixDelete.className = "danger-button";
+    matrixDelete.textContent = "删除当前组合任务";
+    strategyActions.append(matrixDelete);
+  }
+
+  const resultActions = $("#backtest-results-refresh")?.closest(".button-row");
+  if (resultActions && !$("#backtest-results-back")) {
+    resultActions.insertAdjacentHTML("afterbegin", '<button id="backtest-results-back" type="button">返回任务</button>');
+    resultActions.insertAdjacentHTML("beforeend", '<button id="backtest-results-delete" class="danger-button" type="button" disabled>删除任务</button>');
+  }
+  $("#backtest-results-back")?.addEventListener("click", returnFromBacktestResults);
+  $("#backtest-results-delete")?.addEventListener("click", () => deleteSelectedBacktestTask().catch((error) => setFeedback(error.message, "error")));
+  $("#strategy-matrix-delete")?.addEventListener("click", () => deleteCurrentParameterMatrixTask().catch((error) => setFeedback(error.message, "error")));
+}
 function bindBacktestWorkspace() {
+  configurePcBacktestWorkspace();
   document.querySelectorAll("[data-backtest-view-target]").forEach((button) => button.addEventListener("click", () => {
     openBacktestWorkspaceView(button.dataset.backtestViewTarget).catch((error) => setFeedback(error.message, "error"));
   }));
@@ -695,7 +799,9 @@ function bindBacktestWorkspace() {
   renderSingleRunProgress();
   updateScreeningActions();
   updatePortfolioActions();
-  activateBacktestView("overview");
+  activateBacktestView("single");
+  loadSingleRunHistory().catch((error) => setFeedback(error.message, "error"));
+  $("#single-run-history-refresh")?.addEventListener("click", () => loadSingleRunHistory().catch((error) => setFeedback(error.message, "error")));
 }
 function renderScreeningTask(task = {}) {
   currentScreeningTask = task.task_id ? task : currentScreeningTask;
@@ -736,7 +842,8 @@ function renderScreeningEnteredResults(items = []) {
     target.innerHTML = '<div class="empty-cell">暂无建仓标的</div>';
     return;
   }
-  target.innerHTML = '<table><thead><tr><th>代码</th><th>名称</th><th>状态</th><th>总收益</th><th>年化收益</th><th>回测编号</th></tr></thead><tbody>' + items.map((item) => '<tr><td>' + escapeHtml(item.symbol) + '</td><td>' + escapeHtml(item.name) + '</td><td>' + escapeHtml(item.status) + '</td><td class="' + financialToneClass(item.metrics?.total_returns) + '">' + (item.metrics?.total_returns ?? "-") + '</td><td class="' + financialToneClass(item.metrics?.annualized_returns) + '">' + (item.metrics?.annualized_returns ?? "-") + '</td><td title="' + escapeHtml(item.run_id || "") + '">' + escapeHtml(shortTechnicalId(item.run_id)) + '</td></tr>').join("") + '</tbody></table>';
+  target.innerHTML = '<table><thead><tr><th>代码</th><th>名称</th><th>状态</th><th>总收益</th><th>年化收益</th><th>回测编号</th></tr></thead><tbody>' + items.map((item) => '<tr><td>' + escapeHtml(item.symbol) + '</td><td>' + escapeHtml(item.name) + '</td><td>' + escapeHtml(item.status) + '</td><td class="' + financialToneClass(item.metrics?.total_returns) + '">' + (item.metrics?.total_returns ?? "-") + '</td><td class="' + financialToneClass(item.metrics?.annualized_returns) + '">' + (item.metrics?.annualized_returns ?? "-") + '</td><td title="' + escapeHtml(item.run_id || "") + '">' + escapeHtml(shortTechnicalId(item.run_id)) + '</td><td>' + (item.run_id ? '<button type="button" data-screening-item-run="' + escapeHtml(item.run_id) + '">\u67e5\u770b\u660e\u7ec6</button>' : "-") + '</td></tr>').join("") + '</tbody></table>';
+  target.querySelectorAll("[data-screening-item-run]").forEach((button) => button.addEventListener("click", () => { const task = currentScreeningTask?.task_id ? nativeModeTask(currentScreeningTask, "independent-screening") : currentModeTask; if (!task) return; currentModeTask = task; activateBacktestView("results"); loadIndependentScreeningResultWorkspace(task, button.dataset.screeningItemRun).catch((error) => setFeedback(error.message, "error")); }));
 }
 async function loadIndependentScreeningTask(taskId, { schedule = true } = {}) {
   if (!taskId) return null;
@@ -748,6 +855,7 @@ async function loadIndependentScreeningTask(taskId, { schedule = true } = {}) {
   const task = detail.task || {};
   renderScreeningTask(task);
   renderScreeningEnteredResults(entered.result?.items || []);
+  if (["completed", "partial_completed", "partial_failed", "failed", "cancelled"].includes(task.status)) { loadIndependentScreeningTasks().catch(() => {}); loadBacktestModeTasks().catch(() => {}); }
   if (screeningPollTimer) clearTimeout(screeningPollTimer);
   if (schedule && ["running", "ready", "interrupted", "pause_requested", "cancel_requested"].includes(task.status)) {
     screeningPollTimer = setTimeout(() => loadIndependentScreeningTask(taskId).catch((error) => setFeedback(error.message, "error")), 2000);
@@ -760,12 +868,13 @@ async function loadIndependentScreeningTasks() {
   $("#screening-task-list").innerHTML = tasks.map((task) => {
     const progress = taskProgressModel(task, "independent-screening");
     const info = backtestStatusInfo(task.status);
-    return '<article class="compact-task-row is-' + info.tone + '" data-screening-task="' + escapeHtml(task.task_id) + '">' +
+    return '<article class="compact-task-row is-' + info.tone + (task.task_id === currentScreeningTaskId ? " is-selected" : "") + '" data-screening-task="' + escapeHtml(task.task_id) + '">' +
       '<div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span><h4>' + escapeHtml(strategyDisplayName(task.config?.strategy_id) + " · 独立选股") + '</h4><p>' + escapeHtml(taskExecutionLabel(task)) + ' · ' + progress.total + ' 只' + (taskElapsedSeconds(task) > 0 ? ' · 耗时 ' + escapeHtml(formatTaskSeconds(taskElapsedSeconds(task))) : '') + '</p></div>' +
       '<div class="task-card-progress"><div><i style="width:' + progress.percent + '%"></i></div><span>' + Math.round(progress.percent) + '% · ' + progress.processed + '/' + progress.total + '</span></div></article>';
   }).join("") || '<div class="empty-cell">暂无独立选股任务</div>';
   document.querySelectorAll("[data-screening-task]").forEach((card) => card.addEventListener("click", async () => {
     const task = tasks.find((item) => item.task_id === card.dataset.screeningTask);
+    document.querySelectorAll("[data-screening-task]").forEach((item) => item.classList.toggle("is-selected", item === card));
     currentModeTask = task ? {
       task_id: task.task_id,
       mode: "independent-screening",
@@ -787,6 +896,25 @@ async function loadIndependentScreeningTasks() {
     } : null;
     await loadIndependentScreeningTask(card.dataset.screeningTask);
     renderModeTaskSelection(currentModeTask);
+  }));
+  document.querySelectorAll("[data-screening-task]").forEach((card) => {
+    const task = tasks.find((item) => item.task_id === card.dataset.screeningTask);
+    if (!task) return;
+    const actions = document.createElement("div");
+    actions.className = "task-row-actions";
+    actions.innerHTML = '<button type="button" data-screening-result="' + escapeHtml(task.task_id) + '">\u67e5\u770b\u7ed3\u679c</button>' +
+      '<button type="button" class="danger-button" data-screening-delete="' + escapeHtml(task.task_id) + '"' +
+      (taskCanDelete(task) ? "" : ' disabled title="\u8fd0\u884c\u4e2d\u4efb\u52a1\u8bf7\u5148\u53d6\u6d88"') + '>\u5220\u9664</button>';
+    card.append(actions);
+  });
+  document.querySelectorAll("[data-screening-result]").forEach((button) => button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const task = tasks.find((item) => item.task_id === button.dataset.screeningResult);
+    if (task) await showBacktestTaskResults(nativeModeTask(task, "independent-screening"));
+  }));
+  document.querySelectorAll("[data-screening-delete]").forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteNativeModeTask(tasks.find((item) => item.task_id === button.dataset.screeningDelete), "independent-screening").catch((error) => setFeedback(error.message, "error"));
   }));
   if (!currentScreeningTaskId && tasks.length) await loadIndependentScreeningTask(tasks[0].task_id, { schedule: false });
   return tasks;
@@ -891,6 +1019,7 @@ async function loadSharedPortfolioTask(taskId, { schedule = true } = {}) {
   const payload = await requestJson(`/api/backtest/shared-portfolio-tasks/${encodeURIComponent(taskId)}`);
   const task = payload.task || {};
   renderPortfolioTask(task);
+  if (["completed", "partial_completed", "partial_failed", "failed", "cancelled"].includes(task.status)) { loadSharedPortfolioTasks().catch(() => {}); loadBacktestModeTasks().catch(() => {}); }
   if (portfolioPollTimer) clearTimeout(portfolioPollTimer);
   if (schedule && ["running", "ready", "interrupted"].includes(task.status)) {
     portfolioPollTimer = setTimeout(() => loadSharedPortfolioTask(taskId).catch((error) => setFeedback(error.message, "error")), 2000);
@@ -903,12 +1032,13 @@ async function loadSharedPortfolioTasks() {
   $("#portfolio-task-list").innerHTML = tasks.map((task) => {
     const progress = taskProgressModel(task, "shared-portfolio");
     const info = backtestStatusInfo(task.status);
-    return '<article class="compact-task-row is-' + info.tone + '" data-portfolio-task="' + escapeHtml(task.task_id) + '">' +
+    return '<article class="compact-task-row is-' + info.tone + (task.task_id === currentPortfolioTaskId ? " is-selected" : "") + '" data-portfolio-task="' + escapeHtml(task.task_id) + '">' +
       '<div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span><h4>' + escapeHtml(strategyDisplayName(task.config?.strategy_id) + " · 共享资金池") + '</h4><p>' + escapeHtml(taskExecutionLabel(task)) + ' · ' + (task.universe_count || 0) + ' 只 · 最多持仓 ' + (task.config?.max_positions || "-") + (taskElapsedSeconds(task) > 0 ? ' · 耗时 ' + escapeHtml(formatTaskSeconds(taskElapsedSeconds(task))) : '') + '</p></div>' +
       '<div class="task-card-progress"><div><i style="width:' + progress.percent + '%"></i></div><span>' + Math.round(progress.percent) + '% · ' + progress.processed + '/' + progress.total + '</span></div></article>';
   }).join("") || '<div class="empty-cell">暂无共享资金池任务</div>';
   document.querySelectorAll("[data-portfolio-task]").forEach((card) => card.addEventListener("click", async () => {
     const task = tasks.find((item) => item.task_id === card.dataset.portfolioTask);
+    document.querySelectorAll("[data-portfolio-task]").forEach((item) => item.classList.toggle("is-selected", item === card));
     currentModeTask = task ? {
       task_id: task.task_id,
       mode: "shared-portfolio",
@@ -930,6 +1060,25 @@ async function loadSharedPortfolioTasks() {
     } : null;
     await loadSharedPortfolioTask(card.dataset.portfolioTask);
     renderModeTaskSelection(currentModeTask);
+  }));
+  document.querySelectorAll("[data-portfolio-task]").forEach((card) => {
+    const task = tasks.find((item) => item.task_id === card.dataset.portfolioTask);
+    if (!task) return;
+    const actions = document.createElement("div");
+    actions.className = "task-row-actions";
+    actions.innerHTML = '<button type="button" data-portfolio-result="' + escapeHtml(task.task_id) + '">\u67e5\u770b\u7ed3\u679c</button>' +
+      '<button type="button" class="danger-button" data-portfolio-delete="' + escapeHtml(task.task_id) + '"' +
+      (taskCanDelete(task) ? "" : ' disabled title="\u8fd0\u884c\u4e2d\u4efb\u52a1\u8bf7\u5148\u53d6\u6d88"') + '>\u5220\u9664</button>';
+    card.append(actions);
+  });
+  document.querySelectorAll("[data-portfolio-result]").forEach((button) => button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const task = tasks.find((item) => item.task_id === button.dataset.portfolioResult);
+    if (task) await showBacktestTaskResults(nativeModeTask(task, "shared-portfolio"));
+  }));
+  document.querySelectorAll("[data-portfolio-delete]").forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteNativeModeTask(tasks.find((item) => item.task_id === button.dataset.portfolioDelete), "shared-portfolio").catch((error) => setFeedback(error.message, "error"));
   }));
   if (!currentPortfolioTaskId && tasks.length) await loadSharedPortfolioTask(tasks[0].task_id, { schedule: false });
   return tasks;
@@ -990,6 +1139,51 @@ async function runSharedPortfolioTask() {
   setFeedback(`共享资金池组合任务已启动：${currentPortfolioTaskId}`, "success");
 }
 
+function taskCanDelete(task = {}) {
+  return !["pending", "running", "pause_requested", "cancel_requested"].includes(task.status);
+}
+
+function nativeModeTask(task, mode) {
+  const independent = mode === "independent-screening";
+  return {
+    task_id: task.task_id,
+    mode,
+    mode_label: independent ? "\u72ec\u7acb\u9009\u80a1" : "\u5171\u4eab\u8d44\u91d1\u6c60",
+    name: task.config?.name || task.task_id,
+    status: task.status,
+    strategy_binding: { strategy_id: task.config?.strategy_id, strategy_version: task.config?.strategy_version },
+    date_window: task.config?.date_window || {},
+    universe_count: independent ? (task.progress?.total || 0) : (task.universe_count || 0),
+    run_id: task.run_id,
+    progress: task.progress || {},
+    execution: task.execution || {},
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    started_at: task.started_at,
+    finished_at: task.finished_at,
+    links: { report: "/api/reporting/backtest-modes/" + mode + "/" + encodeURIComponent(task.task_id) },
+  };
+}
+
+async function deleteNativeModeTask(task, mode) {
+  if (!task) return;
+  if (!taskCanDelete(task)) throw new Error("\u8fd0\u884c\u4e2d\u4efb\u52a1\u8bf7\u5148\u53d6\u6d88\uff0c\u518d\u6267\u884c\u5220\u9664");
+  if (!window.confirm(`\u786e\u8ba4\u5220\u9664\u4efb\u52a1 ${task.task_id}\uff1f\u5220\u9664\u540e\u4ecd\u4fdd\u7559\u5ba1\u8ba1\u8bb0\u5f55\uff0c\u4efb\u52a1\u7f16\u53f7\u4e0d\u4f1a\u91cd\u7528\u3002`)) return;
+  const resource = mode === "independent-screening" ? "independent-screening-tasks" : "shared-portfolio-tasks";
+  await requestJson(`/api/backtest/${resource}/${encodeURIComponent(task.task_id)}`, { method: "DELETE" });
+  if (mode === "independent-screening") {
+    if (currentScreeningTaskId === task.task_id) { currentScreeningTaskId = null; currentScreeningTask = null; }
+    await loadIndependentScreeningTasks();
+  } else {
+    if (currentPortfolioTaskId === task.task_id) { currentPortfolioTaskId = null; currentPortfolioTask = null; }
+    await loadSharedPortfolioTasks();
+  }
+  if (currentModeTask?.task_id === task.task_id && currentModeTask?.mode === mode) currentModeTask = null;
+  renderBacktestWorkspace();
+  renderBacktestResultsContext();
+  setFeedback(`\u4efb\u52a1\u5df2\u5220\u9664\uff1a${task.task_id}`, "success");
+}
+
 function renderModeTaskSelection(task) {
   const target = $("#mode-task-directory-detail");
   if (!target) return;
@@ -1039,13 +1233,52 @@ async function openBacktestModeReport(task) {
   await loadBacktestModeReport();
 }
 
+function independentResultSelector() {
+  let target = $("#independent-result-run-selector");
+  if (target) return target;
+  target = document.createElement("section");
+  target.id = "independent-result-run-selector";
+  target.className = "independent-result-run-selector";
+  $("#backtest-result-panel-summary")?.before(target);
+  return target;
+}
+function hideIndependentResultSelector() {
+  const target = $("#independent-result-run-selector");
+  if (target) target.hidden = true;
+}
+async function loadIndependentScreeningResultWorkspace(task, preferredRunId = "") {
+  const target = independentResultSelector();
+  target.hidden = false;
+  const payload = await requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(task.task_id)}/items?entered_only=true&limit=100`);
+  const items = (payload.result?.items || []).filter((item) => item.run_id);
+  if (!items.length) {
+    currentBacktestResultRunId = "";
+    currentBacktestRunIdPrefix = "";
+    target.innerHTML = '<div class="empty-cell">该任务暂无实际建仓股票，因此没有可展示的交易明细。</div>';
+    $("#backtest-result-panel-tables").innerHTML = '<div class="empty-cell">独立选股仅展示实际建仓股票的真实回测结果。</div>';
+    $("#backtest-result-page-table").innerHTML = "";
+    $("#backtest-result-panel-output").textContent = "";
+    return null;
+  }
+  const selectedRunId = items.some((item) => item.run_id === preferredRunId) ? preferredRunId : items[0].run_id;
+  target.innerHTML = `<h4>实际建仓股票明细</h4><p>选择股票后查看其独立资金回测的交易、持仓和账户数据。</p><div class="independent-result-run-list">${items.map((item) => `<button type="button" data-independent-result-run="${escapeHtml(item.run_id)}" class="${item.run_id === selectedRunId ? "is-selected" : ""}">${escapeHtml(item.symbol)}${item.name ? ` · ${escapeHtml(item.name)}` : ""}</button>`).join("")}</div>`;
+  target.querySelectorAll("[data-independent-result-run]").forEach((button) => button.addEventListener("click", async () => {
+    target.querySelectorAll("[data-independent-result-run]").forEach((item) => item.classList.toggle("is-selected", item === button));
+    await loadBacktestResultPanel(button.dataset.independentResultRun);
+  }));
+  await loadBacktestResultPanel(selectedRunId);
+  return selectedRunId;
+}
+
 async function showBacktestTaskResults(task) {
-  currentModeTask = task;
-  renderModeTaskSelection(task);
+  await selectBacktestModeTask(task, { schedule: false });
   activateBacktestView("results");
   renderBacktestResultsContext();
   if (task.mode === "shared-portfolio" && task.run_id) {
+    hideIndependentResultSelector();
     await loadBacktestResultPanel(task.run_id);
+  } else if (task.mode === "independent-screening") {
+    await loadIndependentScreeningResultWorkspace(task);
   }
 }
 
@@ -1058,7 +1291,10 @@ async function refreshBacktestResults() {
   } else if (context.kind === "mode") {
     await selectBacktestModeTask(context.task, { schedule: false });
     if (context.task.mode === "shared-portfolio" && context.task.run_id) {
+      hideIndependentResultSelector();
       await loadBacktestResultPanel(context.task.run_id);
+    } else if (context.task.mode === "independent-screening") {
+      await loadIndependentScreeningResultWorkspace(context.task, currentBacktestResultRunId);
     }
   }
 }
@@ -1073,6 +1309,39 @@ async function openSelectedBacktestReport() {
   activatePage("reporting");
   $('#reporting-query-form input[name="run_id"]').value = context.task.runId;
   await loadReports(context.task.runId, "phase1-batch-001");
+}
+
+function returnFromBacktestResults() {
+  const context = selectedResultContext();
+  activateBacktestView(context?.kind === "mode"
+    ? (context.task.mode === "independent-screening" ? "independent" : "portfolio")
+    : "single");
+}
+
+async function deleteSelectedBacktestTask() {
+  const context = selectedResultContext();
+  if (!context) return;
+  if (context.kind === "mode") {
+    const returnView = context.task.mode === "independent-screening" ? "independent" : "portfolio";
+    await deleteNativeModeTask(context.task, context.task.mode);
+    activateBacktestView(returnView);
+    return;
+  }
+  const runId = context.task.runId;
+  if (!runId || !window.confirm(`\u786e\u8ba4\u5220\u9664\u5355\u80a1\u56de\u6d4b ${runId}\uff1f\u5220\u9664\u540e\u4ecd\u4fdd\u7559\u5ba1\u8ba1\u8bb0\u5f55\u3002`)) return;
+  await requestJson(`/api/backtest/results/${encodeURIComponent(runId)}`, { method: "DELETE" });
+  singleRunState = { status: "idle", phase: "\u7b49\u5f85\u914d\u7f6e", runId: "", strategyName: "", symbol: "", startedAt: null, elapsedSeconds: 0, result: null, error: "" };
+  currentBacktestResultRunId = "";
+  currentBacktestRunIdPrefix = "";
+  const reportJump = $("#backtest-jump-reporting");
+  if (reportJump) {
+    reportJump.disabled = true;
+    delete reportJump.dataset.runId;
+  }
+  renderSingleRunProgress();
+  renderBacktestResultsContext();
+  activateBacktestView("single");
+  setFeedback(`\u5355\u80a1\u56de\u6d4b\u5df2\u5220\u9664\uff1a${runId}`, "success");
 }
 
 async function loadBacktestModeTasks(values = null) {
@@ -1121,12 +1390,24 @@ function renderStrategyResearchTasks(tasks = []) {
   const target = $("#strategy-research-list");
   if (!target) return;
   target.innerHTML = tasks.map((task) => `<article class="definition-item"><h4>${task.task_id} / ${task.strategy_id}</h4><p>${(task.symbols || []).join(", ")}；${task.date_window?.start_date || "-"} 至 ${task.date_window?.end_date || "-"}</p><span>${task.status || "unknown"} / ${task.strategy_version || "v1"}</span><div class="button-row"><button type="button" data-research-run="${task.task_id}">执行回测</button></div></article>`).join("") || '<div class="empty-cell">暂无研究任务</div>';
+  target.querySelectorAll(".definition-item").forEach((card, index) => {
+    const row = card.querySelector(".button-row");
+    if (!row || !tasks[index]) return;
+    row.insertAdjacentHTML("beforeend", '<button type="button" class="danger-button" data-research-delete="' + escapeHtml(tasks[index].task_id) + '">\u5220\u9664</button>');
+  });
 }
 async function loadStrategyResearchTasks() {
   const payload = await requestJson("/api/backtest/research-tasks");
   renderStrategyResearchTasks(payload.tasks || []);
   document.querySelectorAll("[data-research-run]").forEach((button) => button.addEventListener("click", () => runStrategyResearchTask(button.dataset.researchRun)));
+  document.querySelectorAll("[data-research-delete]").forEach((button) => button.addEventListener("click", () => deleteStrategyResearchTask(button.dataset.researchDelete).catch((error) => setFeedback(error.message, "error"))));
   return payload.tasks || [];
+}
+async function deleteStrategyResearchTask(taskId) {
+  if (!taskId || !window.confirm(`\u786e\u8ba4\u5220\u9664\u7814\u7a76\u4efb\u52a1 ${taskId}\uff1f\u5220\u9664\u540e\u4ecd\u4fdd\u7559\u5ba1\u8ba1\u8bb0\u5f55\u3002`)) return;
+  await requestJson(`/api/backtest/research-tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+  await loadStrategyResearchTasks();
+  setFeedback(`\u7814\u7a76\u4efb\u52a1\u5df2\u5220\u9664\uff1a${taskId}`, "success");
 }
 async function runStrategyResearchTask(taskId) {
   const payload = await requestJson(`/api/backtest/research-tasks/${encodeURIComponent(taskId)}/run`, { method: "POST", body: JSON.stringify({ run_id_prefix: `${taskId}-web` }) });
@@ -1417,11 +1698,18 @@ async function loadBacktestResultTable(offset = 0, exportFormat = "json") {
   const result = payload.result || {};
   $("#backtest-result-page-table").innerHTML = `<h4>分页交易明细 ${result.offset || 0} / ${result.total || 0}</h4>${renderTable(result.rows || [], [{key:"trade_time",label:"时间"},{key:"order_book_id",label:"标的"},{key:"side",label:"方向"},{key:"price",label:"价格"},{key:"quantity",label:"数量"},{key:"amount",label:"成交额"}])}`;
   if (exportFormat !== "json") $("#backtest-result-export-output").textContent = result.content || "";
+  const prev = $("#backtest-table-prev"); const next = $("#backtest-table-next");
+  if (prev) prev.disabled = (result.offset ?? 0) <= 0;
+  if (next) next.disabled = result.has_next !== true;
   return result;
 }
 async function exportBacktestResultTable(format) {
   const result = await loadBacktestResultTable(currentBacktestTableOffset, format);
-  $("#backtest-result-export-output").textContent = format === "csv" ? (result?.content || "") : JSON.stringify(result?.content || result?.rows || [], null, 2);
+  const content = format === "csv" ? (result?.content || "") : JSON.stringify(result?.content || result?.rows || [], null, 2);
+  $("#backtest-result-export-output").textContent = content;
+  const blob = new Blob([content], { type: format === "csv" ? "text/csv;charset=utf-8" : "application/json;charset=utf-8" });
+  const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${currentBacktestResultRunId}-trades.${format}`; link.click(); URL.revokeObjectURL(link.href);
+  window.alert(`\u5bfc\u51fa\u6210\u529f\uff1a${link.download}\uff0c\u6587\u4ef6\u5df2\u4fdd\u5b58\u5230\u6d4f\u89c8\u5668\u9ed8\u8ba4\u4e0b\u8f7d\u76ee\u5f55\u3002`);
 }
 async function loadBacktestExperimentPanel(runIdPrefix) {
   if (!runIdPrefix) return null;
@@ -1507,6 +1795,7 @@ async function runBacktest(payload) {
       result,
       error: result.error_message || "",
     });
+    await loadSingleRunHistory();
     activateBacktestView("results");
     return result;
   } catch (error) {
@@ -1563,6 +1852,14 @@ async function saveCurrentScanComparisonSnapshot() {
   return payload.snapshot;
 }
 let currentParameterMatrixTaskId = "";
+async function deleteCurrentParameterMatrixTask() {
+  if (!currentParameterMatrixTaskId) throw new Error("\u5c1a\u672a\u9009\u62e9\u53c2\u6570\u7ec4\u5408\u4efb\u52a1");
+  if (!window.confirm(`\u786e\u8ba4\u5220\u9664\u53c2\u6570\u7ec4\u5408\u4efb\u52a1 ${currentParameterMatrixTaskId}\uff1f`)) return;
+  await requestJson(`/api/backtest/parameter-matrix-tasks/${encodeURIComponent(currentParameterMatrixTaskId)}`, { method: "DELETE" });
+  setFeedback(`\u53c2\u6570\u7ec4\u5408\u4efb\u52a1\u5df2\u5220\u9664\uff1a${currentParameterMatrixTaskId}`, "success");
+  currentParameterMatrixTaskId = "";
+  $("#strategy-matrix-output").textContent = "\u5c1a\u672a\u521b\u5efa\u53c2\u6570\u7ec4\u5408\u4efb\u52a1";
+}
 async function createParameterMatrixTask() {
   const form = Object.fromEntries(new FormData($("#backtest-run-form")).entries());
   const parameters = collectStrategyParameters();
@@ -1699,7 +1996,28 @@ function renderStrategyDiagnostics(normalized) {
   ];
   $("#report-conclusion").innerHTML = conclusions.map((text, index) => `<p><strong>${index + 1}. </strong>${text}</p>`).join("") + ((normalized?.notes || []).length ? `<p><strong>数据质量：</strong>${normalized.notes.join("；")}</p>` : "");
 }
-function renderTable(rows, columns) { return '<div class="table-wrap"><table><thead><tr>' + columns.map((c) => '<th>' + c.label + '</th>').join("") + '</tr></thead><tbody>' + ((rows || []).map((row) => '<tr>' + columns.map((c) => '<td class="' + financialToneForLabel(c.label, row[c.key]) + '">' + (row[c.key] ?? "") + '</td>').join("") + '</tr>').join("") || '<tr><td colspan="' + columns.length + '" class="empty-cell">暂无数据</td></tr>') + '</tbody></table></div>'; }function renderReportAIWorkflow(replay) {
+function renderTable(rows, columns) { return '<div class="table-wrap"><table><thead><tr>' + columns.map((c) => '<th>' + c.label + '</th>').join("") + '</tr></thead><tbody>' + ((rows || []).map((row) => '<tr>' + columns.map((c) => '<td class="' + financialToneForLabel(c.label, row[c.key]) + '">' + (row[c.key] ?? "") + '</td>').join("") + '</tr>').join("") || '<tr><td colspan="' + columns.length + '" class="empty-cell">暂无数据</td></tr>') + '</tbody></table></div>'; }function configureReportingWorkspace() {
+  const aiPanel = $("#report-ai-workflow-summary")?.closest(".panel"); if (aiPanel) aiPanel.id = "report-ai-workflow-panel";
+  if (aiPanel && !$("#report-ai-workflow-delete")) { const button=document.createElement("button"); button.id="report-ai-workflow-delete"; button.className="danger-button"; button.type="button"; button.textContent="\u5220\u9664\u5f53\u524d\u590d\u76d8"; aiPanel.querySelector(".panel-header")?.append(button); button.addEventListener("click", deleteCurrentAIWorkflow); }
+  const packagePanel = $("#report-package-list")?.closest(".panel"); if (packagePanel) packagePanel.id = "report-package-panel";
+  if (packagePanel && !$("#report-package-delete")) { const button=document.createElement("button"); button.id="report-package-delete"; button.className="danger-button"; button.type="button"; button.textContent="\u5220\u9664\u5f53\u524d\u62a5\u544a\u5305"; button.disabled=true; packagePanel.querySelector(".panel-header")?.append(button); button.addEventListener("click", deleteCurrentReportPackage); }
+  const page = $("#page-reporting");
+  if (page && !$("#reporting-section-nav")) { const nav=document.createElement("nav"); nav.id="reporting-section-nav"; nav.className="reporting-section-nav"; nav.innerHTML='<a href="#report-ai-workflow-panel">AI \u590d\u76d8</a><a href="#report-package-panel">\u7814\u7a76\u62a5\u544a\u5305</a><a href="#report-package-directory-list">\u62a5\u544a\u5305\u76ee\u5f55</a><a href="#report-snapshot-list">\u62a5\u544a\u5feb\u7167</a>'; page.insertBefore(nav,page.firstElementChild); }
+}
+async function deleteCurrentAIWorkflow() {
+  if (!currentReportWorkflowId || !window.confirm("\u786e\u8ba4\u5220\u9664\u5f53\u524d AI \u590d\u76d8\uff1f\u5220\u9664\u540e\u4ecd\u4fdd\u7559\u5ba1\u8ba1\u8bb0\u5f55\u3002")) return;
+  await requestJson(`/api/reporting/ai-workflows/${encodeURIComponent(currentReportWorkflowId)}`, { method: "DELETE" });
+  currentReportWorkflowId = ""; const button=$("#report-ai-workflow-delete"); if(button) button.disabled=true; setFeedback("AI \u590d\u76d8\u5df2\u5220\u9664", "success");
+}
+async function deleteCurrentReportPackage() {
+  if (!selectedReportPackageId || !window.confirm("\u786e\u8ba4\u5220\u9664\u5f53\u524d\u7814\u7a76\u62a5\u544a\u5305\uff1f\u5220\u9664\u540e\u4ecd\u4fdd\u7559\u5ba1\u8ba1\u8bb0\u5f55\u3002")) return;
+  await requestJson(`/api/reporting/report-packages/${encodeURIComponent(selectedReportPackageId)}`, { method: "DELETE" });
+  selectedReportPackageId = ""; const button=$("#report-package-delete"); if(button) button.disabled=true; await loadReportPackages(currentReportRunId); await loadReportPackageDirectory(); setFeedback("\u7814\u7a76\u62a5\u544a\u5305\u5df2\u5220\u9664", "success");
+}
+
+function renderReportAIWorkflow(replay) {
+  currentReportWorkflowId = replay?.workflow_id || "";
+  const deleteButton = $("#report-ai-workflow-delete"); if (deleteButton) deleteButton.disabled = !currentReportWorkflowId;
   if (!replay?.linked) {
     renderSummaryGrid($("#report-ai-workflow-summary"), [{ label: "关联状态", value: "未关联" }, { label: "原因", value: replay?.reason || "暂无 AI workflow" }]);
     $("#report-ai-workflow-timeline").innerHTML = '<div class="empty-cell">暂无 AI workflow 阶段留痕</div>';
@@ -1752,6 +2070,8 @@ async function loadReportPackages(runId) {
   target.innerHTML = packages.map((item) => `<article class="definition-item strategy-card" data-report-package="${item.package_id}"><h4>${item.title}</h4><p>${item.created_at} / ${item.binding_mode}</p><span>Manifest: ${item.manifest_version || "未记录"} / ${item.workflow_id || "无 workflow"} / ${item.snapshot_id || "无 snapshot"}</span></article>`).join("") || '<div class="empty-cell">暂无研究报告包</div>';
   document.querySelectorAll("[data-report-package]").forEach((card) => card.addEventListener("click", async () => {
     selectedReportPackageId = card.dataset.reportPackage;
+    document.querySelectorAll("[data-report-package]").forEach((item) => item.classList.toggle("is-selected", item === card));
+    const deleteButton = $("#report-package-delete"); if (deleteButton) deleteButton.disabled = false;
     const detail = await requestJson(`/api/reporting/report-packages/${encodeURIComponent(card.dataset.reportPackage)}`);
     $("#report-package-detail").textContent = JSON.stringify(detail.package, null, 2);
     setFeedback("研究报告包已读取", "success");
@@ -1783,6 +2103,8 @@ async function loadReportPackageDirectory(options = {}) {
     list.innerHTML = packages.map((item) => `<article class="definition-item strategy-card" data-report-package-directory="${item.package_id}"><h4>${item.title || item.package_id}</h4><p>${item.package_type || "unknown"} / ${item.lifecycle_status || "active"} / ${item.created_at || ""}</p><span>${item.run_id || ""} / ${item.binding_mode || ""} / ${item.manifest_version || "未记录"} / ${item.retention_policy || "standard"}</span></article>`).join("") || '<div class="empty-cell">暂无报告包归档</div>';
     document.querySelectorAll("[data-report-package-directory]").forEach((card) => card.addEventListener("click", async () => {
       selectedReportPackageId = card.dataset.reportPackageDirectory;
+      document.querySelectorAll("[data-report-package-directory]").forEach((item) => item.classList.toggle("is-selected", item === card));
+      const deleteButton = $("#report-package-delete"); if (deleteButton) deleteButton.disabled = false;
       const detail = await requestJson(`/api/reporting/report-packages/${encodeURIComponent(selectedReportPackageId)}`);
       $("#report-package-detail").textContent = JSON.stringify(detail.package, null, 2);
       $("#report-package-directory-output").textContent = JSON.stringify(detail.package, null, 2);
@@ -1910,7 +2232,19 @@ async function loadExperimentReportComparison(runIdPrefix) {
   renderExperimentReportComparison(payload.comparison || {});
   return payload.comparison;
 }
+function renderReturnDistributionHistogram(histogram = []) {
+  const labels = ["\u8dcc\u505c", "-8%-", "-8~-6%", "-6~-4%", "-4~-2%", "-2~0%", "0~2%", "2~4%", "4~6%", "6~8%", "8%+", "\u6da8\u505c"];
+  const counts = labels.map((label, index) => Number(histogram[index]?.count ?? histogram.find((row) => row.bucket === label)?.count ?? 0));
+  const max = Math.max(...counts, 1);
+  return `<div class="return-distribution-chart"><div class="return-y-axis"><span>${max}</span><span>${Math.round(max / 2)}</span><span>0</span></div><div class="return-chart-body"><div class="return-bars">${counts.map((count, index) => `<div class="return-bar" title="${labels[index]}?${count} ?"><strong style="height:${Math.max(count ? 4 : 0, count / max * 100)}%">${count || ""}</strong><span>${labels[index]}</span></div>`).join("")}</div><div class="return-x-axis">\u6536\u76ca\u6da8\u5e45\u533a\u95f4</div></div></div>`;
+}
+function sortIndustryRows(rows = []) {
+  if (currentIndustrySortMode === "default") return rows;
+  return [...rows].sort((a, b) => ((Number(a.mean) || 0) - (Number(b.mean) || 0)) * (currentIndustrySortMode === "asc" ? 1 : -1));
+}
+
 function renderIndependentModeReport(report = {}) {
+  currentIndependentModeReport = report;
   const scope = report.sample_scope || {};
   const distribution = report.distribution || {};
   const coverage = report.classification_coverage || {};
@@ -1925,10 +2259,10 @@ function renderIndependentModeReport(report = {}) {
     { label: "正态性", value: distribution.normality?.reject_normality == null ? "样本不足" : (distribution.normality.reject_normality ? "拒绝正态" : "未拒绝正态") },
   ]);
   const histogram = distribution.histogram || [];
-  const maxCount = Math.max(...histogram.map((row) => Number(row.count) || 0), 1);
-  const histogramHtml = histogram.length ? `<div class="bar-chart">${histogram.map((row) => `<div class="bar-row"><span>${formatPercent(row.lower)} 至 ${formatPercent(row.upper)}</span><div class="bar-track"><i style="width:${(Number(row.count) || 0) / maxCount * 100}%"></i></div><strong>${row.count}</strong></div>`).join("")}</div>` : '<div class="empty-cell">样本不足，无法生成分布图</div>';
-  const groupSections = Object.entries(report.group_comparisons || {}).map(([dimension, rows]) => `<h4>${{market:"市场比较",entry_period:"建仓时段比较",industry:"历史行业比较",concept:"历史概念比较"}[dimension] || dimension}</h4>${renderTable(rows || [], [{key:"category",label:"分类"},{key:"sample_size",label:"样本"},{key:"mean",label:"平均收益"},{key:"median",label:"中位数"},{key:"stddev",label:"标准差"},{key:"positive_probability",label:"正收益概率"}])}`).join("");
+  const histogramHtml = renderReturnDistributionHistogram(histogram);
+  const groupSections = Object.entries(report.group_comparisons || {}).map(([dimension, rows]) => { const sortedRows = dimension === "industry" ? sortIndustryRows(rows || []) : (rows || []); const sortButton = dimension === "industry" ? `<button type="button" id="industry-sort-toggle">行业排序：${currentIndustrySortMode === "default" ? "默认" : currentIndustrySortMode === "asc" ? "正序" : "倒序"}</button>` : ""; return `<h4>${{market:"市场比较",entry_period:"建仓时段比较",industry:"历史行业比较",concept:"历史概念比较"}[dimension] || dimension}</h4>${sortButton}${renderTable(sortedRows, [{key:"category",label:"分类"},{key:"sample_size",label:"样本"},{key:"mean",label:"平均收益"},{key:"median",label:"中位数"},{key:"stddev",label:"标准差"},{key:"positive_probability",label:"正收益概率"}])}`; }).join("");
   $("#mode-report-content").innerHTML = `<h4>建仓股票收益分布</h4>${histogramHtml}<h4>正态性与置信区间</h4>${renderTable([{test:distribution.normality?.test,status:distribution.normality?.status,statistic:distribution.normality?.statistic,p_value:distribution.normality?.p_value,interpretation:distribution.normality?.interpretation,ci:(distribution.mean_confidence_interval_95 || []).join(" ~ "),bootstrap_ci:(distribution.bootstrap_mean_confidence_interval_95 || []).join(" ~ ")}],[{key:"test",label:"检验"},{key:"status",label:"状态"},{key:"statistic",label:"统计量"},{key:"p_value",label:"p 值"},{key:"ci",label:"均值 95% CI"},{key:"bootstrap_ci",label:"Bootstrap 95% CI"},{key:"interpretation",label:"解释"}])}${groupSections}<h4>历史分类覆盖率</h4>${renderTable(Object.entries(coverage).map(([dimension, value]) => ({dimension,...value})),[{key:"dimension",label:"维度"},{key:"covered_count",label:"已覆盖"},{key:"missing_count",label:"缺失"},{key:"coverage_ratio",label:"覆盖率"}])}`;
+  $("#industry-sort-toggle")?.addEventListener("click", () => { currentIndustrySortMode = currentIndustrySortMode === "default" ? "asc" : currentIndustrySortMode === "asc" ? "desc" : "default"; renderIndependentModeReport(currentIndependentModeReport || report); });
   $("#mode-report-output").textContent = JSON.stringify({ methodology: report.methodology, data_quality_notes: report.data_quality_notes, professional_sections: report.professional_sections }, null, 2);
 }
 async function loadBacktestModeReport(event) {
@@ -1955,6 +2289,7 @@ async function loadBacktestModeReport(event) {
   setFeedback(`双模式报告已生成：${values.task_id}`, "success");
   return report;
 }async function loadReports(runId = "phase1-demo-run-001", experimentId = "phase1-batch-001") {
+  configureReportingWorkspace();
   currentReportRunId = runId;
   currentReportExperimentId = experimentId || runId.replace(/-\d+$/, "");
   const directoryRunInput = $("#report-package-directory-run-id");
@@ -2023,6 +2358,7 @@ async function loadAIWorkflowHistory(symbol = "000001.XSHE") {
   if (!target) return workflows;
   target.innerHTML = workflows.map((item) => `<article class="definition-item strategy-card" data-ai-workflow="${item.workflow_id}"><h4>${item.symbol} / ${item.status}</h4><p>${item.generated_at} / ${item.provider_mode}</p><span>${item.workflow_id} / ${item.debate_round_count} 轮 / ${item.decision_action}</span></article>`).join("") || '<div class="empty-cell">暂无 AI workflow 历史</div>';
   document.querySelectorAll("[data-ai-workflow]").forEach((card) => card.addEventListener("click", async () => {
+    document.querySelectorAll("[data-ai-workflow]").forEach((item) => item.classList.toggle("is-selected", item === card));
     const detail = await requestJson(`/api/ai/workflow/${encodeURIComponent(card.dataset.aiWorkflow)}`);
     $("#ai-workflow-detail").textContent = JSON.stringify(detail.workflow, null, 2);
     renderWorkflow(detail.workflow);
@@ -2224,7 +2560,7 @@ async function loadDashboard() {
     { label: "Metrics", value: Object.keys(reports.detail.detail.metrics || {}).join(", ") },
   ]);
 }
-function bindEvents() { bindBacktestWorkspace(); bindStrategyManager(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareWorkspace().then(() => setFeedback("A 股真实数据库已加载", "success")).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); $("#market-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await runBacktest(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("单股回测已完成，已进入结果分析", "success"); } catch (error) { setFeedback(error.message, "error"); } }); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立选股任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("共享资金池组合任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
+function bindEvents() { bindBacktestWorkspace(); bindStrategyManager(); configureReportingWorkspace(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareWorkspace().then(() => setFeedback("A 股真实数据库已加载", "success")).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); $("#market-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await runBacktest(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("单股回测已完成，已进入结果分析", "success"); } catch (error) { setFeedback(error.message, "error"); } }); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立选股任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("共享资金池组合任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
 function bindBacktestResultControls() {
   const prev = $("#backtest-table-prev");
   const next = $("#backtest-table-next");

@@ -621,6 +621,16 @@ class ReportingService:
         if not result:
             result = dict(updated)
         return result
+    def delete_report_package(self, package_id: str, *, reason: str = "?????????") -> dict[str, Any] | None:
+        if self._snapshot_store is None or not hasattr(self._snapshot_store, "soft_delete_report_package"):
+            return None
+        return self._snapshot_store.soft_delete_report_package(package_id, deleted_at=datetime.now(timezone.utc).isoformat(), reason=reason)
+
+    def delete_ai_workflow(self, workflow_id: str, *, reason: str = "??? AI ????") -> dict[str, Any] | None:
+        if self._snapshot_store is None or not hasattr(self._snapshot_store, "soft_delete_ai_workflow_run"):
+            return None
+        return self._snapshot_store.soft_delete_ai_workflow_run(workflow_id, deleted_at=datetime.now(timezone.utc).isoformat(), reason=reason)
+
     def get_report_package(self, package_id: str) -> dict[str, Any] | None:
         if self._snapshot_store is None or not hasattr(self._snapshot_store, "fetch_report_package"):
             return None

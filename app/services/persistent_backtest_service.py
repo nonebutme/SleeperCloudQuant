@@ -1,4 +1,4 @@
-﻿"""Persistence-aware backtest execution service."""
+"""Persistence-aware backtest execution service."""
 
 from __future__ import annotations
 
@@ -25,6 +25,10 @@ class PersistentBacktestService:
         self._runtime_store = runtime_store
         self._market_data_service = market_data_service
 
+    def list_runs(self, limit: int = 50) -> list[Mapping[str, Any]]:
+        if not hasattr(self._runtime_store, "list_backtest_runs"):
+            return []
+        return [dict(item) for item in self._runtime_store.list_backtest_runs(limit=limit)]
     def run_once(self, request: BacktestRunRequest) -> BacktestResultSummary:
         started_at = _utc_now()
         self._runtime_store.upsert_backtest_run(
@@ -157,6 +161,18 @@ class PersistentBacktestService:
                 "The trace is read-only metadata and does not trigger provider sync.",
             ],
         }
+
+    def delete_run(self, run_id: str, *, reason: str = "用户从 Web 工作台删除") -> dict[str, Any]:
+        if not hasattr(self._runtime_store, "soft_delete_backtest_run"):
+            return {"run_id": run_id, "status": "unsupported"}
+        deleted_at = _utc_now()
+        deleted = self._runtime_store.soft_delete_backtest_run(
+            run_id,
+            deleted_at=deleted_at,
+            reason=reason,
+        )
+        return dict(deleted or {"run_id": run_id, "status": "not_found"})
+
     def get_result_panel(self, run_id: str) -> dict[str, Any]:
         """Return a UI-friendly result panel for one persisted backtest run."""
 

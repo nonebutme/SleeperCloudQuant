@@ -77,6 +77,9 @@ def main() -> None:
         "smoke_test_backtest_workspace_ui.py",
         "smoke_test_backtest_task_workflow_ui.py",
     "smoke_test_backtest_task_usability.py",
+        "smoke_test_stage71a_backtest_pc_workspace.py",
+        "smoke_test_stage71b_backtest_history_results.py",
+        "smoke_test_stage73_backtest_history_selection_encoding.py",
     ]
     for script_name in scripts:
         print(f"[formal] running {script_name}")

@@ -45,7 +45,9 @@ class SqliteRuntimeStore(ReportingStore):
                     parameters_json TEXT NOT NULL,
                     extra_config_json TEXT NOT NULL,
                     raw_result_json TEXT NOT NULL,
-                    error_message TEXT
+                    error_message TEXT,
+                    deleted_at TEXT,
+                    deleted_reason TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS backtest_metrics (
@@ -135,7 +137,9 @@ class SqliteRuntimeStore(ReportingStore):
                     status TEXT NOT NULL,
                     generated_at TEXT NOT NULL,
                     provider_mode TEXT NOT NULL,
-                    payload_json TEXT NOT NULL
+                    payload_json TEXT NOT NULL,
+                    deleted_at TEXT,
+                    deleted_reason TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_ai_workflow_runs_symbol_generated
@@ -151,7 +155,9 @@ class SqliteRuntimeStore(ReportingStore):
                     snapshot_id TEXT,
                     created_at TEXT NOT NULL,
                     title TEXT NOT NULL,
-                    payload_json TEXT NOT NULL
+                    payload_json TEXT NOT NULL,
+                    deleted_at TEXT,
+                    deleted_reason TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_report_packages_run_created
@@ -189,6 +195,18 @@ class SqliteRuntimeStore(ReportingStore):
                 ON backtest_input_snapshots (run_id, bound_at DESC);
                 """
             )
+
+            columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(backtest_runs)").fetchall()}
+            if "deleted_at" not in columns:
+                connection.execute("ALTER TABLE backtest_runs ADD COLUMN deleted_at TEXT")
+            if "deleted_reason" not in columns:
+                connection.execute("ALTER TABLE backtest_runs ADD COLUMN deleted_reason TEXT")
+            for table in ("ai_workflow_runs", "report_packages"):
+                columns = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+                if "deleted_at" not in columns:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN deleted_at TEXT")
+                if "deleted_reason" not in columns:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN deleted_reason TEXT")
 
     def upsert_backtest_run(
         self,
@@ -747,7 +765,7 @@ class SqliteRuntimeStore(ReportingStore):
         self.ensure_schema()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM ai_workflow_runs WHERE workflow_id = ?",
+                "SELECT * FROM ai_workflow_runs WHERE workflow_id = ? AND deleted_at IS NULL",
                 (workflow_id,),
             ).fetchone()
         if row is None:
@@ -768,7 +786,7 @@ class SqliteRuntimeStore(ReportingStore):
                     """
                     SELECT *
                     FROM ai_workflow_runs
-                    WHERE symbol = ?
+                    WHERE symbol = ? AND deleted_at IS NULL
                     ORDER BY generated_at DESC, workflow_id DESC
                     LIMIT ?
                     """,
@@ -779,6 +797,7 @@ class SqliteRuntimeStore(ReportingStore):
                     """
                     SELECT *
                     FROM ai_workflow_runs
+                    WHERE deleted_at IS NULL
                     ORDER BY generated_at DESC, workflow_id DESC
                     LIMIT ?
                     """,
@@ -801,7 +820,7 @@ class SqliteRuntimeStore(ReportingStore):
                     """
                     SELECT *
                     FROM ai_workflow_runs
-                    WHERE report_id = ? AND symbol = ?
+                    WHERE report_id = ? AND symbol = ? AND deleted_at IS NULL
                     ORDER BY generated_at DESC, workflow_id DESC
                     LIMIT ?
                     """,
@@ -812,7 +831,7 @@ class SqliteRuntimeStore(ReportingStore):
                     """
                     SELECT *
                     FROM ai_workflow_runs
-                    WHERE report_id = ?
+                    WHERE report_id = ? AND deleted_at IS NULL
                     ORDER BY generated_at DESC, workflow_id DESC
                     LIMIT ?
                     """,
@@ -862,7 +881,7 @@ class SqliteRuntimeStore(ReportingStore):
         self.ensure_schema()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM report_packages WHERE package_id = ?",
+                "SELECT * FROM report_packages WHERE package_id = ? AND deleted_at IS NULL",
                 (package_id,),
             ).fetchone()
         if row is None:
@@ -890,7 +909,7 @@ class SqliteRuntimeStore(ReportingStore):
             """
             SELECT *
             FROM report_packages
-            WHERE run_id = ?
+            WHERE run_id = ? AND deleted_at IS NULL
             ORDER BY created_at DESC, package_id DESC
             """,
             (run_id,),
@@ -906,7 +925,7 @@ class SqliteRuntimeStore(ReportingStore):
                 """
                 SELECT *
                 FROM report_packages
-                WHERE run_id = ?
+                WHERE run_id = ? AND deleted_at IS NULL
                 ORDER BY created_at DESC, package_id DESC
                 LIMIT ?
                 """,
@@ -917,12 +936,27 @@ class SqliteRuntimeStore(ReportingStore):
                 """
                 SELECT *
                 FROM report_packages
+                WHERE deleted_at IS NULL
                 ORDER BY created_at DESC, package_id DESC
                 LIMIT ?
                 """,
                 (normalized_limit,),
             )
         return [self._to_report_package(row) for row in rows]
+    def soft_delete_ai_workflow_run(self, workflow_id: str, *, deleted_at: str, reason: str) -> Mapping[str, Any] | None:
+        current = self.fetch_ai_workflow_run(workflow_id)
+        if current is None: return None
+        with self._connect() as connection:
+            connection.execute("UPDATE ai_workflow_runs SET deleted_at=?, deleted_reason=? WHERE workflow_id=?", (deleted_at, reason[:500], workflow_id))
+        return {**dict(current), "deleted_at": deleted_at, "deleted_reason": reason}
+
+    def soft_delete_report_package(self, package_id: str, *, deleted_at: str, reason: str) -> Mapping[str, Any] | None:
+        current = self.fetch_report_package(package_id)
+        if current is None: return None
+        with self._connect() as connection:
+            connection.execute("UPDATE report_packages SET deleted_at=?, deleted_reason=? WHERE package_id=?", (deleted_at, reason[:500], package_id))
+        return {**dict(current), "deleted_at": deleted_at, "deleted_reason": reason}
+
     def _to_report_package(self, row: Mapping[str, Any]) -> Mapping[str, Any]:
         return {
             "package_id": row["package_id"],
@@ -1045,7 +1079,7 @@ class SqliteRuntimeStore(ReportingStore):
             """
             SELECT *
             FROM backtest_runs
-            WHERE run_id LIKE ?
+            WHERE run_id LIKE ? AND deleted_at IS NULL
             ORDER BY run_id
             """,
             (f"{run_id_prefix}%",),
@@ -1069,11 +1103,38 @@ class SqliteRuntimeStore(ReportingStore):
             }
             for row in rows
         ]
+    def list_backtest_runs(self, limit: int = 50) -> Sequence[Mapping[str, Any]]:
+        """List recent non-deleted single-stock backtest runs for workspace history."""
+        self.ensure_schema()
+        safe_limit = max(1, min(int(limit or 50), 200))
+        rows = self._fetch_rows(
+            """
+            SELECT * FROM backtest_runs
+            WHERE deleted_at IS NULL
+            ORDER BY created_at DESC, run_id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        )
+        return [
+            {
+                "run_id": row["run_id"], "strategy_name": row["strategy_name"],
+                "strategy_id": row["strategy_id"], "status": row["status"],
+                "benchmark": row["benchmark"], "universe": row["universe"],
+                "start_date": row["start_date"], "end_date": row["end_date"],
+                "created_at": row["created_at"], "completed_at": row["completed_at"],
+                "parameters": self._load_json(row["parameters_json"]),
+                "extra_config": self._load_json(row["extra_config_json"]),
+                "raw_result": self._load_json(row["raw_result_json"]),
+                "error_message": row["error_message"],
+            }
+            for row in rows
+        ]
     def fetch_backtest_run(self, run_id: str) -> Mapping[str, Any] | None:
         self.ensure_schema()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM backtest_runs WHERE run_id = ?",
+                "SELECT * FROM backtest_runs WHERE run_id = ? AND deleted_at IS NULL",
                 (run_id,),
             ).fetchone()
         if row is None:
@@ -1094,6 +1155,22 @@ class SqliteRuntimeStore(ReportingStore):
             "raw_result": self._load_json(row["raw_result_json"]),
             "error_message": row["error_message"],
         }
+
+    def soft_delete_backtest_run(self, run_id: str, *, deleted_at: str, reason: str) -> Mapping[str, Any] | None:
+        """Hide one terminal run while retaining its audit and reporting evidence."""
+
+        self.ensure_schema()
+        run = self.fetch_backtest_run(run_id)
+        if run is None:
+            return None
+        if str(run.get("status") or "") in {"pending", "running"}:
+            raise ValueError("running backtest run cannot be deleted")
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE backtest_runs SET deleted_at=?, deleted_reason=? WHERE run_id=?",
+                (deleted_at, str(reason or "用户从 Web 工作台删除")[:500], run_id),
+            )
+        return {**dict(run), "deleted_at": deleted_at, "deleted_reason": reason}
 
     def fetch_backtest_metrics(self, run_id: str) -> Sequence[Mapping[str, Any]]:
         return self._fetch_rows(

@@ -166,10 +166,27 @@ class IndependentScreeningService:
             else:
                 self._cancel_remaining(task_id)
         return self.get_task(task_id)
+
+    def delete_task(self, task_id: str, *, reason: str = "用户从 Web 工作台删除") -> dict[str, Any]:
+        task = self.get_task(task_id)
+        if task.get("status") == "not_found":
+            return task
+        if task.get("deleted_at"):
+            return task
+        if task.get("status") in {"pending", "running", "pause_requested", "cancel_requested"}:
+            raise ValueError("running task must be canceled before deletion")
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE screening_tasks SET deleted_at=?, deleted_reason=?, updated_at=? WHERE task_id=?",
+                (now, str(reason or "用户从 Web 工作台删除")[:500], now, task_id),
+            )
+        return self.get_task(task_id)
+
     def list_tasks(self, *, limit: int = 30) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT task_id FROM screening_tasks ORDER BY created_at DESC LIMIT ?",
+                "SELECT task_id FROM screening_tasks WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
                 (max(1, min(int(limit), 200)),),
             ).fetchall()
         return [self.get_task(str(row["task_id"])) for row in rows]
@@ -239,6 +256,8 @@ class IndependentScreeningService:
             "updated_at": row["updated_at"],
             "started_at": row["started_at"],
             "finished_at": row["finished_at"],
+            "deleted_at": row["deleted_at"],
+            "deleted_reason": row["deleted_reason"],
         }
     def list_items(
         self,
@@ -536,7 +555,9 @@ class IndependentScreeningService:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
-                    finished_at TEXT
+                    finished_at TEXT,
+                    deleted_at TEXT,
+                    deleted_reason TEXT
                 );
                 CREATE TABLE IF NOT EXISTS screening_items (
                     task_id TEXT NOT NULL,
@@ -558,6 +579,12 @@ class IndependentScreeningService:
                     ON screening_items (task_id, status, entered);
                 """
             )
+
+            columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(screening_tasks)").fetchall()}
+            if "deleted_at" not in columns:
+                connection.execute("ALTER TABLE screening_tasks ADD COLUMN deleted_at TEXT")
+            if "deleted_reason" not in columns:
+                connection.execute("ALTER TABLE screening_tasks ADD COLUMN deleted_reason TEXT")
 
     def _recover_interrupted_tasks(self) -> None:
         now = _utc_now()

@@ -174,6 +174,19 @@ def update_report_package_lifecycle(
     if package is None:
         return None
     return ReportPackageLifecycleUpdateResponsePayload(package=package)
+def delete_report_package(service: ReportingService, package_id: str) -> ReportPackageResponsePayload | None:
+    package = service.delete_report_package(unquote(package_id))
+    if package is None:
+        return None
+    return ReportPackageResponsePayload(package=package)
+
+
+def delete_ai_workflow(service: ReportingService, workflow_id: str) -> dict[str, Any] | None:
+    workflow = service.delete_ai_workflow(unquote(workflow_id))
+    if workflow is None:
+        return None
+    return {"workflow": workflow}
+
 def get_report_package(service: ReportingService, package_id: str) -> ReportPackageResponsePayload | None:
     package = service.get_report_package(unquote(package_id))
     if package is None:
@@ -367,6 +380,20 @@ def build_reporting_routes(
             name="reporting_report_package_export_manifest",
             handler=lambda payload: build_report_package_export_manifest(service, payload),
             request_model=ReportPackageExportManifestQueryPayload,
+        ),
+        RouteDefinition(
+            method="DELETE",
+            path="/api/reporting/ai-workflows/{workflow_id}",
+            name="reporting_ai_workflow_delete",
+            handler=lambda workflow_id: delete_ai_workflow(service, workflow_id),
+            request_model=None,
+        ),
+        RouteDefinition(
+            method="DELETE",
+            path="/api/reporting/report-packages/{package_id}",
+            name="reporting_report_package_delete",
+            handler=lambda package_id: delete_report_package(service, package_id),
+            request_model=None,
         ),
         RouteDefinition(
             method="GET",

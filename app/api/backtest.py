@@ -80,7 +80,7 @@ _EXPERIMENT_INDEX_PATH = Path("var/runtime/backtest_experiment_index.json")
 
 
 def list_experiment_index(payload: BacktestExperimentIndexFilterPayload | None = None) -> BacktestExperimentIndexListResponsePayload:
-    experiments = _filter_experiment_index(_load_experiment_index(), payload or BacktestExperimentIndexFilterPayload())
+    experiments = _filter_experiment_index([item for item in _load_experiment_index() if not item.get("deleted_at")], payload or BacktestExperimentIndexFilterPayload())
     experiments = sorted(experiments, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
     return BacktestExperimentIndexListResponsePayload(experiments=experiments, summary=_summarize_experiment_index(experiments))
 
@@ -131,6 +131,18 @@ def update_experiment_index(experiment_id: str, payload: BacktestExperimentIndex
     return BacktestExperimentIndexResponsePayload(experiment=updated)
 
 
+def delete_experiment_index(experiment_id: str) -> BacktestExperimentIndexResponsePayload:
+    experiments = _load_experiment_index()
+    experiment = next((item for item in experiments if item.get("experiment_id") == experiment_id), None)
+    if experiment is None:
+        return BacktestExperimentIndexResponsePayload(experiment={"experiment_id": experiment_id, "status": "not_found"})
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    experiment["deleted_at"] = now
+    experiment["deleted_reason"] = "用户从 Web 工作台删除"
+    experiment["updated_at"] = now
+    _upsert_experiment_index(experiment)
+    return BacktestExperimentIndexResponsePayload(experiment=experiment)
+
 def compare_experiments(
     service: BacktestService | PersistentBacktestService,
     payload: BacktestExperimentCompareRequestPayload,
@@ -173,6 +185,16 @@ def compare_experiments(
         "summary": _summarize_experiment_comparison(ranked),
     }
     return BacktestExperimentCompareResponsePayload(result=result)
+
+def list_backtest_runs(service: PersistentBacktestService, limit: int = 50) -> dict[str, Any]:
+    return {"runs": service.list_runs(limit=limit)}
+def delete_backtest_run(
+    service: BacktestService | PersistentBacktestService,
+    run_id: str,
+) -> dict[str, Any]:
+    if not isinstance(service, PersistentBacktestService):
+        return {"run": {"run_id": run_id, "status": "unsupported"}}
+    return {"run": service.delete_run(run_id)}
 
 def run_once(
     service: BacktestService | PersistentBacktestService,
@@ -330,13 +352,25 @@ def _to_strategy_payload(item: dict[str, Any]) -> StrategyDefinitionPayload:
 
 
 def list_research_tasks() -> StrategyResearchTaskListResponsePayload:
-    return StrategyResearchTaskListResponsePayload(tasks=_load_research_tasks())
+    return StrategyResearchTaskListResponsePayload(tasks=[item for item in _load_research_tasks() if not item.get("deleted_at")])
 
 
 def get_research_task(task_id: str) -> StrategyResearchTaskResponsePayload:
     task = next((item for item in _load_research_tasks() if item.get("task_id") == task_id), None)
     return StrategyResearchTaskResponsePayload(task=task or {"task_id": task_id, "status": "not_found"})
 
+
+def delete_research_task(task_id: str) -> StrategyResearchTaskResponsePayload:
+    tasks = _load_research_tasks()
+    task = next((item for item in tasks if item.get("task_id") == task_id), None)
+    if task is None:
+        return StrategyResearchTaskResponsePayload(task={"task_id": task_id, "status": "not_found"})
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    task["deleted_at"] = now
+    task["deleted_reason"] = "用户从 Web 工作台删除"
+    task["updated_at"] = now
+    _write_research_tasks([item if item.get("task_id") != task_id else task for item in tasks])
+    return StrategyResearchTaskResponsePayload(task=task)
 
 def create_research_task(payload: StrategyResearchTaskCreateRequestPayload) -> StrategyResearchTaskResponsePayload:
     tasks = _load_research_tasks()
@@ -442,7 +476,7 @@ def run_research_task(
     return StrategyResearchTaskRunResponsePayload(result=execution)
 
 def list_parameter_matrix_tasks() -> ParameterMatrixTaskListResponsePayload:
-    tasks = sorted(_load_parameter_matrix_tasks(), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    tasks = sorted((item for item in _load_parameter_matrix_tasks() if not item.get("deleted_at")), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
     return ParameterMatrixTaskListResponsePayload(tasks=tasks)
 
 
@@ -450,6 +484,18 @@ def get_parameter_matrix_task(task_id: str) -> ParameterMatrixTaskResponsePayloa
     task = next((item for item in _load_parameter_matrix_tasks() if item.get("task_id") == task_id), None)
     return ParameterMatrixTaskResponsePayload(task=task or {"task_id": task_id, "status": "not_found"})
 
+
+def delete_parameter_matrix_task(task_id: str) -> ParameterMatrixTaskResponsePayload:
+    tasks = _load_parameter_matrix_tasks()
+    task = next((item for item in tasks if item.get("task_id") == task_id), None)
+    if task is None:
+        return ParameterMatrixTaskResponsePayload(task={"task_id": task_id, "status": "not_found"})
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    task["deleted_at"] = now
+    task["deleted_reason"] = "用户从 Web 工作台删除"
+    task["updated_at"] = now
+    _write_parameter_matrix_tasks([item if item.get("task_id") != task_id else task for item in tasks])
+    return ParameterMatrixTaskResponsePayload(task=task)
 
 def create_parameter_matrix_task(payload: ParameterMatrixTaskCreateRequestPayload) -> ParameterMatrixTaskResponsePayload:
     tasks = _load_parameter_matrix_tasks()
@@ -643,6 +689,13 @@ def list_independent_screening_tasks(
     return IndependentScreeningTaskListResponsePayload(tasks=service.list_tasks(limit=int(payload.limit)))
 
 
+def delete_independent_screening_task(
+    service: IndependentScreeningService,
+    task_id: str,
+) -> IndependentScreeningTaskResponsePayload:
+    return IndependentScreeningTaskResponsePayload(task=service.delete_task(task_id))
+
+
 def get_independent_screening_task(
     service: IndependentScreeningService,
     task_id: str,
@@ -708,6 +761,12 @@ def create_shared_portfolio_task(
 def list_shared_portfolio_tasks(service: SharedPortfolioService, payload: SharedPortfolioTaskListQueryPayload) -> SharedPortfolioTaskListResponsePayload:
     return SharedPortfolioTaskListResponsePayload(tasks=service.list_tasks(limit=int(payload.limit)))
 
+
+def delete_shared_portfolio_task(
+    service: SharedPortfolioService,
+    task_id: str,
+) -> SharedPortfolioTaskResponsePayload:
+    return SharedPortfolioTaskResponsePayload(task=service.delete_task(task_id))
 
 def get_shared_portfolio_task(service: SharedPortfolioService, task_id: str) -> SharedPortfolioTaskResponsePayload:
     return SharedPortfolioTaskResponsePayload(task=service.get_task(task_id))
@@ -887,6 +946,13 @@ def build_backtest_routes(
             request_model=None,
         ),
         RouteDefinition(
+            method="DELETE",
+            path="/api/backtest/independent-screening-tasks/{task_id}",
+            name="backtest_independent_screening_task_delete",
+            handler=lambda task_id: delete_independent_screening_task(independent_screening_service, task_id),
+            request_model=None,
+        ),
+        RouteDefinition(
             method="POST",
             path="/api/backtest/independent-screening-tasks/{task_id}/run",
             name="backtest_independent_screening_task_run",
@@ -929,6 +995,13 @@ def build_backtest_routes(
             request_model=None,
         ),
         RouteDefinition(
+            method="DELETE",
+            path="/api/backtest/shared-portfolio-tasks/{task_id}",
+            name="backtest_shared_portfolio_task_delete",
+            handler=lambda task_id: delete_shared_portfolio_task(shared_portfolio_service, task_id),
+            request_model=None,
+        ),
+        RouteDefinition(
             method="POST",
             path="/api/backtest/shared-portfolio-tasks/{task_id}/run",
             name="backtest_shared_portfolio_task_run",
@@ -955,6 +1028,13 @@ def build_backtest_routes(
             name="backtest_experiment_compare",
             handler=lambda payload: compare_experiments(service, payload),
             request_model=BacktestExperimentCompareRequestPayload,
+        ),
+        RouteDefinition(
+            method="DELETE",
+            path="/api/backtest/experiments/index/{experiment_id}",
+            name="backtest_experiment_index_delete",
+            handler=delete_experiment_index,
+            request_model=None,
         ),
         RouteDefinition(
             method="POST",
@@ -992,6 +1072,13 @@ def build_backtest_routes(
             request_model=None,
         ),
         RouteDefinition(
+            method="DELETE",
+            path="/api/backtest/parameter-matrix-tasks/{task_id}",
+            name="backtest_parameter_matrix_task_delete",
+            handler=delete_parameter_matrix_task,
+            request_model=None,
+        ),
+        RouteDefinition(
             method="POST",
             path="/api/backtest/parameter-matrix-tasks/{task_id}/run",
             name="backtest_parameter_matrix_task_run",
@@ -1020,6 +1107,13 @@ def build_backtest_routes(
             request_model=StrategyResearchTaskCreateRequestPayload,
         ),
         RouteDefinition(
+            method="DELETE",
+            path="/api/backtest/research-tasks/{task_id}",
+            name="backtest_research_task_delete",
+            handler=delete_research_task,
+            request_model=None,
+        ),
+        RouteDefinition(
             method="POST",
             path="/api/backtest/research-tasks/{task_id}/run",
             name="backtest_research_task_run",
@@ -1039,6 +1133,20 @@ def build_backtest_routes(
             name="backtest_input_snapshot_migration",
             handler=lambda payload: migrate_input_snapshots(service, payload),
             request_model=BacktestInputSnapshotMigrationRequestPayload,
+        ),
+        RouteDefinition(
+            method="GET",
+            path="/api/backtest/runs",
+            name="backtest_runs",
+            handler=lambda: list_backtest_runs(service, 50),
+            request_model=None,
+        ),
+        RouteDefinition(
+            method="DELETE",
+            path="/api/backtest/results/{run_id}",
+            name="backtest_run_delete",
+            handler=lambda run_id: delete_backtest_run(service, run_id),
+            request_model=None,
         ),
         RouteDefinition(
             method="GET",
