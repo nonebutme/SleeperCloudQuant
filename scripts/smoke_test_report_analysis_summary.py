@@ -1,4 +1,4 @@
-﻿"""Smoke test for stage 50 report analysis summary."""
+"""Smoke test for stage 50 report analysis summary."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def main() -> None:
     status, payload = _dispatch(app, "GET", f"/api/reporting/strategy-evaluation/{quote(run_id)}")
     report = payload.get("report", {})
     summary = report.get("analysis_summary", {})
-    if status != 200 or summary.get("version") != "stage50-report-analysis-v1":
+    if status != 200 or summary.get("version") != "stage74-report-analysis-v2":
         raise SystemExit("stage50 smoke failed: analysis summary missing")
     if not summary.get("cards") or not summary.get("action_items"):
         raise SystemExit("stage50 smoke failed: analysis cards/action_items missing")
@@ -61,13 +61,13 @@ def main() -> None:
     status, payload = _dispatch(app, "POST", f"/api/reporting/run-detail/{quote(run_id)}/report-package", {"title": "Stage 50 analysis package"})
     package = payload.get("package", {})
     package_summary = package.get("strategy_evaluation", {}).get("analysis_summary", {})
-    if status != 200 or package_summary.get("version") != "stage50-report-analysis-v1":
+    if status != 200 or package_summary.get("version") != "stage74-report-analysis-v2":
         raise SystemExit("stage50 smoke failed: package did not persist analysis summary")
     package_id = package.get("package_id")
 
     status, payload = _dispatch(app, "GET", f"/api/reporting/report-packages/{quote(package_id)}/export?format=json")
     exported = payload.get("export", {})
-    if status != 200 or "stage50-report-analysis-v1" not in exported.get("content", ""):
+    if status != 200 or "stage74-report-analysis-v2" not in exported.get("content", ""):
         raise SystemExit("stage50 smoke failed: exported package missing analysis summary")
 
     print("stage50 report analysis summary smoke test passed")

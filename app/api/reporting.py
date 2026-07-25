@@ -299,6 +299,15 @@ def get_independent_screening_mode_report(
     report = service.get_independent_screening_report(unquote(task_id)) if service is not None else {"status": "unavailable"}
     return BacktestModeReportResponsePayload(report=report)
 
+def get_independent_screening_run_report(
+    service: BacktestModeReportService | None,
+    task_id: str,
+    run_id: str,
+) -> BacktestModeReportResponsePayload:
+    report = service.get_independent_run_report(unquote(task_id), unquote(run_id)) if service is not None else {"status": "unavailable"}
+    return BacktestModeReportResponsePayload(report=report)
+
+
 def build_reporting_routes(
     service: ReportingService,
     mode_report_service: BacktestModeReportService | None = None,
@@ -315,6 +324,12 @@ def build_reporting_routes(
             path="/api/reporting/backtest-modes/independent-screening/{task_id}",
             name="reporting_independent_screening_mode_report",
             handler=lambda task_id: get_independent_screening_mode_report(mode_report_service, task_id),
+        ),
+        RouteDefinition(
+            method="GET",
+            path="/api/reporting/backtest-modes/independent-screening/{task_id}/runs/{run_id}",
+            name="reporting_independent_screening_single_run_report",
+            handler=lambda task_id, run_id: get_independent_screening_run_report(mode_report_service, task_id, run_id),
         ),
         RouteDefinition(
             method="GET",

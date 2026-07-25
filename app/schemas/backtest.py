@@ -34,6 +34,54 @@ class BacktestRunResponsePayload:
 
 
 @dataclass(frozen=True, slots=True)
+class SingleBacktestTaskCreateRequestPayload:
+    """Create one persisted one-symbol backtest task."""
+
+    task_id: str | None = None
+    run_id: str | None = None
+    name: str = ""
+    strategy_name: str = "moving_average_strategy"
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    symbol: str = "000001.XSHE"
+    benchmark: str = "000300.XSHG"
+    start_date: str = "2020-01-01"
+    end_date: str = "2020-12-31"
+    initial_cash: float = 1_000_000
+    frequency: str = "1d"
+    adjustment: str = "qfq"
+    parameters: dict[str, Any] = field(default_factory=dict)
+    extra_config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SingleBacktestTaskRunRequestPayload:
+    """Start or retry one persisted single-symbol task."""
+
+    wait: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SingleBacktestTaskListQueryPayload:
+    """List recent persisted single-symbol tasks."""
+
+    limit: int = 50
+
+
+@dataclass(frozen=True, slots=True)
+class SingleBacktestTaskResponsePayload:
+    """One persisted single-symbol task."""
+
+    task: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SingleBacktestTaskListResponsePayload:
+    """Persisted single-symbol task list."""
+
+    tasks: list[dict[str, Any]] = field(default_factory=list)
+
+@dataclass(frozen=True, slots=True)
 class BacktestResultPanelResponsePayload:
     """Aggregated result panel for one persisted backtest run."""
 

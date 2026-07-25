@@ -1,4 +1,4 @@
-const pageTitles = { dashboard: "总览工作台", market: "数据中心", factor: "因子分析", backtest: "策略回测", ai: "AI 分析", reporting: "报告中心", config: "配置中心", traceability: "重构溯源" };
+const pageTitles = { dashboard: "总览工作台", market: "数据中心", factor: "因子分析", backtest: "策略回测", ai: "AI 分析", reporting: "报告中心", "report-management": "报告管理", config: "配置中心", traceability: "重构溯源" };
 const acceptanceMatrix = [
   ["数据中心", "已实现可验收", "K线图、OHLC 表、交易日历、同步状态；已接入 SleeperCloudQuant-old 本地 SQLite 行情源，外部 provider 已有接入门禁，未配置密钥时 fallback。"],
   ["因子分析", "已实现可验收", "因子库、股票池、截面摘要、Top N；真实因子库扩展待接入。"],
@@ -27,6 +27,7 @@ let currentModeTask = null;
 let currentBacktestView = "overview";
 let currentScreeningTask = null;
 let currentPortfolioTask = null;
+let currentSingleTask = null;
 let modeTaskCatalog = [];
 let singleRunTimer = null;
 let singleRunState = {
@@ -54,7 +55,14 @@ let currentBacktestRunIdPrefix = "";
 let currentBacktestTableOffset = 0;
 let currentIndustrySortMode = "default";
 let currentIndependentModeReport = null;
-let aShareWorkspaceLoaded = false;
+let currentModeReportTaskId = "";
+let currentModeReportRunIndex = [];
+let currentModeReportSelectedIndex = 0;
+let currentModeReportTab = "task_statistics";
+let aShareWorkspaceLoaded = false;let stage75ComparisonRuns = [];
+let stage75RunCatalog = [];
+let stage75ResultDockOpen = false;
+const stage75ComparisonColors = ["#285f8f", "#bd4b55", "#2f7d65", "#8a63a8"];
 const currentBacktestTableLimit = 5;
 const $ = (selector) => document.querySelector(selector);
 const globalFeedback = $("#global-feedback");
@@ -62,7 +70,7 @@ const globalFeedback = $("#global-feedback");
 function setFeedback(message, kind = "") { globalFeedback.textContent = message; globalFeedback.className = kind ? `feedback is-${kind}` : "feedback"; }
 function buildQuery(params) { const search = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== "" && value != null) search.set(key, value); }); return search.toString(); }
 async function requestJson(path, options = {}) { const response = await fetch(path, { method: options.method || "GET", headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}) }, body: options.body }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.detail || `请求失败 (${response.status})`); return payload; }
-function activatePage(pageId) { document.querySelectorAll(".page-section").forEach((section) => section.classList.toggle("is-active", section.id === `page-${pageId}`)); document.querySelectorAll(".nav-tab").forEach((button) => button.classList.toggle("is-active", button.dataset.page === pageId)); $("#page-title").textContent = pageTitles[pageId] || "SleeperCloudQuant"; }
+function activatePage(pageId) { document.querySelectorAll(".page-section").forEach((section) => section.classList.toggle("is-active", section.id === `page-${pageId}`)); document.querySelectorAll(".nav-tab").forEach((button) => button.classList.toggle("is-active", button.dataset.page === pageId)); $("#page-title").textContent = pageTitles[pageId] || "SleeperCloudQuant"; updateStage75Url({ page: pageId }); }
 function financialToneForLabel(label, value) { const text = String(label || "").toLowerCase(); if (/(收益|回报|盈利|盈亏|年化|超额|return|profit|annual)/i.test(text)) return financialToneClass(value); if (/(回撤|亏损|损失|成本|drawdown|loss|cost)/i.test(text) && value !== "-" && value !== "--") return "market-fall"; return ""; }
 function renderSummaryGrid(target, items) { target.innerHTML = items.map((item) => '<div class="summary-item ' + (item.tone || financialToneForLabel(item.label, item.value)) + '"><strong>' + item.label + '</strong><span>' + item.value + '</span></div>').join(""); }
 function renderList(target, rows) { target.innerHTML = rows.length ? rows.map((item) => `<li>${item}</li>`).join("") : '<li class="empty-cell">暂无数据</li>'; }
@@ -478,6 +486,7 @@ function renderTaskProgress(targetOrSelector, model = {}) {
 }
 
 function renderSingleRunProgress() {
+  if (singleRunState.status !== "idle") setStage76ModeTaskState("single",true,{run_id:singleRunState.runId,status:singleRunState.status,symbol:singleRunState.symbol});
   const running = ["running", "loading_result"].includes(singleRunState.status);
   const elapsed = running && singleRunState.startedAt
     ? (Date.now() - singleRunState.startedAt) / 1000
@@ -596,16 +605,21 @@ function renderBacktestResultsContext() {
 }
 
 function activateBacktestView(view) {
-  currentBacktestView = view;
-  document.querySelectorAll("[data-backtest-view]").forEach((panel) => panel.classList.toggle("is-active", panel.dataset.backtestView === view));
+  if (view === "results") {
+    renderBacktestResultsContext();
+    openStage75ResultDock(currentBacktestResultRunId);
+    return;
+  }
+  currentBacktestView = view === "overview" ? "single" : view;
+  document.querySelectorAll("[data-backtest-view]").forEach((panel) => panel.classList.toggle("is-active", panel.dataset.backtestView === currentBacktestView));
   document.querySelectorAll("[data-backtest-view-target]").forEach((button) => {
-    const active = button.dataset.backtestViewTarget === view;
+    const active = button.dataset.backtestViewTarget === currentBacktestView;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-selected", String(active));
   });
+  restoreStage75Draft(currentBacktestView);
+  updateStage75Url({ page: "backtest", view: currentBacktestView });
   renderBacktestWorkspace();
-  if (view === "overview") renderActiveTaskOverview();
-  if (view === "results") renderBacktestResultsContext();
 }
 
 function renderBacktestWorkspace() {
@@ -804,6 +818,7 @@ function bindBacktestWorkspace() {
   $("#single-run-history-refresh")?.addEventListener("click", () => loadSingleRunHistory().catch((error) => setFeedback(error.message, "error")));
 }
 function renderScreeningTask(task = {}) {
+  if (task.task_id) setStage76ModeTaskState("independent",true,task);
   currentScreeningTask = task.task_id ? task : currentScreeningTask;
   const progress = task.progress || {};
   const execution = task.execution || {};
@@ -848,13 +863,9 @@ function renderScreeningEnteredResults(items = []) {
 async function loadIndependentScreeningTask(taskId, { schedule = true } = {}) {
   if (!taskId) return null;
   currentScreeningTaskId = taskId;
-  const [detail, entered] = await Promise.all([
-    requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(taskId)}`),
-    requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(taskId)}/items?entered_only=true&limit=100`),
-  ]);
+  const detail = await requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(taskId)}`);
   const task = detail.task || {};
   renderScreeningTask(task);
-  renderScreeningEnteredResults(entered.result?.items || []);
   if (["completed", "partial_completed", "partial_failed", "failed", "cancelled"].includes(task.status)) { loadIndependentScreeningTasks().catch(() => {}); loadBacktestModeTasks().catch(() => {}); }
   if (screeningPollTimer) clearTimeout(screeningPollTimer);
   if (schedule && ["running", "ready", "interrupted", "pause_requested", "cancel_requested"].includes(task.status)) {
@@ -981,6 +992,7 @@ async function controlIndependentScreeningTask(action) {
   setFeedback(`独立选股任务控制已提交：${action}`, "success");
 }
 function renderPortfolioTask(task = {}) {
+  if (task.task_id) setStage76ModeTaskState("portfolio",true,task);
   currentPortfolioTask = task.task_id ? task : currentPortfolioTask;
   const summary = task.summary || {};
   const metrics = summary.metrics || {};
@@ -1481,17 +1493,21 @@ function escapeHtml(value) {
 function renderStrategyLibrary() {
   const search = $("#strategy-library-search").value.trim().toLowerCase();
   const category = $("#strategy-library-category").value;
+  const sort = $("#strategy-library-sort")?.value || "name";
   const filtered = strategyCatalog.filter((strategy) => {
     const matchesSearch = !search || `${strategy.name} ${strategy.strategy_id} ${strategy.description}`.toLowerCase().includes(search);
     return matchesSearch && (!category || strategy.category === category);
+  }).sort((left, right) => {
+    if (sort === "category") return `${left.category || ""} ${left.name || ""}`.localeCompare(`${right.category || ""} ${right.name || ""}`, "zh-CN");
+    if (sort === "versions") return Number(right.version_count || 0) - Number(left.version_count || 0) || String(left.name || "").localeCompare(String(right.name || ""), "zh-CN");
+    return String(left.name || left.strategy_id || "").localeCompare(String(right.name || right.strategy_id || ""), "zh-CN");
   });
   $("#strategy-library-count").textContent = `${filtered.length} / ${strategyCatalog.length} 个策略`;
   $("#strategy-library").innerHTML = filtered.length ? filtered.map((strategy) => {
     const active = selectedStrategy?.strategy_id === strategy.strategy_id;
-    return `<button type="button" class="strategy-library-item${active ? " is-selected" : ""}" data-strategy-id="${escapeHtml(strategy.strategy_id)}"><span class="strategy-library-item-main"><strong>${escapeHtml(strategy.name)}</strong><small>${escapeHtml(strategy.strategy_id)}</small></span><span class="strategy-library-item-meta"><em>${escapeHtml(strategy.category)}</em><span>${escapeHtml(strategy.latest_version || "v1")} · ${strategy.version_count || 1} 个版本</span></span><span class="strategy-library-item-description">${escapeHtml(strategy.description || "暂无说明")}</span></button>`;
+    return `<button type="button" class="strategy-library-item${active ? " is-selected" : ""}" data-strategy-id="${escapeHtml(strategy.strategy_id)}" title="${escapeHtml(strategy.description || strategy.name || strategy.strategy_id)}"><span class="strategy-library-item-main"><strong>${escapeHtml(strategy.name)}</strong><small>${escapeHtml(strategy.strategy_id)}</small></span><span class="strategy-library-item-meta"><em>${escapeHtml(strategy.category)}</em><span>${escapeHtml(strategy.latest_version || "v1")} · ${strategy.version_count || 1} 版</span></span></button>`;
   }).join("") : '<div class="empty-cell">没有符合条件的策略</div>';
-}
-function strategyParameterLabel(key) {
+}function strategyParameterLabel(key) {
   const labels = { short_window: "短均线周期", long_window: "长均线周期", atr_window: "ATR 周期", atr_multiplier: "ATR 止损倍数", position_size: "目标仓位", commission: "手续费率", breakout_window: "突破周期", max_position: "最大仓位" };
   return labels[key] || key;
 }
@@ -1559,14 +1575,22 @@ async function selectStrategy(strategy) {
   $("#strategy-editor-state").textContent = "已选择";
   $("#strategy-delete").disabled = false;
   $("#strategy-editor").value = strategy.source_code || "";
+  renderStage76CodeHighlight();
   renderParameterForm(strategy);
   try {
     const history = await requestJson(`/api/backtest/strategies/${encodeURIComponent(strategy.strategy_id)}/versions`);
     const versions = history.versions || [];
-    $("#strategy-version-history").innerHTML = versions.slice().reverse().map((version, index) => `<button type="button" class="strategy-version-item${version.latest_version === strategy.latest_version ? " is-current" : ""}" data-strategy-version-index="${versions.length - index - 1}"><strong>${escapeHtml(version.latest_version)}</strong><span>${escapeHtml(version.saved_at || "")}</span><small>${escapeHtml((version.source_sha256 || "").slice(0, 12))}</small></button>`).join("") || '<div class="empty-cell">暂无版本历史</div>';
-    $("#strategy-version-history").querySelectorAll("[data-strategy-version-index]").forEach((button) => button.addEventListener("click", () => selectStrategy(versions[Number(button.dataset.strategyVersionIndex)])));
+    const historyNode=$("#strategy-version-history");
+    if(historyNode) historyNode.innerHTML = versions.slice().reverse().map((version, index) => `<button type="button" class="strategy-version-item${version.latest_version === strategy.latest_version ? " is-current" : ""}" data-strategy-version-index="${versions.length - index - 1}"><strong>${escapeHtml(version.latest_version)}</strong><span>${escapeHtml(version.saved_at || "")}</span><small>${escapeHtml((version.source_sha256 || "").slice(0, 12))}</small></button>`).join("") || '<div class="empty-cell">暂无版本</div>';
+    const displayVersions=versions.slice().reverse();
+    const versionSelect=$("#strategy-version-select");
+    if(versionSelect){
+      versionSelect.innerHTML=displayVersions.map((version,index)=>`<option value="${index}" ${version.latest_version===strategy.latest_version?"selected":""}>${escapeHtml(version.latest_version)} · ${escapeHtml(version.saved_at||"未记录时间")}</option>`).join("") || '<option value="">暂无版本</option>';
+      versionSelect.onchange=()=>{const selected=displayVersions[Number(versionSelect.value)];if(selected)selectStrategy(selected).catch((error)=>setFeedback(error.message,"error"));};
+    }
   } catch (error) {
-    $("#strategy-version-history").innerHTML = `<div class="empty-cell">版本历史加载失败：${escapeHtml(error.message)}</div>`;
+    const historyNode=$("#strategy-version-history"); if(historyNode) historyNode.innerHTML = `<div class="empty-cell">版本加载失败：${escapeHtml(error.message)}</div>`;
+    const versionSelect=$("#strategy-version-select"); if(versionSelect) versionSelect.innerHTML='<option value="">版本加载失败</option>';
   }
 }
 function startNewStrategy() {
@@ -1579,10 +1603,12 @@ function startNewStrategy() {
   setStrategyCategory("自定义策略");
   $("#strategy-draft-description").value = "";
   $("#strategy-editor").value = newStrategyTemplate;
+  renderStage76CodeHighlight();
   $("#strategy-editor-meta").textContent = "新策略 / 尚未保存";
   $("#strategy-editor-state").textContent = "新建中";
   $("#strategy-delete").disabled = true;
-  $("#strategy-version-history").innerHTML = '<div class="empty-cell">保存后生成 v1</div>';
+  const historyNode=$("#strategy-version-history"); if(historyNode) historyNode.innerHTML = '<div class="empty-cell">保存后生成 v1</div>';
+  const versionSelect=$("#strategy-version-select"); if(versionSelect) versionSelect.innerHTML='<option value="">未保存</option>';
   $("#strategy-validation-output").textContent = "等待策略校验";
   $("#strategy-validation-output").className = "inline-status";
   renderParameterForm(selectedStrategy);
@@ -1646,6 +1672,7 @@ function bindStrategyManager() {
 async function loadBacktestResultPanel(runId) {
   if (!runId) return null;
   currentBacktestResultRunId = runId;
+  openStage75ResultDock(runId);
   currentBacktestRunIdPrefix = runId.replace(/-\d+$/, "");
   const payload = await requestJson(`/api/backtest/results/${encodeURIComponent(runId)}/panel`);
   const result = payload.result || {};
@@ -1685,6 +1712,7 @@ async function loadBacktestResultPanel(runId) {
     { label: "单票最大权重", value: exposure.max_single_weight ?? "-" },
     { label: "快照", value: exposure.latest_snapshot_time || "-" },
   ]);
+  renderStage76ResultDetails(result);
   $("#backtest-result-panel-tables").innerHTML = `<h4>交易明细</h4>${renderTable(result.trades || [], [{key:"trade_time",label:"时间"},{key:"order_book_id",label:"标的"},{key:"side",label:"方向"},{key:"price",label:"价格"},{key:"quantity",label:"数量"},{key:"amount",label:"成交额"}])}<h4>持仓快照</h4>${renderTable(result.positions || [], [{key:"snapshot_time",label:"时间"},{key:"order_book_id",label:"标的"},{key:"quantity",label:"数量"},{key:"market_value",label:"市值"}])}<h4>账户快照</h4>${renderTable(result.accounts || [], [{key:"snapshot_time",label:"时间"},{key:"total_value",label:"总资产"},{key:"cash",label:"现金"},{key:"unit_net_value",label:"单位净值"}])}<h4>年度收益</h4>${renderTable(result.yearly_returns || [], [{key:"year",label:"年度"},{key:"portfolio_return",label:"组合收益"},{key:"benchmark_return",label:"基准收益"},{key:"excess_return",label:"超额收益"}])}`;
   $("#backtest-result-panel-output").textContent = JSON.stringify({ summary, metrics: result.metrics || {}, trade_attribution: result.trade_attribution || {}, risk_metrics: result.risk_metrics || {}, exposure_summary: result.exposure_summary || {}, parameter_snapshot: result.parameter_snapshot || {}, input_snapshot: result.input_snapshot || {}, data_asset_trace: result.data_asset_trace || {}, logs: result.logs || [] }, null, 2);
   await loadBacktestResultTable(0);
@@ -1931,7 +1959,6 @@ function scoreLevel(score) { if (score >= 85) return { text: "优秀", cls: "exc
 function renderMiniBars(rows) { const max = Math.max(...rows.map((row) => Math.abs(Number(row.value) || 0)), 1); return `<svg viewBox="0 0 420 170" role="img"><line x1="38" x2="400" y1="130" y2="130" stroke="#d9e1e8"/>${rows.map((row, index) => { const value = Number(row.value) || 0; const h = Math.max(4, Math.abs(value) / max * 92); const x = 54 + index * (320 / Math.max(rows.length, 1)); const y = value >= 0 ? 130 - h : 130; const color = value >= 0 ? "#c43d3d" : "#16845b"; return `<rect x="${x}" y="${y}" width="34" height="${h}" fill="${color}"/><text x="${x + 17}" y="152" text-anchor="middle" font-size="11" fill="#5d6b78">${row.label}</text><text x="${x + 17}" y="${Math.max(14, y - 6)}" text-anchor="middle" font-size="11" fill="#17202a">${row.display || value}</text>`; }).join("")}</svg>`; }
 function renderMiniLine(rows, danger = false) { const values = rows.map((row) => Number(row.value) || 0); const max = Math.max(...values, 1); const min = Math.min(...values, 0); const span = max - min || 1; const points = rows.map((row, index) => { const x = 38 + index * (350 / Math.max(rows.length - 1, 1)); const y = 130 - ((Number(row.value) || 0) - min) / span * 100; return `${x},${y}`; }).join(" "); return `<svg viewBox="0 0 420 170" role="img"><line x1="38" x2="400" y1="130" y2="130" stroke="#d9e1e8"/><polyline points="${points}" fill="none" stroke="${danger ? "#16845b" : "#315f9f"}" stroke-width="3"/>${rows.map((row, index) => { const x = 38 + index * (350 / Math.max(rows.length - 1, 1)); const y = 130 - ((Number(row.value) || 0) - min) / span * 100; return `<circle cx="${x}" cy="${y}" r="4" fill="${danger ? "#16845b" : "#315f9f"}"/><text x="${x}" y="152" text-anchor="middle" font-size="11" fill="#5d6b78">${row.label}</text>`; }).join("")}</svg>`; }
 function renderRadar(target, dimensions) { const cx = 360, cy = 160, radius = 108; const pointsFor = (scale) => dimensions.map((item, index) => { const angle = -Math.PI / 2 + index * Math.PI * 2 / dimensions.length; return `${cx + Math.cos(angle) * radius * scale},${cy + Math.sin(angle) * radius * scale}`; }).join(" "); const dataPoints = dimensions.map((item, index) => { const angle = -Math.PI / 2 + index * Math.PI * 2 / dimensions.length; const scale = item.score / 100; return { x: cx + Math.cos(angle) * radius * scale, y: cy + Math.sin(angle) * radius * scale, lx: cx + Math.cos(angle) * (radius + 42), ly: cy + Math.sin(angle) * (radius + 28), label: item.short, score: item.score }; }); target.innerHTML = `<svg viewBox="0 0 720 320" role="img" aria-label="策略7维评分雷达图">${[0.2,0.4,0.6,0.8,1].map((s) => `<polygon class="radar-grid" points="${pointsFor(s)}"/>`).join("")}${dimensions.map((_, index) => { const angle = -Math.PI / 2 + index * Math.PI * 2 / dimensions.length; return `<line class="radar-axis" x1="${cx}" y1="${cy}" x2="${cx + Math.cos(angle) * radius}" y2="${cy + Math.sin(angle) * radius}"/>`; }).join("")}<polygon class="radar-shape" points="${dataPoints.map((p) => `${p.x},${p.y}`).join(" ")}"/>${dataPoints.map((p) => `<circle class="radar-point" cx="${p.x}" cy="${p.y}" r="4"/><text class="radar-label" x="${p.lx}" y="${p.ly}" text-anchor="middle">${p.label} ${p.score}</text>`).join("")}</svg>`; }
-function buildSevenDimensionReport(run) { const metrics = run.metrics || {}; const yearly = run.yearly_returns || []; const trades = run.trades || []; const positions = run.positions || []; const totalReturn = Number(metricValue(metrics, ["total_returns", "total_return"], 0.128)); const sharpe = Number(metricValue(metrics, ["sharpe", "sharpe_ratio"], 1.12)); const maxDrawdown = Math.abs(Number(metricValue(metrics, ["max_drawdown", "drawdown"], 0.086))); const annualReturn = Number(metricValue(metrics, ["annual_return", "annual_returns"], totalReturn)); const winYears = yearly.filter((row) => Number(row.portfolio_return) > Number(row.benchmark_return || 0)).length; const yearWinRate = yearly.length ? winYears / yearly.length : 0.8; const avgPositionCount = Math.max(positions.length, 3); const dimensions = [{ key:"return", short:"收益真实", title:"维度1：收益真实性", score: Math.min(95, Math.round(70 + Math.max(0, annualReturn) * 120)), level:null, metrics:[["总收益率", formatPercent(totalReturn)],["年化收益率", formatPercent(annualReturn)],["年度胜率", formatPercent(yearWinRate)],["样本内外偏差", "演示 3.98%"]], chart: renderMiniBars((yearly.length ? yearly : [{year:"2020", portfolio_return:0.12, benchmark_return:0.08},{year:"2021", portfolio_return:0.08, benchmark_return:0.04},{year:"2022", portfolio_return:-0.03, benchmark_return:-0.06}]).map((row) => ({ label: String(row.year), value: Number(row.portfolio_return || 0) * 100, display: formatPercent(row.portfolio_return || 0) }))) }, { key:"risk", short:"风险可控", title:"维度2：风险可控性", score: Math.max(55, Math.round(92 - maxDrawdown * 160)), metrics:[["最大回撤", formatPercent(maxDrawdown)],["年化波动率", formatPercent(metricValue(metrics,["volatility","annual_volatility"],0.116))],["最大连续亏损月", "演示 4个月"],["回撤修复时间", "演示 2.1个月"]], chart: renderMiniLine([{label:"起始",value:0},{label:"低点",value:maxDrawdown*100},{label:"修复",value:maxDrawdown*55},{label:"当前",value:maxDrawdown*30}], true) }, { key:"riskReturn", short:"性价比", title:"维度3：风险调整收益", score: Math.min(92, Math.round(60 + sharpe * 18)), metrics:[["Sharpe", sharpe.toFixed(2)],["Calmar", (annualReturn / Math.max(maxDrawdown, 0.01)).toFixed(2)],["Sortino", (sharpe * 1.22).toFixed(2)],["基准 Sharpe", "演示 0.78"]], chart: renderMiniBars([{label:"Sharpe",value:sharpe,display:sharpe.toFixed(2)},{label:"Calmar",value:annualReturn / Math.max(maxDrawdown,0.01),display:(annualReturn / Math.max(maxDrawdown,0.01)).toFixed(2)},{label:"Sortino",value:sharpe*1.22,display:(sharpe*1.22).toFixed(2)}]) }, { key:"stable", short:"收益稳定", title:"维度4：收益稳定性", score: Math.round(65 + yearWinRate * 25), metrics:[["年度胜率", formatPercent(yearWinRate)],["月度胜率", "演示 61.67%"],["平均盈亏比", "演示 1.86"],["最大连续盈利月", "演示 5个月"]], chart: renderMiniBars([{label:"2020",value:3.2},{label:"2021",value:1.8},{label:"2022",value:-1.4},{label:"2023",value:2.1},{label:"2024",value:2.7}]) }, { key:"attr", short:"归因合理", title:"维度5：业绩归因合理性", score: 84, metrics:[["牛市年化", "演示 32.56%"],["熊市年化", "演示 -4.23%"],["震荡市年化", "演示 11.89%"],["主因子贡献", "演示 82%"]], chart: renderMiniBars([{label:"牛市",value:32.56},{label:"熊市",value:-4.23},{label:"震荡",value:11.89}]) }, { key:"cost", short:"成本容量", title:"维度6：成本与容量适配性", score: Math.max(62, 82 - Math.round(trades.length / 3)), metrics:[["交易笔数", trades.length || "演示 2"],["成本侵蚀率", "演示 1.57%"],["容量上限", "演示 5亿"],["滑点冲击", "演示 0.32%"]], chart: renderMiniLine([{label:"0%",value:15.9},{label:"0.03%",value:14.3},{label:"0.06%",value:13.1},{label:"0.1%",value:11.6},{label:"0.2%",value:8.8}]) }, { key:"diverse", short:"持仓分散", title:"维度7：持仓分散度", score: Math.min(92, 72 + avgPositionCount * 4), metrics:[["单票最大权重", "演示 3.33%"],["行业最大占比", "演示 28%"],["平均持仓数", avgPositionCount],["跌停冲击", "演示 0.33%"]], chart: renderMiniBars([{label:"换手",value:360},{label:"单票",value:3.33},{label:"行业",value:28},{label:"冲击",value:0.33}]) }]; dimensions.forEach((item) => { item.level = scoreLevel(item.score); }); return dimensions; }
 function renderEvaluationChart(chart) { const rows = chart?.rows || []; if (!rows.length) return '<div class="empty-cell">暂无图表数据</div>'; if ((chart.kind || "").startsWith("line")) return renderMiniLine(rows, chart.kind === "line-danger"); return renderMiniBars(rows); }
 function normalizeEvaluationDimension(item) { const levelMap = { excellent: "优秀", good: "良好", normal: "合格", bad: "待优化" }; return { key: item.key, short: item.short_label || item.short || item.title, title: item.title, score: item.score, level: { cls: item.level || scoreLevel(item.score).cls, text: levelMap[item.level] || scoreLevel(item.score).text }, metrics: (item.metrics || []).map((metric) => [metric.label, metric.value]), chart: renderEvaluationChart(item.chart) }; }
 function normalizeEvaluationReport(report) { if (!report?.dimensions) return null; return { average: report.average_score, dimensions: report.dimensions.map(normalizeEvaluationDimension), conclusions: report.conclusions || [], notes: report.data_quality_notes || [], diagnostics: report.diagnostics || {}, scoreBreakdown: report.score_breakdown || {}, decisionFlags: report.decision_flags || [] }; }
@@ -1983,7 +2010,8 @@ function renderStrategyDiagnostics(normalized) {
   if (scoreTarget) scoreTarget.textContent = JSON.stringify({ score_breakdown: normalized?.scoreBreakdown || {}, diagnostics }, null, 2);
 }function renderSevenDimensionReport(run, evaluationReport = null) {
   const normalized = normalizeEvaluationReport(evaluationReport);
-  const dimensions = normalized?.dimensions || buildSevenDimensionReport(run);
+  const dimensions = normalized?.dimensions || [];
+  if (!dimensions.length) { $("#report-radar").innerHTML = '<div class="empty-cell">当前 Run 缺少可用的 7 维评估证据，不使用演示值补齐。</div>'; $("#report-dimension-grid").innerHTML = ""; $("#report-score-summary").textContent = "证据不足"; return; }
   const average = normalized?.average || Math.round(dimensions.reduce((sum, item) => sum + item.score, 0) / dimensions.length);
   renderRadar($("#report-radar"), dimensions);
   $("#report-score-summary").textContent = `综合评分 ${average}/100；核心逻辑：能不能做、做得好不好、能做多久。`;
@@ -1997,12 +2025,12 @@ function renderStrategyDiagnostics(normalized) {
   $("#report-conclusion").innerHTML = conclusions.map((text, index) => `<p><strong>${index + 1}. </strong>${text}</p>`).join("") + ((normalized?.notes || []).length ? `<p><strong>数据质量：</strong>${normalized.notes.join("；")}</p>` : "");
 }
 function renderTable(rows, columns) { return '<div class="table-wrap"><table><thead><tr>' + columns.map((c) => '<th>' + c.label + '</th>').join("") + '</tr></thead><tbody>' + ((rows || []).map((row) => '<tr>' + columns.map((c) => '<td class="' + financialToneForLabel(c.label, row[c.key]) + '">' + (row[c.key] ?? "") + '</td>').join("") + '</tr>').join("") || '<tr><td colspan="' + columns.length + '" class="empty-cell">暂无数据</td></tr>') + '</tbody></table></div>'; }function configureReportingWorkspace() {
+  bindModeReportWorkspace();
   const aiPanel = $("#report-ai-workflow-summary")?.closest(".panel"); if (aiPanel) aiPanel.id = "report-ai-workflow-panel";
   if (aiPanel && !$("#report-ai-workflow-delete")) { const button=document.createElement("button"); button.id="report-ai-workflow-delete"; button.className="danger-button"; button.type="button"; button.textContent="\u5220\u9664\u5f53\u524d\u590d\u76d8"; aiPanel.querySelector(".panel-header")?.append(button); button.addEventListener("click", deleteCurrentAIWorkflow); }
   const packagePanel = $("#report-package-list")?.closest(".panel"); if (packagePanel) packagePanel.id = "report-package-panel";
   if (packagePanel && !$("#report-package-delete")) { const button=document.createElement("button"); button.id="report-package-delete"; button.className="danger-button"; button.type="button"; button.textContent="\u5220\u9664\u5f53\u524d\u62a5\u544a\u5305"; button.disabled=true; packagePanel.querySelector(".panel-header")?.append(button); button.addEventListener("click", deleteCurrentReportPackage); }
-  const page = $("#page-reporting");
-  if (page && !$("#reporting-section-nav")) { const nav=document.createElement("nav"); nav.id="reporting-section-nav"; nav.className="reporting-section-nav"; nav.innerHTML='<a href="#report-ai-workflow-panel">AI \u590d\u76d8</a><a href="#report-package-panel">\u7814\u7a76\u62a5\u544a\u5305</a><a href="#report-package-directory-list">\u62a5\u544a\u5305\u76ee\u5f55</a><a href="#report-snapshot-list">\u62a5\u544a\u5feb\u7167</a>'; page.insertBefore(nav,page.firstElementChild); }
+  // 阶段 75：管理入口改为页面导航，不再用页内锚点混入报告正文。
 }
 async function deleteCurrentAIWorkflow() {
   if (!currentReportWorkflowId || !window.confirm("\u786e\u8ba4\u5220\u9664\u5f53\u524d AI \u590d\u76d8\uff1f\u5220\u9664\u540e\u4ecd\u4fdd\u7559\u5ba1\u8ba1\u8bb0\u5f55\u3002")) return;
@@ -2236,59 +2264,176 @@ function renderReturnDistributionHistogram(histogram = []) {
   const labels = ["\u8dcc\u505c", "-8%-", "-8~-6%", "-6~-4%", "-4~-2%", "-2~0%", "0~2%", "2~4%", "4~6%", "6~8%", "8%+", "\u6da8\u505c"];
   const counts = labels.map((label, index) => Number(histogram[index]?.count ?? histogram.find((row) => row.bucket === label)?.count ?? 0));
   const max = Math.max(...counts, 1);
-  return `<div class="return-distribution-chart"><div class="return-y-axis"><span>${max}</span><span>${Math.round(max / 2)}</span><span>0</span></div><div class="return-chart-body"><div class="return-bars">${counts.map((count, index) => `<div class="return-bar" title="${labels[index]}?${count} ?"><strong style="height:${Math.max(count ? 4 : 0, count / max * 100)}%">${count || ""}</strong><span>${labels[index]}</span></div>`).join("")}</div><div class="return-x-axis">\u6536\u76ca\u6da8\u5e45\u533a\u95f4</div></div></div>`;
+  return `<div class="return-distribution-chart"><div class="return-y-axis"><span>${max}</span><span>${Math.round(max / 2)}</span><span>0</span></div><div class="return-chart-body"><div class="return-bars">${counts.map((count, index) => `<div class="return-bar" title="${labels[index]}：${count} 只"><strong style="height:${Math.max(count ? 4 : 0, count / max * 100)}%">${count || ""}</strong><span>${labels[index]}</span></div>`).join("")}</div><div class="return-x-axis">\u6536\u76ca\u6da8\u5e45\u533a\u95f4</div></div></div>`;
 }
 function sortIndustryRows(rows = []) {
   if (currentIndustrySortMode === "default") return rows;
   return [...rows].sort((a, b) => ((Number(a.mean) || 0) - (Number(b.mean) || 0)) * (currentIndustrySortMode === "asc" ? 1 : -1));
 }
 
-function renderIndependentModeReport(report = {}) {
-  currentIndependentModeReport = report;
+function renderModeReportContext(report = {}) {
+  const target = $("#mode-report-context");
+  if (!target) return;
+  const boundary = report.semantic_boundary || {};
+  target.innerHTML = `<strong>${report.report_mode === "shared_portfolio" ? "共享资金池组合报告" : "独立选股双层报告"}</strong><span>任务 ${escapeHtml(report.task_id || "-")}</span><span>版本 ${escapeHtml(report.report_version || "-")}</span><span>${escapeHtml(boundary.account_scope || report.report_contract?.scope || "-")}</span>`;
+}
+function configureModeReportTabs(mode) {
+  const tabs = $("#mode-report-tabs");
+  if (!tabs) return;
+  tabs.hidden = mode !== "independent-screening";
+  tabs.querySelectorAll("[data-mode-report-tab]").forEach((button) => button.classList.toggle("is-selected", button.dataset.modeReportTab === currentModeReportTab));
+  const toolbar = $("#independent-report-run-toolbar");
+  if (toolbar) toolbar.hidden = mode !== "independent-screening" || currentModeReportTab !== "single_run_evaluation";
+}
+function renderIndependentRunOptions(query = "") {
+  const select = $("#independent-report-run-select");
+  if (!select) return;
+  const normalized = String(query || "").trim().toLowerCase();
+  const rows = currentModeReportRunIndex.filter((item) => !normalized || `${item.symbol || ""} ${item.name || ""} ${item.run_id || ""}`.toLowerCase().includes(normalized));
+  const selectedRunId = currentModeReportRunIndex[currentModeReportSelectedIndex]?.run_id || "";
+  select.innerHTML = rows.map((item) => `<option value="${escapeHtml(item.run_id)}" ${item.run_id === selectedRunId ? "selected" : ""}>${escapeHtml(item.symbol || "-")} · ${escapeHtml(item.name || "-")}</option>`).join("");
+}
+function renderIndependentTaskStatistics(report = {}) {
   const scope = report.sample_scope || {};
   const distribution = report.distribution || {};
   const coverage = report.classification_coverage || {};
+  const factor = report.factor_analysis || {};
+  const robustness = report.robustness_analysis || {};
+  $("#mode-report-radar").hidden = true;
   renderSummaryGrid($("#mode-report-summary"), [
     { label: "任务状态", value: report.status || "unknown" },
     { label: "股票池", value: scope.universe_count ?? 0 },
     { label: "实际建仓", value: scope.entered_count ?? 0 },
-    { label: "平均收益", value: distribution.mean == null ? "-" : formatPercent(distribution.mean) },
+    { label: "正收益占比", value: distribution.positive_probability == null ? "-" : formatPercent(distribution.positive_probability) },
     { label: "收益中位数", value: distribution.median == null ? "-" : formatPercent(distribution.median) },
-    { label: "亏损概率", value: distribution.loss_probability == null ? "-" : formatPercent(distribution.loss_probability) },
     { label: "VaR 95%", value: distribution.var_95 == null ? "-" : formatPercent(distribution.var_95) },
-    { label: "正态性", value: distribution.normality?.reject_normality == null ? "样本不足" : (distribution.normality.reject_normality ? "拒绝正态" : "未拒绝正态") },
+    { label: "稳健性", value: robustness.status || "unknown" },
   ]);
-  const histogram = distribution.histogram || [];
-  const histogramHtml = renderReturnDistributionHistogram(histogram);
-  const groupSections = Object.entries(report.group_comparisons || {}).map(([dimension, rows]) => { const sortedRows = dimension === "industry" ? sortIndustryRows(rows || []) : (rows || []); const sortButton = dimension === "industry" ? `<button type="button" id="industry-sort-toggle">行业排序：${currentIndustrySortMode === "default" ? "默认" : currentIndustrySortMode === "asc" ? "正序" : "倒序"}</button>` : ""; return `<h4>${{market:"市场比较",entry_period:"建仓时段比较",industry:"历史行业比较",concept:"历史概念比较"}[dimension] || dimension}</h4>${sortButton}${renderTable(sortedRows, [{key:"category",label:"分类"},{key:"sample_size",label:"样本"},{key:"mean",label:"平均收益"},{key:"median",label:"中位数"},{key:"stddev",label:"标准差"},{key:"positive_probability",label:"正收益概率"}])}`; }).join("");
-  $("#mode-report-content").innerHTML = `<h4>建仓股票收益分布</h4>${histogramHtml}<h4>正态性与置信区间</h4>${renderTable([{test:distribution.normality?.test,status:distribution.normality?.status,statistic:distribution.normality?.statistic,p_value:distribution.normality?.p_value,interpretation:distribution.normality?.interpretation,ci:(distribution.mean_confidence_interval_95 || []).join(" ~ "),bootstrap_ci:(distribution.bootstrap_mean_confidence_interval_95 || []).join(" ~ ")}],[{key:"test",label:"检验"},{key:"status",label:"状态"},{key:"statistic",label:"统计量"},{key:"p_value",label:"p 值"},{key:"ci",label:"均值 95% CI"},{key:"bootstrap_ci",label:"Bootstrap 95% CI"},{key:"interpretation",label:"解释"}])}${groupSections}<h4>历史分类覆盖率</h4>${renderTable(Object.entries(coverage).map(([dimension, value]) => ({dimension,...value})),[{key:"dimension",label:"维度"},{key:"covered_count",label:"已覆盖"},{key:"missing_count",label:"缺失"},{key:"coverage_ratio",label:"覆盖率"}])}`;
-  $("#industry-sort-toggle")?.addEventListener("click", () => { currentIndustrySortMode = currentIndustrySortMode === "default" ? "asc" : currentIndustrySortMode === "asc" ? "desc" : "default"; renderIndependentModeReport(currentIndependentModeReport || report); });
-  $("#mode-report-output").textContent = JSON.stringify({ methodology: report.methodology, data_quality_notes: report.data_quality_notes, professional_sections: report.professional_sections }, null, 2);
+  const histogramHtml = renderReturnDistributionHistogram(distribution.histogram || []);
+  const groupSections = Object.entries(report.group_comparisons || {}).map(([dimension, rows]) => { const sortedRows = dimension === "industry" ? sortIndustryRows(rows || []) : (rows || []); const sortButton = dimension === "industry" ? `<button type="button" id="industry-sort-toggle">行业排序：${currentIndustrySortMode === "default" ? "默认" : currentIndustrySortMode === "asc" ? "正序" : "倒序"}</button>` : ""; return `<h4>${{market:"市场比较",board:"上市板块比较",entry_period:"建仓时段比较",industry:"历史行业比较",concept:"历史概念比较"}[dimension] || dimension}</h4>${sortButton}${renderTable(sortedRows, [{key:"category",label:"分类"},{key:"sample_size",label:"样本"},{key:"mean",label:"平均收益"},{key:"median",label:"中位数"},{key:"stddev",label:"标准差"},{key:"positive_probability",label:"正收益概率"}])}`; }).join("");
+  const factorRegistry = renderTable(factor.factor_registry || [], [{key:"factor",label:"特征"},{key:"kind",label:"类型"},{key:"status",label:"数据状态"},{key:"as_of",label:"历史时点"},{key:"required_asset",label:"所需数据资产"}]);
+  const relationships = renderTable(factor.numeric_relationships || [], [{key:"label",label:"绩效特征"},{key:"sample_size",label:"样本"},{key:"spearman",label:"Spearman"},{key:"interpretation",label:"解释边界"}]);
+  const categorical = renderTable(factor.categorical_effects || [], [{key:"factor",label:"分类特征"},{key:"category_count",label:"分组数"},{key:"best_category",label:"最高收益组"},{key:"worst_category",label:"最低收益组"},{key:"mean_spread",label:"均值差"},{key:"status",label:"状态"}]);
+  $("#mode-report-content").innerHTML = `<section class="mode-report-section"><h4>建仓股票收益分布</h4>${histogramHtml}</section><section class="mode-report-section"><h4>可观测特征注册表</h4><p>${escapeHtml(factor.causality_warning || "")}</p>${factorRegistry}</section><section class="mode-report-section"><h4>绩效特征与总收益关系</h4>${relationships}</section><section class="mode-report-section"><h4>分类特征收益差异</h4>${categorical}</section>${groupSections}<section class="mode-report-section"><h4>稳健性与分类覆盖</h4>${renderTable([{...robustness}], [{key:"sample_size",label:"样本"},{key:"mean",label:"均值"},{key:"median",label:"中位数"},{key:"trimmed_mean",label:"截尾均值"},{key:"conclusion_stable",label:"结论稳定"}])}${renderTable(Object.entries(coverage).map(([dimension, value]) => ({dimension,...value})),[{key:"dimension",label:"维度"},{key:"covered_count",label:"已覆盖"},{key:"missing_count",label:"缺失"},{key:"coverage_ratio",label:"覆盖率"}])}</section>`;
+  $("#industry-sort-toggle")?.addEventListener("click", () => { currentIndustrySortMode = currentIndustrySortMode === "default" ? "asc" : currentIndustrySortMode === "asc" ? "desc" : "default"; renderIndependentTaskStatistics(currentIndependentModeReport || report); });
+  $("#mode-report-output").textContent = JSON.stringify({ methodology: report.methodology, data_quality_notes: report.data_quality_notes, report_contract: report.report_contract }, null, 2);
 }
+function renderIndependentModeReport(report = {}) {
+  currentIndependentModeReport = report;
+  currentModeReportTaskId = report.task_id || "";
+  currentModeReportRunIndex = report.run_index || [];
+  currentModeReportSelectedIndex = 0;
+  currentModeReportTab = "task_statistics";
+  renderModeReportContext(report);
+  renderIndependentRunOptions();
+  configureModeReportTabs("independent-screening");
+  renderIndependentTaskStatistics(report);
+}
+function renderScopedSevenDimension(target, professional = {}, detail = {}) {
+  const normalized = normalizeEvaluationReport(professional);
+  const dimensions = normalized?.dimensions || [];
+  if (!dimensions.length) {
+    target.innerHTML = '<div class="empty-cell">当前 Run 缺少可用的 7 维评估证据，不使用演示值补齐。</div>';
+    return;
+  }
+  const evidence = professional.evidence_quality || {};
+  target.innerHTML = `<div class="mode-evidence-banner">证据质量：<strong>${escapeHtml(evidence.grade || "unknown")}</strong>；报告版本 ${escapeHtml(professional.report_version || "-")}；无演示值回退</div><div class="dimension-grid">${dimensions.map((item) => `<article class="dimension-card"><div class="dimension-title"><h4>${item.title}</h4><span class="score-tag ${item.level.cls}">${item.level.text} ${item.score}</span></div><div class="dimension-metrics">${item.metrics.map(([label,value]) => `<div class="dimension-metric"><span>${label}</span><strong>${value}</strong></div>`).join("")}</div><div class="mini-chart">${item.chart}</div></article>`).join("")}</div><h4>交易明细</h4>${renderTable(detail.trades || [], [{key:"trade_time",label:"时间"},{key:"order_book_id",label:"标的"},{key:"side",label:"方向"},{key:"price",label:"价格"},{key:"quantity",label:"数量"}])}`;
+}
+async function loadIndependentModeSingleRun(runId = "") {
+  const selected = currentModeReportRunIndex.find((item) => item.run_id === runId) || currentModeReportRunIndex[currentModeReportSelectedIndex];
+  if (!selected) {
+    $("#mode-report-content").innerHTML = '<div class="empty-cell">该任务没有可切换的实际建仓股票。</div>';
+    return null;
+  }
+  currentModeReportSelectedIndex = Math.max(0, currentModeReportRunIndex.findIndex((item) => item.run_id === selected.run_id));
+  renderIndependentRunOptions($("#independent-report-run-search")?.value || "");
+  const payload = await requestJson(`/api/reporting/backtest-modes/independent-screening/${encodeURIComponent(currentModeReportTaskId)}/runs/${encodeURIComponent(selected.run_id)}`);
+  const report = payload.report || {};
+  const professional = report.professional_report || {};
+  const detail = report.run_detail || {};
+  renderSummaryGrid($("#mode-report-summary"), [
+    {label:"股票",value:`${report.symbol || "-"} · ${report.name || "-"}`},
+    {label:"Run",value:shortTechnicalId(report.run_id)},
+    {label:"状态",value:report.status || "unknown"},
+    {label:"综合评分",value:professional.average_score ?? "N/A"},
+    {label:"证据质量",value:professional.evidence_quality?.grade || "unknown"},
+  ]);
+  const normalized = normalizeEvaluationReport(professional);
+  const radar = $("#mode-report-radar");
+  radar.hidden = !(normalized?.dimensions || []).length;
+  if (!radar.hidden) renderRadar(radar, normalized.dimensions);
+  renderScopedSevenDimension($("#mode-report-content"), professional, detail);
+  $("#mode-report-output").textContent = JSON.stringify({ semantic_boundary: report.semantic_boundary, navigation: report.navigation, data_quality_notes: professional.data_quality_notes }, null, 2);
+  return report;
+}
+function setModeReportTab(tab) {
+  if (!currentIndependentModeReport) return;
+  currentModeReportTab = tab;
+  configureModeReportTabs("independent-screening");
+  if (tab === "task_statistics") renderIndependentTaskStatistics(currentIndependentModeReport);
+  else loadIndependentModeSingleRun().catch((error) => setFeedback(error.message, "error"));
+}
+function bindModeReportWorkspace() {
+  const tabs = $("#mode-report-tabs");
+  if (!tabs || tabs.dataset.bound === "true") return;
+  tabs.dataset.bound = "true";
+  tabs.querySelectorAll("[data-mode-report-tab]").forEach((button) => button.addEventListener("click", () => setModeReportTab(button.dataset.modeReportTab)));
+  $("#independent-report-run-select")?.addEventListener("change", (event) => loadIndependentModeSingleRun(event.currentTarget.value).catch((error) => setFeedback(error.message, "error")));
+  $("#independent-report-run-search")?.addEventListener("input", (event) => renderIndependentRunOptions(event.currentTarget.value));
+  $("#independent-report-run-prev")?.addEventListener("click", () => { currentModeReportSelectedIndex = Math.max(0, currentModeReportSelectedIndex - 1); loadIndependentModeSingleRun().catch((error) => setFeedback(error.message, "error")); });
+  $("#independent-report-run-next")?.addEventListener("click", () => { currentModeReportSelectedIndex = Math.min(currentModeReportRunIndex.length - 1, currentModeReportSelectedIndex + 1); loadIndependentModeSingleRun().catch((error) => setFeedback(error.message, "error")); });
+}
+function renderSharedModeReport(report = {}) {
+  currentIndependentModeReport = null;
+  currentModeReportTab = "portfolio_evaluation";
+  renderModeReportContext(report);
+  configureModeReportTabs("shared-portfolio");
+  const professional = report.professional_report || {};
+  const detail = report.run_detail || {};
+  const gate = report.data_quality_gate || {};
+  renderSummaryGrid($("#mode-report-summary"), [
+    {label:"任务状态",value:report.status || "unknown"},
+    {label:"Run",value:shortTechnicalId(report.run_id)},
+    {label:"综合评分",value:gate.score_allowed ? (professional.average_score ?? "N/A") : "N/A"},
+    {label:"证据门禁",value:gate.status || "unavailable"},
+    {label:"账户语义",value:"单一共享资金账户"},
+  ]);
+  const normalized = normalizeEvaluationReport(professional);
+  const radar = $("#mode-report-radar");
+  radar.hidden = !(normalized?.dimensions || []).length;
+  if (!radar.hidden) renderRadar(radar, normalized.dimensions);
+  renderScopedSevenDimension($("#mode-report-content"), professional, detail);
+  $("#mode-report-output").textContent = JSON.stringify({ report_contract: report.report_contract, portfolio_sections: report.portfolio_sections, data_quality_gate: gate, semantic_boundary: report.semantic_boundary }, null, 2);
+}
+
 async function loadBacktestModeReport(event) {
   if (event) event.preventDefault();
+  bindModeReportWorkspace();
   const form = $("#mode-report-form");
   const values = Object.fromEntries(new FormData(form).entries());
   if (!values.task_id) throw new Error("请输入回测任务 ID");
   const payload = await requestJson(`/api/reporting/backtest-modes/${encodeURIComponent(values.mode)}/${encodeURIComponent(values.task_id)}`);
   const report = payload.report || {};
   if (values.mode === "shared-portfolio") {
-    const professional = report.professional_report || {};
-    renderSummaryGrid($("#mode-report-summary"), [
-      { label: "任务状态", value: report.status || "unknown" },
-      { label: "Run ID", value: report.run_id || "-" },
-      { label: "专业模板", value: report.template || "-" },
-      { label: "综合评分", value: professional.average_score ?? "-" },
-    ]);
-    $("#mode-report-content").innerHTML = professional.dimensions ? renderTable(professional.dimensions.map((item) => ({dimension:item.title,score:item.score,level:item.level})), [{key:"dimension",label:"维度"},{key:"score",label:"评分"},{key:"level",label:"等级"}]) : '<div class="empty-cell">组合任务尚未产生可用 run</div>';
-    $("#mode-report-output").textContent = JSON.stringify(report, null, 2);
-    if (report.run_id && report.status === "completed") await loadReports(report.run_id, report.run_id.replace(/-shared-portfolio$/, ""));
+    renderSharedModeReport(report);
+    if (report.run_id && report.status === "completed") {
+      try {
+        await loadReports(report.run_id, report.run_id.replace(/-shared-portfolio$/, ""));
+      } catch (error) {
+        setFeedback(`共享资金池主报告已生成；附属报告暂不可用：${error.message}`, "error");
+        return report;
+      }
+    }
   } else {
     renderIndependentModeReport(report);
   }
+  document.body.classList.add("mode-report-active");
+  updateStage75Url({ page: "reporting", mode: values.mode, task: values.task_id });
   setFeedback(`双模式报告已生成：${values.task_id}`, "success");
   return report;
-}async function loadReports(runId = "phase1-demo-run-001", experimentId = "phase1-batch-001") {
+}
+
+async function loadReports(runId = "phase1-demo-run-001", experimentId = "phase1-batch-001") {
   configureReportingWorkspace();
   currentReportRunId = runId;
   currentReportExperimentId = experimentId || runId.replace(/-\d+$/, "");
@@ -2560,7 +2705,785 @@ async function loadDashboard() {
     { label: "Metrics", value: Object.keys(reports.detail.detail.metrics || {}).join(", ") },
   ]);
 }
-function bindEvents() { bindBacktestWorkspace(); bindStrategyManager(); configureReportingWorkspace(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareWorkspace().then(() => setFeedback("A 股真实数据库已加载", "success")).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); $("#market-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await runBacktest(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("单股回测已完成，已进入结果分析", "success"); } catch (error) { setFeedback(error.message, "error"); } }); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立选股任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("共享资金池组合任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
+// 阶段 75：PC 量化工作台、内嵌结果、Run 对比与报告管理信息架构。
+function updateStage75Url(patch = {}, replace = true) {
+  const params = new URLSearchParams(window.location.search);
+  Object.entries(patch).forEach(([key, value]) => {
+    if (value === "" || value == null || value === false) params.delete(key);
+    else params.set(key, String(value));
+  });
+  const url = `${window.location.pathname}?${params.toString()}`;
+  window.history[replace ? "replaceState" : "pushState"]({}, "", url);
+}
+
+function stage75RunLabel(run = {}) {
+  const date = String(run.created_at || run.started_at || "").replace("T", " ").slice(0, 16) || "时间未知";
+  const strategy = run.strategy_name || run.strategy_id || "未命名策略";
+  const universe = run.universe || run.symbol || run.extra_config?.symbol || "组合/股票池";
+  const modeLabel={single:"单股测试","independent-single":"独立选股单股","shared-portfolio":"共享资金池"}[stage76RunMode(run)] || "回测";
+  return `${modeLabel} · ${strategy} · ${universe} · ${run.start_date || "-"}~${run.end_date || "-"} · ${date}`;
+}
+
+function configureStage75Shell() {
+  const nav = document.querySelector(".nav-tabs");
+  if (nav && !nav.querySelector('[data-page="report-management"]')) {
+    const button = document.createElement("button");
+    button.className = "nav-tab";
+    button.type = "button";
+    button.dataset.page = "report-management";
+    button.textContent = "报告管理";
+    nav.insertBefore(button, nav.querySelector('[data-page="config"]'));
+  }
+  const workspace = document.querySelector("main.workspace");
+  if (workspace && !$("#page-report-management")) {
+    const section = document.createElement("section");
+    section.id = "page-report-management";
+    section.className = "page-section";
+    section.innerHTML = '<div class="section-grid" id="report-management-grid"><section class="panel panel-wide report-management-intro"><div class="panel-header"><div><h3>报告管理</h3><p>集中管理研究报告包、归档目录与报告快照；阅读和 Run 对比仍在报告中心完成。</p></div></div><div class="workspace-callout">此处只负责报告资产生命周期，不展示回测诊断正文。</div></section></div>';
+    workspace.insertBefore(section, $("#page-config"));
+  }
+
+  const header = $("#backtest-workspace-header");
+  header?.querySelector(".backtest-workflow")?.setAttribute("hidden", "");
+  const tabs = header?.querySelector(".backtest-view-tabs");
+  if (tabs) {
+    tabs.querySelector('[data-backtest-view-target="overview"]')?.setAttribute("hidden", "");
+    tabs.querySelector('[data-backtest-view-target="results"]')?.setAttribute("hidden", "");
+    const order = ["strategy", "single", "independent", "portfolio"];
+    order.forEach((name) => { const button=tabs.querySelector(`[data-backtest-view-target="${name}"]`); if(button) tabs.append(button); });
+    if (!tabs.querySelector('[data-backtest-view-target="research"]')) {
+      const research = document.createElement("button");
+      research.type = "button";
+      research.className = "backtest-view-tab";
+      research.dataset.backtestViewTarget = "research";
+      research.textContent = "研究实验";
+      tabs.append(research);
+    }
+  }
+  document.querySelector('[data-backtest-view="overview"]')?.setAttribute("hidden", "");
+
+  if (header && !$("#backtest-common-config")) {
+    const common = document.createElement("section");
+    common.id = "backtest-common-config";
+    common.className = "backtest-common-config";
+    common.innerHTML = '<div class="common-config-title"><div><strong>公共回测参数</strong><span>切换模式时保留，应用后同步到当前表单</span></div><button type="button" id="backtest-common-apply">应用到当前模式</button></div><div class="common-config-fields"><label><span>策略</span><select id="backtest-common-strategy"></select></label><label><span>开始日期</span><input id="backtest-common-start" type="date"></label><label><span>结束日期</span><input id="backtest-common-end" type="date"></label><label><span>复权</span><select id="backtest-common-adjustment"><option value="qfq">前复权</option><option value="raw">不复权</option><option value="hfq">后复权</option></select></label><label><span>初始资金</span><input id="backtest-common-cash" type="number" min="10000" value="1000000"></label></div>';
+    header.append(common);
+  }
+
+  const strategyLibraryPanel = $("#strategy-library")?.closest(".backtest-view-panel");
+  const strategyEditorPanel = $("#strategy-editor")?.closest(".backtest-view-panel");
+  if (strategyLibraryPanel && strategyEditorPanel && !$("#strategy-pc-workbench")) {
+    const shell = document.createElement("section");
+    shell.id = "strategy-pc-workbench";
+    shell.className = "strategy-pc-workbench backtest-view-panel";
+    shell.dataset.backtestView = "strategy";
+    strategyLibraryPanel.parentElement.insertBefore(shell, strategyLibraryPanel);
+    strategyLibraryPanel.removeAttribute("data-backtest-view");
+    strategyEditorPanel.removeAttribute("data-backtest-view");
+    strategyLibraryPanel.classList.remove("panel-wide", "backtest-view-panel");
+    strategyEditorPanel.classList.remove("panel-wide", "backtest-view-panel");
+    strategyLibraryPanel.classList.add("strategy-pane", "strategy-list-pane");
+    strategyEditorPanel.classList.add("strategy-pane", "strategy-editor-pane");
+    const inspector = document.createElement("aside");
+    inspector.id = "strategy-inspector-pane";
+    inspector.className = "panel strategy-pane strategy-inspector-pane";
+    inspector.innerHTML = '<div class="panel-header"><div><h3>校验与版本</h3><p>选中策略的校验结果、元数据和版本历史。</p></div></div>';
+    [$("#strategy-editor-meta"), $("#strategy-validation-output"), $("#strategy-version-history")].filter(Boolean).forEach((node) => inspector.append(node));
+    shell.append(strategyLibraryPanel, strategyEditorPanel, inspector);
+  }
+
+  const researchAnchors = [$("#strategy-research-list")?.closest(".backtest-view-panel"), $("#backtest-experiment-index-list")?.closest(".backtest-view-panel")].filter(Boolean);
+  researchAnchors.forEach((panel) => { panel.dataset.backtestView = "research"; });
+
+  const resultPanel = $("#backtest-result-panel-summary")?.closest(".backtest-view-panel");
+  if (resultPanel && !resultPanel.classList.contains("stage75-result-dock")) {
+    resultPanel.removeAttribute("data-backtest-view");
+    resultPanel.classList.remove("backtest-view-panel", "is-active");
+    resultPanel.classList.add("stage75-result-dock");
+    resultPanel.hidden = true;
+    const originalHeader = resultPanel.querySelector(".panel-header");
+    originalHeader?.classList.add("result-dock-header");
+    if (originalHeader) originalHeader.innerHTML = '<div><h3>当前任务结果与分析</h3><p>结果和分析报告在当前查看器内切换，不离开策略回测。</p></div><div class="button-row"><button type="button" id="stage75-result-close">收起</button></div>';
+  }
+
+  ["screening-task-form", "portfolio-task-form"].forEach((id) => {
+    const form = $("#" + id);
+    if (!form || form.querySelector('[data-create-and-run]')) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "primary-action";
+    button.dataset.createAndRun = id.startsWith("screening") ? "independent" : "portfolio";
+    button.textContent = "创建并运行";
+    const submit = form.querySelector('button[type="submit"]');
+    submit?.after(button);
+  });
+
+  const reportingGrid = $("#page-reporting .section-grid");
+  if (reportingGrid && !$("#stage75-report-compare")) {
+    const compare = document.createElement("section");
+    compare.id = "stage75-report-compare";
+    compare.className = "panel panel-wide stage75-report-compare";
+    compare.innerHTML = '<div class="panel-header"><div><h3>Run 对比工作台</h3><p>按策略、标的和日期选择，无需记忆 Run ID；最多叠加 4 个 Run。</p></div><button type="button" id="stage75-compare-refresh">刷新 Run</button></div><div class="run-picker"><label><span>搜索 Run</span><input id="stage75-run-search" type="search" placeholder="策略、股票、日期"></label><label><span>可选 Run</span><select id="stage75-run-picker"></select></label><button type="button" id="stage75-compare-add">添加对比</button></div><div id="stage75-compare-compatibility" class="inline-status">请选择 2—4 个 Run</div><div id="stage75-comparison-tray" class="comparison-tray"></div><div class="comparison-chart-grid"><section><h4>净值曲线叠加</h4><div id="stage75-equity-overlay" class="series-overlay"></div></section><section><h4>回撤曲线叠加</h4><div id="stage75-drawdown-overlay" class="series-overlay"></div></section></div><div id="stage75-metrics-comparison" class="table-wrap"></div>';
+    reportingGrid.insertBefore(compare, reportingGrid.children[1] || null);
+  }
+  document.querySelectorAll("#page-reporting .panel").forEach((panel) => {
+    if (panel.id !== "stage75-report-compare" && !panel.contains($("#mode-report-form")) && !panel.classList.contains("report-cover")) panel.classList.add("legacy-report-section");
+  });
+}
+
+function configureStage75Relocations() {
+  const aiGrid = $("#page-ai .section-grid");
+  const aiPanel = $("#report-ai-workflow-panel");
+  if (aiGrid && aiPanel) {
+    aiPanel.classList.add("ai-linked-replay-panel");
+    aiPanel.querySelector("h3").textContent = "回测联动复盘";
+    aiGrid.append(aiPanel);
+  }
+  const managementGrid = $("#report-management-grid");
+  [$("#report-package-panel"), $("#report-package-directory-list")?.closest(".panel"), $("#report-snapshot-list")?.closest(".panel")].filter(Boolean).forEach((panel) => managementGrid?.append(panel));
+  $("#reporting-section-nav")?.remove();
+}
+
+function refreshStage75StrategyOptions() {
+  const select = $("#backtest-common-strategy");
+  if (!select) return;
+  const current = selectedStrategy?.strategy_id || select.value;
+  select.innerHTML = strategyCatalog.map((strategy) => `<option value="${escapeHtml(strategy.strategy_id)}">${escapeHtml(strategy.name || strategy.strategy_id)} · ${escapeHtml(strategy.latest_version || "-")}</option>`).join("") || '<option value="">请先在策略库选择</option>';
+  if (current && [...select.options].some((item) => item.value === current)) select.value = current;
+}
+
+function applyStage75CommonConfig() {
+  const mode = currentBacktestView;
+  const form = mode === "single" ? $("#backtest-run-form") : mode === "independent" ? $("#screening-task-form") : mode === "portfolio" ? $("#portfolio-task-form") : null;
+  if (!form) { setFeedback("请切换到单股测试、独立选股或共享资金池后再应用", "error"); return; }
+  const mapping = { start_date: $("#backtest-common-start")?.value, end_date: $("#backtest-common-end")?.value, adjustment: $("#backtest-common-adjustment")?.value, initial_cash: $("#backtest-common-cash")?.value };
+  Object.entries(mapping).forEach(([name, value]) => { if (form.elements[name] && value) form.elements[name].value = value; });
+  const strategy = strategyCatalog.find((item) => item.strategy_id === $("#backtest-common-strategy")?.value);
+  if (strategy) selectStrategy(strategy).catch((error) => setFeedback(error.message, "error"));
+  form.dispatchEvent(new Event("input", { bubbles: true }));
+  saveStage75Draft(mode);
+  setFeedback(`公共参数已应用到${mode === "single" ? "单股测试" : mode === "independent" ? "独立选股" : "共享资金池"}`, "success");
+}
+
+function saveStage75Draft(mode = currentBacktestView) {
+  const form = mode === "single" ? $("#backtest-run-form") : mode === "independent" ? $("#screening-task-form") : mode === "portfolio" ? $("#portfolio-task-form") : null;
+  if (!form || !["single", "independent", "portfolio"].includes(mode)) return;
+  const values = Object.fromEntries(new FormData(form).entries());
+  delete values.task_id; delete values.run_id;
+  localStorage.setItem(`sleepercloudquant.backtest.draft.${mode}`, JSON.stringify(values));
+}
+
+function restoreStage75Draft(mode) {
+  const form = mode === "single" ? $("#backtest-run-form") : mode === "independent" ? $("#screening-task-form") : mode === "portfolio" ? $("#portfolio-task-form") : null;
+  if (!form) return;
+  try {
+    const values = JSON.parse(localStorage.getItem(`sleepercloudquant.backtest.draft.${mode}`) || "{}");
+    Object.entries(values).forEach(([name, value]) => { if (form.elements[name] && value !== "") form.elements[name].value = value; });
+  } catch (_) { /* 忽略旧版本无效草稿 */ }
+}
+
+function openStage75ResultDock(runId = "") {
+  const panel = document.querySelector(".stage75-result-dock");
+  if (!panel) return;
+  panel.hidden = false;
+  stage75ResultDockOpen = true;
+  if (runId) updateStage75Url({ page: "backtest", view: currentBacktestView, run: runId });
+  panel.focus({ preventScroll: true });
+}
+
+function closeStage75ResultDock() {
+  const panel = document.querySelector(".stage75-result-dock");
+  if (panel) panel.hidden = true;
+  stage75ResultDockOpen = false;
+  updateStage75Url({ run: "" });
+}
+
+function fillStage75TaskForm(form, config = {}) {
+  if (!form) return;
+  const windowConfig = config.date_window || {};
+  const values = { ...config, start_date: config.start_date || windowConfig.start_date, end_date: config.end_date || windowConfig.end_date, symbols: Array.isArray(config.symbols) ? config.symbols.join(",") : config.symbols };
+  Object.entries(values).forEach(([name, value]) => { if (form.elements[name] && value != null && typeof value !== "object") form.elements[name].value = value; });
+  if (form.elements.task_id) form.elements.task_id.value = "";
+  form.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+async function cloneStage75SingleRun(runId) {
+  if (!stage75RunCatalog.length) await loadStage75RunCatalog();
+  const run=stage75RunCatalog.find((item)=>item.run_id===runId);
+  if(!run) throw new Error("未找到单股 Run 配置");
+  const form=$("#backtest-run-form");
+  const values={ run_id:newTaskId("single"), strategy_name:run.strategy_name, strategy_id:run.strategy_id, strategy_version:run.extra_config?.strategy_version || "v1", symbol:run.universe, benchmark:run.benchmark, start_date:run.start_date, end_date:run.end_date };
+  Object.entries(values).forEach(([name,value])=>{if(form.elements[name] && value!=null) form.elements[name].value=value;});
+  const strategy=strategyCatalog.find((item)=>item.strategy_id===run.strategy_id); if(strategy) await selectStrategy(strategy);
+  await openBacktestWorkspaceView("single"); saveStage75Draft("single");
+  setFeedback("已克隆单股配置并生成新回测编号，请确认后运行", "success");
+}
+async function cloneStage75Task(mode, taskId) {
+  const independent = mode === "independent";
+  const resource = independent ? "independent-screening-tasks" : "shared-portfolio-tasks";
+  const payload = await requestJson(`/api/backtest/${resource}/${encodeURIComponent(taskId)}`);
+  const task = payload.task || {};
+  const form = independent ? $("#screening-task-form") : $("#portfolio-task-form");
+  fillStage75TaskForm(form, task.config || {});
+  const strategyId = task.config?.strategy_id;
+  const strategy = strategyCatalog.find((item) => item.strategy_id === strategyId);
+  if (strategy) await selectStrategy(strategy);
+  await openBacktestWorkspaceView(independent ? "independent" : "portfolio");
+  saveStage75Draft(independent ? "independent" : "portfolio");
+  setFeedback("已克隆任务配置，请确认范围后创建；不会自动启动", "success");
+}
+
+function decorateStage75TaskLists() {
+  [["#single-run-history", "single", "singleHistoryRun"], ["#screening-task-list", "independent", "screeningTask"], ["#portfolio-task-list", "portfolio", "portfolioTask"]].forEach(([selector, mode, datasetKey]) => {
+    const target = $(selector); if (!target) return;
+    target.querySelectorAll(".compact-task-row").forEach((row) => {
+      if (row.querySelector("[data-stage75-clone]")) return;
+      const taskId = row.dataset[datasetKey]; if (!taskId) return;
+      const actions = row.querySelector(".task-row-actions") || row;
+      const button = document.createElement("button");
+      button.type = "button"; button.dataset.stage75Clone = mode; button.dataset.taskId = taskId; button.textContent = "克隆此任务";
+      button.addEventListener("click", (event) => { event.stopPropagation(); const action=mode === "single" ? cloneStage75SingleRun(taskId) : cloneStage75Task(mode, taskId); action.catch((error) => setFeedback(error.message, "error")); });
+      actions.append(button);
+    });
+  });
+}
+
+async function createAndRunStage75(mode, button) {
+  const independent = mode === "independent";
+  const form = independent ? $("#screening-task-form") : $("#portfolio-task-form");
+  const original = button.textContent;
+  button.disabled = true; button.textContent = "创建中...";
+  try {
+    const createButton=form.querySelector('button[type="submit"]');
+    const event = { preventDefault() {}, currentTarget: form, submitter: createButton };
+    if (independent) { await createIndependentScreeningTask(event); button.textContent = "启动中..."; await runIndependentScreeningTask(); }
+    else { await createSharedPortfolioTask(event); button.textContent = "启动中..."; await runSharedPortfolioTask(); }
+    setFeedback(`${independent ? "独立选股" : "共享资金池"}任务已创建并启动`, "success");
+    setStage76ModeTaskState(mode,true,independent?currentScreeningTask:currentPortfolioTask);
+  } finally { button.disabled = false; button.textContent = original; }
+}
+
+function stage75Series(result, key) {
+  const rows = result?.[key] || result?.result?.[key] || [];
+  return rows.map((row, index) => ({ label: row.snapshot_time || row.date || String(index + 1), value: Number(row.value ?? row.unit_net_value ?? row.drawdown) })).filter((row) => Number.isFinite(row.value));
+}
+
+function renderStage75Overlay(target, seriesList) {
+  if (!target || !seriesList.length) { if(target) target.innerHTML='<div class="empty-cell">至少添加 2 个可用 Run</div>'; return; }
+  const width=860, height=250, pad=34;
+  const all=seriesList.flatMap((item)=>item.rows.map((row)=>row.value)); const min=Math.min(...all), max=Math.max(...all), span=max-min||1;
+  const longest=Math.max(...seriesList.map((item)=>item.rows.length),1);
+  const x=(i)=>pad+i/Math.max(longest-1,1)*(width-pad*2); const y=(v)=>pad+(max-v)/span*(height-pad*2);
+  const lines=seriesList.map((item,index)=>`<polyline points="${item.rows.map((row,i)=>`${x(i)},${y(row.value)}`).join(" ")}" fill="none" stroke="${stage75ComparisonColors[index]}" stroke-width="2.5"/>`).join("");
+  const legend=seriesList.map((item,index)=>`<span><i style="background:${stage75ComparisonColors[index]}"></i>${escapeHtml(item.label)}</span>`).join("");
+  target.innerHTML=`<div class="overlay-legend">${legend}</div><svg viewBox="0 0 ${width} ${height}" role="img"><line x1="${pad}" x2="${width-pad}" y1="${height-pad}" y2="${height-pad}" class="grid-line"/>${lines}<text x="4" y="${pad}" class="axis-label">${max.toFixed(4)}</text><text x="4" y="${height-pad}" class="axis-label">${min.toFixed(4)}</text></svg>`;
+}
+
+async function loadStage75RunCatalog() {
+  const payload = await requestJson("/api/backtest/runs");
+  stage75RunCatalog = payload.runs || [];
+  renderStage75RunPicker();
+  return stage75RunCatalog;
+}
+
+function renderStage75RunPicker() {
+  const picker=$("#stage75-run-picker"); if(!picker) return;
+  const query=$("#stage75-run-search")?.value.trim().toLowerCase() || "";
+  const rows=stage75RunCatalog.filter((run)=>!query || stage75RunLabel(run).toLowerCase().includes(query) || String(run.run_id).toLowerCase().includes(query));
+  picker.innerHTML=rows.map((run)=>`<option value="${escapeHtml(run.run_id)}">${escapeHtml(stage75RunLabel(run))}</option>`).join("") || '<option value="">没有匹配的 Run</option>';
+}
+
+async function renderStage75Comparison() {
+  const tray=$("#stage75-comparison-tray");
+  tray.innerHTML=stage75ComparisonRuns.map((item,index)=>`<button type="button" data-remove-compare="${escapeHtml(item.run.run_id)}"><i style="background:${stage75ComparisonColors[index]}"></i>${escapeHtml(stage75RunLabel(item.run))}<span>×</span></button>`).join("") || '<div class="empty-cell">尚未添加 Run</div>';
+  tray.querySelectorAll("[data-remove-compare]").forEach((button)=>button.addEventListener("click",()=>{stage75ComparisonRuns=stage75ComparisonRuns.filter((item)=>item.run.run_id!==button.dataset.removeCompare); renderStage75Comparison();}));
+  const modes=new Set(stage75ComparisonRuns.map((item)=>item.run.extra_config?.mode || item.run.extra_config?.portfolio_mode || "single"));
+  const versions=new Set(stage75ComparisonRuns.map((item)=>item.result?.summary?.data_version || item.result?.data_asset_trace?.asset?.data_version || "unknown"));
+  const compatible=modes.size<=1;
+  $("#stage75-compare-compatibility").className=`inline-status ${compatible ? "is-success" : "is-warning"}`;
+  $("#stage75-compare-compatibility").textContent=stage75ComparisonRuns.length<2 ? "请选择 2—4 个 Run" : `${compatible ? "模式兼容" : "模式不同，仅供观察"} · 数据版本 ${[...versions].join(" / ")}`;
+  renderStage75Overlay($("#stage75-equity-overlay"),stage75ComparisonRuns.map((item)=>({label:stage75RunLabel(item.run),rows:stage75Series(item.result,"equity_curve")})).filter((item)=>item.rows.length));
+  renderStage75Overlay($("#stage75-drawdown-overlay"),stage75ComparisonRuns.map((item)=>({label:stage75RunLabel(item.run),rows:stage75Series(item.result,"drawdown_curve")})).filter((item)=>item.rows.length));
+  const metricKeys=["total_returns","annualized_returns","max_drawdown","sharpe","volatility"];
+  $("#stage75-metrics-comparison").innerHTML=stage75ComparisonRuns.length ? `<table><thead><tr><th>指标</th>${stage75ComparisonRuns.map((item)=>`<th>${escapeHtml(stage75RunLabel(item.run))}</th>`).join("")}</tr></thead><tbody>${metricKeys.map((key)=>`<tr><th>${key}</th>${stage75ComparisonRuns.map((item)=>`<td class="${financialToneForLabel(key,item.result?.metrics?.[key] ?? item.result?.summary?.metrics?.[key])}">${item.result?.metrics?.[key] ?? item.result?.summary?.metrics?.[key] ?? "-"}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
+  updateStage75Url({ compare: stage75ComparisonRuns.map((item)=>item.run.run_id).join(",") });
+}
+
+async function addStage75ComparisonRun(runId) {
+  if(!runId || stage75ComparisonRuns.some((item)=>item.run.run_id===runId)) return;
+  if(stage75ComparisonRuns.length>=4) throw new Error("最多同时对比 4 个 Run");
+  const run=stage75RunCatalog.find((item)=>item.run_id===runId) || {run_id:runId};
+  const existingMode=stage75ComparisonRuns[0]?stage76RunMode(stage75ComparisonRuns[0].run):"";
+  if(existingMode && stage76RunMode(run)!==existingMode) throw new Error("仅支持相同回测模式的 Run 对比");
+  const payload=await requestJson(`/api/backtest/results/${encodeURIComponent(runId)}/panel`);
+  const result=payload.result || payload.panel || payload;
+  const firstVersion=stage75ComparisonRuns[0]?.result?.data_asset_trace?.asset?.data_version;
+  const nextVersion=result?.data_asset_trace?.asset?.data_version;
+  if(firstVersion && nextVersion && firstVersion!==nextVersion) throw new Error("数据版本不同，不能叠加为同口径对比");
+  stage75ComparisonRuns.push({run,result});
+  await renderStage75Comparison();
+}
+
+function bindStage75Events() {
+  document.querySelectorAll("[data-stage75-page]").forEach((button)=>button.addEventListener("click",()=>activatePage(button.dataset.stage75Page)));
+  $("#reporting-query-form")?.addEventListener("submit",()=>document.body.classList.remove("mode-report-active"));  $("#backtest-common-apply")?.addEventListener("click", applyStage75CommonConfig);
+  $("#backtest-common-strategy")?.addEventListener("focus", refreshStage75StrategyOptions);
+  [$("#backtest-run-form"),$("#screening-task-form"),$("#portfolio-task-form")].filter(Boolean).forEach((form)=>form.addEventListener("input",()=>saveStage75Draft(form.id==="backtest-run-form"?"single":form.id.startsWith("screening")?"independent":"portfolio")));
+  document.querySelectorAll("[data-create-and-run]").forEach((button)=>button.addEventListener("click",()=>createAndRunStage75(button.dataset.createAndRun,button).catch((error)=>setFeedback(error.message,"error"))));
+  $("#stage75-result-close")?.addEventListener("click",closeStage75ResultDock);
+  $("#stage75-result-full-report")?.addEventListener("click",()=>openSelectedBacktestReport().catch((error)=>setFeedback(error.message,"error")));
+  $("#stage75-run-search")?.addEventListener("input",renderStage75RunPicker);
+  $("#stage75-compare-refresh")?.addEventListener("click",()=>loadStage75RunCatalog().then(()=>setFeedback("Run 列表已刷新","success")).catch((error)=>setFeedback(error.message,"error")));
+  $("#stage75-compare-add")?.addEventListener("click",()=>addStage75ComparisonRun($("#stage75-run-picker")?.value).catch((error)=>setFeedback(error.message,"error")));
+  const observer=new MutationObserver(decorateStage75TaskLists);
+  [$("#single-run-history"),$("#screening-task-list"),$("#portfolio-task-list")].filter(Boolean).forEach((target)=>observer.observe(target,{childList:true,subtree:true}));
+  decorateStage75TaskLists();
+  const now=new Date(); const pad=(v)=>String(v).padStart(2,"0");
+  $("#backtest-common-start").value=`${now.getFullYear()}-01-01`;
+  $("#backtest-common-end").value=`${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;
+  refreshStage75StrategyOptions();
+  loadStage75RunCatalog().catch(()=>{});
+}
+let stage76TaskCatalog = [];
+let stage76SelectedTask = null;
+let stage76TaskPollTimer = null;
+let stage76Workspace = "strategy";
+let stage76CurrentResult = null;
+let stage76TaskPage = 1;
+let stage76TaskPageSize = 20;
+function syncStage76CommonFields(mode=currentBacktestView) {
+  const form=mode==="single"?$("#backtest-run-form"):mode==="independent"?$("#screening-task-form"):mode==="portfolio"?$("#portfolio-task-form"):null;
+  if(!form)return;
+  const mapping={start_date:$("#backtest-common-start")?.value,end_date:$("#backtest-common-end")?.value,adjustment:$("#backtest-common-adjustment")?.value,initial_cash:$("#backtest-common-cash")?.value};
+  Object.entries(mapping).forEach(([name,value])=>{if(form.elements[name]&&value)form.elements[name].value=value;});
+  form.dispatchEvent(new Event("input",{bubbles:true}));
+}
+
+function highlightStage76Python(source="") {
+  const keywords=new Set("and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield".split(" "));
+  const builtins=new Set("abs all any bool dict enumerate filter float int len list map max min print range reversed round set sorted str sum tuple type zip".split(" "));
+  const pattern=/(#[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?\b|\b[A-Za-z_]\w*\b)/g;
+  let result="", cursor=0;
+  for(const match of source.matchAll(pattern)) {
+    result+=escapeHtml(source.slice(cursor,match.index));
+    const token=match[0], before=source.slice(0,match.index), after=source.slice(match.index+token.length);
+    let type="";
+    if(token.startsWith("#")) type="comment";
+    else if(token.startsWith("\"")||token.startsWith("'")) type="string";
+    else if(/^\d/.test(token)) type="number";
+    else if(keywords.has(token)) type="keyword";
+    else if(/\b(?:def|class)\s+$/.test(before)) type=before.trimEnd().endsWith("class")?"class":"function";
+    else if(/^\s*\(/.test(after)) type=builtins.has(token)?"builtin":"function-call";
+    else if(/\.\s*$/.test(before)) type="property";
+    else if(/^[A-Z]\w*$/.test(token)) type="class";
+    result+=type?`<span class="syntax-${type}">${escapeHtml(token)}</span>`:escapeHtml(token);
+    cursor=match.index+token.length;
+  }
+  return result+escapeHtml(source.slice(cursor))+"\n";
+}function renderStage76CodeHighlight() {
+  const editor=$("#strategy-editor"), shell=editor?.closest(".stage76-code-editor-shell");
+  if(!editor||!shell)return;
+  const highlight=shell.querySelector(".stage76-code-highlight"), gutter=shell.querySelector(".stage76-code-gutter");
+  if(highlight)highlight.innerHTML=highlightStage76Python(editor.value);
+  if(gutter)gutter.textContent=Array.from({length:Math.max(1,editor.value.split("\n").length)},(_,index)=>String(index+1)).join("\n")+"\n";
+  if(highlight){highlight.scrollTop=editor.scrollTop;highlight.scrollLeft=editor.scrollLeft;}
+  if(gutter)gutter.scrollTop=editor.scrollTop;
+}
+function setStage76CodeTheme(theme) {
+  const shell=$("#strategy-editor")?.closest(".stage76-code-editor-shell"), button=$("#stage76-code-theme");
+  const normalized=theme==="dark"?"dark":"light";
+  if(shell)shell.dataset.theme=normalized;
+  if(button){button.textContent=normalized==="dark"?"浅色背景":"深色背景";button.setAttribute("aria-pressed",String(normalized==="dark"));}
+  try{localStorage.setItem("sleepercloudquant-code-theme",normalized);}catch(_){ }
+}
+function configureStage76CodeEditor() {
+  const editor=$("#strategy-editor"); if(!editor||editor.closest(".stage76-code-editor-shell"))return;
+  const shell=document.createElement("div"); shell.className="stage76-code-editor-shell";
+  const gutter=document.createElement("pre"); gutter.className="stage76-code-gutter"; gutter.setAttribute("aria-hidden","true");
+  const stack=document.createElement("div"); stack.className="stage76-code-stack";
+  const highlight=document.createElement("pre"); highlight.className="stage76-code-highlight"; highlight.setAttribute("aria-hidden","true");
+  const resizeHandle=document.createElement("button"); resizeHandle.type="button"; resizeHandle.className="stage76-code-resize-handle"; resizeHandle.title="拖动以调整代码区高度"; resizeHandle.setAttribute("aria-label","调整代码区高度"); resizeHandle.textContent="⋰";
+  editor.parentElement.insertBefore(shell,editor); shell.append(gutter,stack,resizeHandle); stack.append(highlight,editor); editor.classList.add("stage76-code-input");
+  const setEditorHeight=(height)=>{shell.style.flex="0 0 auto";shell.style.height=`${Math.max(360,Math.min(1200,height))}px`;renderStage76CodeHighlight();};
+  resizeHandle.addEventListener("pointerdown",(event)=>{event.preventDefault();const startY=event.clientY,startHeight=shell.getBoundingClientRect().height;resizeHandle.setPointerCapture?.(event.pointerId);const move=(moveEvent)=>setEditorHeight(startHeight+moveEvent.clientY-startY);const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);};window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop,{once:true});});
+  resizeHandle.addEventListener("keydown",(event)=>{if(event.key==="ArrowUp"||event.key==="ArrowDown"){event.preventDefault();setEditorHeight(shell.getBoundingClientRect().height+(event.key==="ArrowDown"?32:-32));}});
+  resizeHandle.addEventListener("dblclick",()=>{shell.style.height="560px";shell.style.flex="0 0 auto";renderStage76CodeHighlight();});
+  editor.addEventListener("input",renderStage76CodeHighlight);
+  editor.addEventListener("scroll",()=>{highlight.scrollTop=editor.scrollTop;highlight.scrollLeft=editor.scrollLeft;gutter.scrollTop=editor.scrollTop;});
+  let theme="light"; try{theme=localStorage.getItem("sleepercloudquant-code-theme")||"light";}catch(_){ }
+  setStage76CodeTheme(theme); renderStage76CodeHighlight();
+}
+function setStage76ModeTaskState(mode,visible,task={}) {
+  const state=document.querySelector(`[data-stage76-mode-state="${mode}"]`); if(!state)return;
+  state.classList.toggle("has-task",Boolean(visible));
+  const placeholder=state.querySelector(".stage76-task-state-placeholder"), content=state.querySelector(".stage76-task-state-content");
+  if(placeholder)placeholder.hidden=Boolean(visible); if(content)content.hidden=!visible;
+  if(mode==="single"&&visible){
+    const summary=$("#stage76-single-task-summary");
+    if(summary)renderSummaryGrid(summary,[{label:"任务编号",value:shortTechnicalId(task.task_id||task.run_id||"-")},{label:"状态",value:backtestStatusInfo(task.status||"ready").label},{label:"股票",value:task.symbol||task.config?.symbol||"-"},{label:"创建时间",value:formatTaskTimestamp(task.created_at)}]);
+  }
+  const completed=["completed","partial_completed","partial_failed"].includes(task.status);
+  const canResult=Boolean(visible&&(task.capabilities?.can_view_result||completed));
+  const canReport=Boolean(visible&&(task.capabilities?.can_view_report||completed));
+  document.querySelectorAll(`[data-stage76-form-action][data-stage76-action-mode="${mode}"]`).forEach((button)=>{
+    button.disabled=button.dataset.stage76FormAction==="report"?!canReport:!canResult;
+  });
+}
+
+function configureStage76ModeForm(mode,form) {
+  if(!form||form.classList.contains("stage76-mode-form"))return;
+  form.classList.add("stage76-mode-form");
+  const fields=document.createElement("div"); fields.className="stage76-form-fields";
+  const actions=document.createElement("aside"); actions.className="stage76-form-actions"; actions.innerHTML='<div class="stage76-form-actions-title"><strong>任务操作</strong><span>完成参数编辑后，在此创建或执行任务</span></div>';
+  Array.from(form.children).forEach((node)=>{(node.tagName==="BUTTON"?actions:fields).append(node);});
+  actions.insertAdjacentHTML("beforeend", `<button type="button" data-stage76-form-action="result" data-stage76-action-mode="${mode}" disabled>查看结果</button><button type="button" data-stage76-form-action="report" data-stage76-action-mode="${mode}" disabled>查看分析</button>`);
+  form.replaceChildren(fields,actions);
+  ["strategy_name","start_date","end_date","adjustment","initial_cash"].forEach((name)=>{const label=form.elements[name]?.closest("label");if(label){label.hidden=true;label.classList.add("stage76-common-duplicate");}});
+  const panel=form.closest("[data-backtest-view]"); if(panel)panel.classList.add("stage76-mode-panel");
+  const legacyHeaderControl=mode==="single"?$("#single-run-status"):mode==="independent"?$("#screening-task-refresh"):$("#portfolio-task-refresh"); if(legacyHeaderControl)legacyHeaderControl.hidden=true;
+  const state=document.createElement("section"); state.className="stage76-mode-task-state"; state.dataset.stage76ModeState=mode;
+  state.innerHTML='<div class="stage76-task-state-placeholder"><strong>尚未创建当前任务</strong><span>任务创建后，这里将显示任务信息、状态和真实进度。</span></div><div class="stage76-task-state-content" hidden><div class="stage76-task-state-heading"><strong>当前任务</strong><span>状态和进度会随执行刷新</span></div></div>';
+  const content=state.querySelector(".stage76-task-state-content");
+  const selectors=mode==="single"?["#single-run-progress"]:mode==="independent"?["#screening-live-progress","#screening-progress","#screening-summary"]:["#portfolio-live-progress","#portfolio-task-progress","#portfolio-task-summary"];
+  if(mode==="single"){const summary=document.createElement("div");summary.id="stage76-single-task-summary";summary.className="summary-grid";content.append(summary);}
+  selectors.map((selector)=>$(selector)?.closest("details")||$(selector)).filter(Boolean).forEach((node)=>content.append(node));
+  const preview=mode==="independent"?$("#screening-config-preview"):mode==="portfolio"?$("#portfolio-config-preview"):null;
+  (preview||form).after(state);
+  setStage76ModeTaskState(mode,false);
+}
+function currentStage76FormTask(mode) {
+  const raw=mode==="single"?currentSingleTask:mode==="independent"?currentScreeningTask:currentPortfolioTask;
+  if(!raw?.task_id)return null;
+  const taskMode=mode==="single"?"single":mode==="independent"?"independent-screening":"shared-portfolio";
+  return stage76TaskCatalog.find((task)=>task.task_id===raw.task_id&&task.mode===taskMode)||raw;
+}
+async function handleStage76FormTaskAction(mode,action) {
+  const task=currentStage76FormTask(mode);
+  if(!task)throw new Error("请先创建或选择当前模式任务");
+  stage76SelectedTask=task;
+  await handleStage76TaskAction(task,action);
+}
+function configureStage76InformationArchitecture() {
+  const header = $("#backtest-workspace-header");
+  if (!header || $("#stage76-workspace-nav")) return;
+  const oldTabs = header.querySelector(".backtest-view-tabs");
+  const nav = document.createElement("div");
+  nav.id = "stage76-workspace-nav";
+  nav.className = "stage76-workspace-nav stage76-sidebar-subnav";
+  nav.setAttribute("aria-label", "策略回测二级菜单");
+  nav.innerHTML = '<button type="button" data-stage76-workspace="strategy">策略工作台</button><button type="button" data-stage76-workspace="create">创建回测任务</button><button type="button" data-stage76-workspace="tasks">任务工作台</button><button type="button" data-stage76-workspace="research">其它工具</button>';
+  const sidebarNav = document.querySelector(".nav-tabs");
+  const backtestNavEntry = sidebarNav?.querySelector('[data-page="backtest"]');
+  if (backtestNavEntry) backtestNavEntry.after(nav);
+  else header.append(nav);
+  if (oldTabs) oldTabs.remove();
+  const redundantHeader = header.querySelector(".panel-header");
+  if (redundantHeader) redundantHeader.hidden = true;
+  const contextSummary = $("#backtest-context-summary");
+  if (contextSummary) contextSummary.hidden = true;
+  const common = $("#backtest-common-config");
+  if (common) { common.hidden = true; const note=common.querySelector(".common-config-title span"); if(note) note.textContent="公共参数是三种模式的唯一设置入口，自动同步到当前表单"; const apply=common.querySelector("#backtest-common-apply"); if(apply) apply.textContent="同步公共参数"; }
+  const modeTabs = document.createElement("div");
+  modeTabs.id = "stage76-create-mode-tabs";
+  modeTabs.className = "stage76-create-mode-tabs";
+  modeTabs.hidden = true;
+  modeTabs.innerHTML = '<button type="button" data-stage76-mode="single">单股测试</button><button type="button" data-stage76-mode="independent">独立选股</button><button type="button" data-stage76-mode="portfolio">共享资金池</button>';
+  common?.before(modeTabs);
+  const singleForm = $("#backtest-run-form");
+  if (singleForm) {
+    if (!singleForm.elements.adjustment) { const input=document.createElement("input"); input.type="hidden"; input.name="adjustment"; input.value="qfq"; singleForm.append(input); }
+    if (!singleForm.elements.initial_cash) { const input=document.createElement("input"); input.type="hidden"; input.name="initial_cash"; input.value="1000000"; singleForm.append(input); }
+    const runInput=singleForm.elements.run_id;
+    const runLabel=runInput?.closest("label")?.querySelector("span");
+    if(runInput){ runInput.value=newTaskId("single-run"); runInput.readOnly=true; runInput.title="每次创建任务时自动生成新的唯一回测编号"; }
+    if(runLabel) runLabel.textContent="回测编号（自动生成）";
+    const submit=singleForm.querySelector('button[type="submit"]'); if(submit) submit.textContent="创建并执行";
+    if (!$("#single-task-create-only")) { const only=document.createElement("button"); only.type="button"; only.id="single-task-create-only"; only.textContent="仅创建任务"; submit?.after(only); }
+  }
+  configureStage76ModeForm("single",$("#backtest-run-form"));
+  configureStage76ModeForm("independent",$("#screening-task-form"));
+  configureStage76ModeForm("portfolio",$("#portfolio-task-form"));
+  [$("#single-run-history")?.closest(".history-section"), $("#screening-task-list"), $("#portfolio-task-list")].filter(Boolean).forEach((node)=>node.classList.add("stage76-legacy-history"));
+  const screeningEnteredResults = $("#screening-entered-results");
+  if (screeningEnteredResults) { screeningEnteredResults.hidden = true; screeningEnteredResults.replaceChildren(); }
+
+  const strategyToolbar = $("#strategy-library")?.closest(".strategy-list-pane")?.querySelector(".strategy-library-toolbar");
+  if (strategyToolbar && !$("#strategy-library-sort")) {
+    const sortLabel = document.createElement("label");
+    sortLabel.innerHTML = '<span>排序</span><select id="strategy-library-sort"><option value="name">名称</option><option value="category">分类</option><option value="versions">版本数</option></select>';
+    strategyToolbar.insertBefore(sortLabel, $("#strategy-library-refresh"));
+  }
+  const strategyShell = $("#strategy-pc-workbench");
+  const listPane = strategyShell?.querySelector(".strategy-list-pane");
+  const editorPane = strategyShell?.querySelector(".strategy-editor-pane");
+  const inspector = $("#strategy-inspector-pane");
+  if (strategyShell && listPane && editorPane && inspector) {
+    const editorMeta = $("#strategy-editor-meta");
+    const stage76Validation = $("#strategy-validation-output");
+    const versionHistory = $("#strategy-version-history");
+    const editorHeader = editorPane.querySelector(".panel-header");
+    const editorHeaderContent = editorHeader?.querySelector("div");
+    if (editorMeta && editorHeaderContent) editorHeaderContent.append(editorMeta);
+    inspector.className = "panel strategy-pane strategy-config-pane";
+    inspector.replaceChildren();
+    const fields = editorPane.querySelector(".strategy-editor-fields");
+    const actions = editorPane.querySelector(".strategy-editor-actions");
+    const parameterSection = $("#strategy-parameter-schema")?.closest(".strategy-editor-section");
+    const legacyVersionSection = editorPane.querySelector(".stage76-code-guide")
+      || [...editorPane.querySelectorAll(".strategy-editor-section")]
+        .find((section) => section.querySelector(".subsection-header h4")?.textContent.trim() === "版本历史");
+    [editorHeader, fields, actions, parameterSection].filter(Boolean).forEach((node) => inspector.append(node));
+    const versionSelectorBlock = document.createElement("section");
+    versionSelectorBlock.className = "strategy-editor-section stage76-version-selector";
+    versionSelectorBlock.innerHTML = '<div class="subsection-header"><h4>策略版本</h4><span>切换只用于查看；保存代码会创建新版本</span></div><label><span>当前查看版本</span><select id="strategy-version-select"><option value="">请选择策略</option></select></label>';
+    inspector.append(versionSelectorBlock);
+    if (versionHistory) { versionHistory.hidden = true; versionSelectorBlock.append(versionHistory); }
+    const guideBlock = legacyVersionSection || document.createElement("section");
+    guideBlock.className = "strategy-editor-section stage76-code-guide";
+    guideBlock.innerHTML = '<div class="subsection-header"><h4>策略代码编写指南</h4><span>先理解输入、输出和安全边界，再编写策略</span></div><ol><li><strong>入口函数</strong><code>generate_target_weights(bars, parameters)</code></li><li><strong>输入数据</strong><span><code>bars</code> 是按时间升序排列的 OHLC 字典列表；<code>parameters</code> 来自下方参数配置。</span></li><li><strong>输出结果</strong><span>返回与 <code>bars</code> 等长的目标仓位列表，取值建议在 0 到 1 之间。</span></li><li><strong>保存流程</strong><span>先点击“校验代码”，通过后再点击“保存新版本”。系统会记录版本和源码 SHA-256。</span></li></ol><pre class="code-block">def generate_target_weights(bars, parameters):\n    weights = [0.0] * len(bars)\n    # 在这里计算信号并设置目标仓位\n    return weights</pre><p class="stage76-code-guide-note">安全限制：禁止网络访问、文件读写、动态执行和未授权导入。</p>';
+    if (!legacyVersionSection) editorPane.append(guideBlock);
+    const sourceSection = $("#strategy-editor")?.closest(".strategy-editor-section");
+    const validation = stage76Validation;
+    const codeHeader = document.createElement("div");
+    codeHeader.className = "panel-header stage76-code-header";
+    codeHeader.innerHTML = '<div><h3>策略代码</h3><p>采用 Atom One Light / One Dark Pro 风格着色函数、关键字与数据；拖动右下角手柄调整高度。</p></div><div class="button-row"><button type="button" id="stage76-code-theme" aria-pressed="false">深色背景</button><button type="button" id="stage76-code-validate">校验代码</button></div>';
+    editorPane.prepend(codeHeader);
+    if (validation && sourceSection) sourceSection.before(validation);
+    editorPane.classList.add("strategy-code-pane");
+    configureStage76CodeEditor();
+    const researchPanel = $("#strategy-research-list")?.closest(".panel");
+    const secondaryActions = editorPane.querySelector(".secondary-actions");
+    const scanOutput = $("#strategy-scan-output");
+    const matrixOutput = $("#strategy-matrix-output");
+    if (researchPanel && (secondaryActions || scanOutput || matrixOutput)) {
+      const tools = document.createElement("section");
+      tools.className = "strategy-editor-section stage76-research-tools";
+      tools.innerHTML = '<div class="subsection-header"><h4>参数研究工具</h4><span>扫描、矩阵和快照从日常策略维护区分流</span></div>';
+      [secondaryActions, scanOutput, matrixOutput].filter(Boolean).forEach((node) => tools.append(node));
+      researchPanel.append(tools);
+    }
+    strategyShell.replaceChildren(listPane, inspector, editorPane);
+  }
+  const taskPanel = document.createElement("section");
+  taskPanel.id = "stage76-task-workbench";
+  taskPanel.className = "panel panel-wide stage76-task-workbench";
+  taskPanel.hidden = true;
+  taskPanel.innerHTML = '<div class="panel-header"><div><h3>任务工作台</h3><p>表格式分页查看三种回测任务；操作按钮由任务当前能力决定。</p></div><button type="button" id="stage76-task-refresh">刷新任务</button></div><form id="stage76-task-filter" class="task-filter-bar"><label><span>模式</span><select name="mode"><option value="">全部模式</option><option value="single">单股测试</option><option value="independent-screening">独立选股</option><option value="shared-portfolio">共享资金池</option></select></label><label><span>状态</span><select name="status"><option value="">全部状态</option><option value="ready">待执行</option><option value="running">运行中</option><option value="completed">已完成</option><option value="partial_completed">部分完成</option><option value="failed">失败</option></select></label><label><span>搜索</span><input name="search" placeholder="任务编号、策略或股票"></label><label><span>每页</span><select id="stage76-task-page-size"><option value="20">20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></label><input name="limit" type="hidden" value="500"><button type="submit">查询</button></form><div id="stage76-task-summary" class="summary-grid"></div><div id="stage76-task-table" class="stage76-task-table"><div class="empty-cell">正在读取任务...</div></div><div id="stage76-task-pager" class="stage76-task-pager"><button type="button" id="stage76-task-prev">上一页</button><span id="stage76-task-page-info">第 1 页</span><button type="button" id="stage76-task-next">下一页</button></div>';
+  $("#page-backtest .section-grid")?.append(taskPanel);
+  const resultPanel=document.querySelector(".stage75-result-dock");
+  if(resultPanel && !$("#stage76-result-tabs")) {
+    const switcher=document.createElement("aside"); switcher.id="stage76-result-task-switcher"; switcher.className="stage76-result-task-switcher";
+    const tabs=document.createElement("nav"); tabs.id="stage76-result-tabs"; tabs.className="stage76-result-tabs";
+    tabs.innerHTML='<button type="button" data-stage76-result-tab="overview">回测概览</button><button type="button" data-stage76-result-tab="trades">交易明细</button><button type="button" data-stage76-result-tab="positions">持仓快照</button><button type="button" data-stage76-result-tab="accounts">账户快照</button><button type="button" data-stage76-result-tab="report">分析报告</button>';
+    resultPanel.querySelector(".result-dock-header")?.after(switcher,tabs);
+    const overview=document.createElement("section"); overview.className="stage76-result-section"; overview.dataset.stage76ResultSection="overview";
+    [$("#independent-result-run-selector"),$("#backtest-result-panel-summary"),$("#backtest-data-version-summary"),$("#backtest-result-panel-metrics"),$("#backtest-result-equity-chart"),$("#backtest-result-drawdown-chart"),$("#backtest-trade-attribution"),$("#backtest-risk-metrics"),$("#backtest-exposure-summary"),$("#backtest-portfolio-panel-summary"),$("#backtest-asset-consistency-summary"),$("#backtest-portfolio-equity-chart")].filter(Boolean).forEach((node)=>overview.append(node));
+    const trades=document.createElement("section"); trades.className="stage76-result-section"; trades.dataset.stage76ResultSection="trades"; trades.innerHTML='<div class="panel-header"><div><h4>交易明细</h4><p>按当前任务和股票上下文展示真实成交记录。</p></div></div><div id="stage76-result-trades"></div>';
+    const positions=document.createElement("section"); positions.className="stage76-result-section"; positions.dataset.stage76ResultSection="positions"; positions.innerHTML='<div class="panel-header"><div><h4>持仓快照</h4><p>单股为独立账户持仓；共享资金池为组合账户多票持仓。</p></div></div><div id="stage76-result-positions"></div>';
+    const accounts=document.createElement("section"); accounts.className="stage76-result-section"; accounts.dataset.stage76ResultSection="accounts"; accounts.innerHTML='<div class="panel-header"><div><h4>账户快照</h4><p>独立选股切换股票后查看对应独立资金账户。</p></div></div><div id="stage76-result-accounts"></div>';
+    const report=document.createElement("section"); report.className="stage76-result-section"; report.dataset.stage76ResultSection="report"; report.innerHTML='<div class="panel-header"><div><h4>分层分析报告</h4><p>核心结论优先，详细章节按需展开；无需跳离当前任务。</p></div></div><div id="stage76-embedded-report"><div class="empty-cell">选择任务后加载报告</div></div>';
+    resultPanel.append(overview,trades,positions,accounts,report);
+    const legacyTables=$("#backtest-result-panel-tables"); if(legacyTables) legacyTables.hidden=true;
+    resultPanel.tabIndex=-1;
+    [$("#backtest-portfolio-panel-output")?.closest("details"), $("#backtest-input-snapshot-output")?.closest("details"), $("#backtest-result-panel-output")?.closest("details"), $("#backtest-table-prev")?.closest(".button-row"), $("#backtest-result-page-table"), $("#backtest-result-export-output"), $("#backtest-experiment-panel-output")].filter(Boolean).forEach((node)=>{node.hidden=true;node.classList.add("stage76-retired-result-technical");});
+  }
+}
+function activateStage76ResultTab(tab) {
+  document.querySelectorAll("[data-stage76-result-tab]").forEach((button)=>button.classList.toggle("is-active",button.dataset.stage76ResultTab===tab));
+  document.querySelectorAll("[data-stage76-result-section]").forEach((section)=>section.hidden=section.dataset.stage76ResultSection!==tab);
+  if(tab==="report" && stage76SelectedTask) loadStage76EmbeddedReport(stage76SelectedTask).catch((error)=>setFeedback(error.message,"error"));
+  updateStage75Url({result_tab:tab});
+}
+
+function renderStage76ResultTaskSwitcher(task=stage76SelectedTask) {
+  const target=$("#stage76-result-task-switcher"); if(!target||!task)return;
+  const peers=stage76TaskCatalog.filter((item)=>item.mode===task.mode && item.capabilities?.can_view_result).slice(0,20);
+  target.innerHTML='<div><strong>同模式任务</strong><span>快速切换，不混合不同账户语义</span></div><div class="stage76-result-task-list">'+peers.map((item)=>`<button type="button" data-stage76-result-task="${escapeHtml(item.task_id)}" class="${item.task_id===task.task_id?"is-selected":""}">${escapeHtml(item.name||item.task_id)}</button>`).join("")+'</div>';
+  target.querySelectorAll("[data-stage76-result-task]").forEach((button)=>button.addEventListener("click",()=>{const selected=peers.find((item)=>item.task_id===button.dataset.stage76ResultTask);if(selected){stage76SelectedTask=selected;handleStage76TaskAction(selected,"result").catch((error)=>setFeedback(error.message,"error"));}}));
+}
+
+function renderStage76ResultDetails(result={}) {
+  stage76CurrentResult=result;
+  const trades=result.trades||[], positions=result.positions||[], accounts=result.accounts||[];
+  const tradesTarget=$("#stage76-result-trades"), positionsTarget=$("#stage76-result-positions"), accountsTarget=$("#stage76-result-accounts");
+  if(tradesTarget) tradesTarget.innerHTML=renderTable(trades,[{key:"trade_time",label:"时间"},{key:"order_book_id",label:"股票"},{key:"side",label:"方向"},{key:"price",label:"价格"},{key:"quantity",label:"数量"},{key:"amount",label:"成交额"},{key:"commission",label:"佣金"},{key:"tax",label:"印花税"}]);
+  if(positionsTarget) positionsTarget.innerHTML=renderTable(positions,[{key:"snapshot_time",label:"时间"},{key:"order_book_id",label:"股票"},{key:"quantity",label:"数量"},{key:"market_value",label:"市值"},{key:"avg_price",label:"成本价"},{key:"weight",label:"权重"}]);
+  if(accountsTarget) accountsTarget.innerHTML=renderTable(accounts,[{key:"snapshot_time",label:"时间"},{key:"total_value",label:"总资产"},{key:"cash",label:"现金"},{key:"market_value",label:"持仓市值"},{key:"unit_net_value",label:"单位净值"}]);
+  renderStage76ResultTaskSwitcher();
+}
+function activateStage76Workspace(workspace, mode = "") {
+  stage76Workspace = workspace;
+  document.querySelectorAll("[data-stage76-workspace]").forEach((button)=>button.classList.toggle("is-active",button.dataset.stage76Workspace===workspace));
+  const taskPanel=$("#stage76-task-workbench"); if(taskPanel) taskPanel.hidden=workspace!=="tasks";
+  const common=$("#backtest-common-config"); const modeTabs=$("#stage76-create-mode-tabs");
+  if(common) common.hidden=workspace!=="create"; if(modeTabs) modeTabs.hidden=workspace!=="create";
+  if(workspace==="strategy") activateBacktestView("strategy");
+  else if(workspace==="research") activateBacktestView("research");
+  else if(workspace==="create") activateStage76CreateMode(mode || (["single","independent","portfolio"].includes(currentBacktestView)?currentBacktestView:"single"));
+  else if(workspace==="tasks") {
+    document.querySelectorAll("[data-backtest-view]").forEach((panel)=>panel.classList.remove("is-active"));
+    loadStage76Tasks().catch((error)=>setFeedback(error.message,"error"));
+  }
+  updateStage75Url({page:"backtest",workspace,view:workspace==="create"?(mode||currentBacktestView):workspace});
+}
+
+function activateStage76CreateMode(mode) {
+  activateBacktestView(mode);
+  syncStage76CommonFields(mode);
+  document.querySelectorAll("[data-stage76-mode]").forEach((button)=>button.classList.toggle("is-active",button.dataset.stage76Mode===mode));
+  $("#backtest-common-config").hidden=false; $("#stage76-create-mode-tabs").hidden=false;
+}
+
+async function submitSingleBacktestTask(event, onlyCreate = false) {
+  event?.preventDefault?.();
+  const form=$("#backtest-run-form");
+  const runId=newTaskId("single-run");
+  if(form.elements.run_id) form.elements.run_id.value=runId;
+  const values=Object.fromEntries(new FormData(form).entries());
+  const body={
+    task_id:null, run_id:runId,
+    name:(selectedStrategy?.name || values.strategy_name || "策略")+" · "+values.symbol,
+    strategy_name:values.strategy_name, strategy_id:values.strategy_id || selectedStrategy?.strategy_id,
+    strategy_version:values.strategy_version || selectedStrategy?.latest_version,
+    symbol:values.symbol, benchmark:values.benchmark, start_date:values.start_date, end_date:values.end_date,
+    initial_cash:Number(values.initial_cash || 1000000), frequency:"1d", adjustment:values.adjustment || "qfq",
+    parameters:collectStrategyParameters(), extra_config:{rqalpha_local:buildRqalphaLocalConfig(values)},
+  };
+  setFeedback("正在创建单股后台任务...");
+  const created=await requestJson("/api/backtest/single-backtest-tasks",{method:"POST",body:JSON.stringify(body)});
+  let task=created.task||{};
+  currentSingleTask=task;
+  stage76SelectedTask=null;
+  if (!onlyCreate) {
+    const started=await requestJson(task.links?.run || `/api/backtest/single-backtest-tasks/${encodeURIComponent(task.task_id)}/run`,{method:"POST",body:JSON.stringify({wait:false})});
+    task=started.task||task;
+    currentSingleTask=task;
+    setFeedback("单股任务已创建并启动", "success");
+  } else setFeedback("单股任务已创建，等待执行", "success");
+  setStage76ModeTaskState("single",true,task);
+  renderTaskProgress("#single-run-progress",{status:task.status||"ready",percent:Number(task.progress?.percent||0),phase:task.progress?.phase||backtestStatusInfo(task.status||"ready").label,processed:task.progress?.processed||0,total:task.progress?.total||1});
+  await loadStage76Tasks();
+}
+
+function renderStage76TaskTable(tasks=[]) {
+  const target=$("#stage76-task-table"); if(!target) return;
+  const totalPages=Math.max(1,Math.ceil(tasks.length/stage76TaskPageSize));
+  stage76TaskPage=Math.min(Math.max(1,stage76TaskPage),totalPages);
+  const start=(stage76TaskPage-1)*stage76TaskPageSize;
+  const pageTasks=tasks.slice(start,start+stage76TaskPageSize);
+  const header='<div class="stage76-task-table-header"><span>任务</span><span>策略</span><span>模式与范围</span><span>进度</span><span>操作</span></div>';
+  const rows=pageTasks.map((task)=>{
+    const info=backtestStatusInfo(task.status); const p=task.progress||{}; const cap=task.capabilities||{};
+    return `<article class="stage76-task-row ${stage76SelectedTask?.task_id===task.task_id?"is-selected":""}" data-stage76-task="${escapeHtml(task.task_id)}" data-stage76-mode-value="${escapeHtml(task.mode)}"><div class="stage76-task-main"><span class="task-status-badge is-${info.tone}">${escapeHtml(info.label)}</span><h4>${escapeHtml(task.name||task.task_id)}</h4><p title="${escapeHtml(task.task_id)}">${escapeHtml(shortTechnicalId(task.task_id))} · ${escapeHtml(formatTaskTimestamp(task.created_at))}</p></div><div class="stage76-task-cell"><strong>${escapeHtml(task.strategy_binding?.strategy_id||"-")}</strong><small>${escapeHtml(task.strategy_binding?.strategy_version||"-")}</small></div><div class="stage76-task-cell"><strong>${escapeHtml(task.mode_label||task.mode)}</strong><small>${task.symbol?escapeHtml(task.symbol):(task.universe_count||0)+" 只股票"}</small></div><div class="stage76-task-progress"><strong>${Math.round(Number(p.percent||0))}% · ${escapeHtml(p.phase||info.label)}</strong><div class="task-card-progress"><div><i style="width:${Math.max(0,Math.min(100,Number(p.percent||0)))}%"></i></div><span>${p.processed||0}/${p.total||0}</span></div></div><div class="stage76-task-actions">${cap.can_start?'<button type="button" data-stage76-action="start">执行</button>':''}${cap.can_pause?'<button type="button" data-stage76-action="pause">暂停</button>':''}${cap.can_cancel?'<button type="button" data-stage76-action="cancel">取消</button>':''}${cap.can_view_result?'<button type="button" data-stage76-action="result">查看结果</button>':''}${cap.can_view_report?'<button type="button" data-stage76-action="report">查看报告</button>':''}${cap.can_clone?'<button type="button" data-stage76-action="clone">克隆</button>':''}${cap.can_delete?'<button type="button" class="danger-button" data-stage76-action="delete">删除</button>':''}</div></article>`;
+  }).join("");
+  target.innerHTML=header+(rows||'<div class="empty-cell">没有符合条件的任务</div>');
+  const info=$("#stage76-task-page-info"); if(info) info.textContent=tasks.length?`${start+1}—${Math.min(start+stage76TaskPageSize,tasks.length)} / ${tasks.length} · 第 ${stage76TaskPage}/${totalPages} 页`:'0 条任务';
+  const prev=$("#stage76-task-prev"), next=$("#stage76-task-next"); if(prev) prev.disabled=stage76TaskPage<=1; if(next) next.disabled=stage76TaskPage>=totalPages;
+  target.querySelectorAll("[data-stage76-task]").forEach((row)=>row.addEventListener("click",(event)=>{
+    const task=stage76TaskCatalog.find((item)=>item.task_id===row.dataset.stage76Task && item.mode===row.dataset.stage76ModeValue); if(!task)return;
+    stage76SelectedTask=task; renderStage76TaskTable(stage76TaskCatalog);
+    const button=event.target.closest("[data-stage76-action]"); if(button) handleStage76TaskAction(task,button.dataset.stage76Action).catch((error)=>setFeedback(error.message,"error"));
+  }));
+}
+async function loadStage76Tasks(filters={}) {
+  const form=$("#stage76-task-filter"); const values=form?Object.fromEntries(new FormData(form).entries()):{};
+  const payload=await requestJson(`/api/backtest/mode-tasks?${buildQuery({...values,...filters,limit:values.limit||100})}`);
+  stage76TaskCatalog=payload.tasks||[]; renderStage76TaskTable(stage76TaskCatalog);
+  const activeTasks=[["single",currentSingleTask],["independent",currentScreeningTask],["portfolio",currentPortfolioTask]];
+  activeTasks.forEach(([mode,current])=>{
+    if(!current?.task_id)return;
+    const latest=stage76TaskCatalog.find((task)=>task.task_id===current.task_id); if(!latest)return;
+    if(mode==="single"){
+      currentSingleTask=latest; setStage76ModeTaskState(mode,true,latest);
+      renderTaskProgress("#single-run-progress",{status:latest.status||"ready",percent:Number(latest.progress?.percent||0),phase:latest.progress?.phase||backtestStatusInfo(latest.status||"ready").label,processed:latest.progress?.processed||0,total:latest.progress?.total||1});
+    } else if(mode==="independent"){currentScreeningTask=latest;setStage76ModeTaskState(mode,true,latest);renderScreeningTask(latest);}
+    else {currentPortfolioTask=latest;setStage76ModeTaskState(mode,true,latest);renderPortfolioTask(latest);}
+  });
+  const summary=payload.summary||{}; renderSummaryGrid($("#stage76-task-summary"),[{label:"任务总数",value:summary.task_count||0},{label:"单股测试",value:summary.mode_counts?.single||0},{label:"独立选股",value:summary.mode_counts?.["independent-screening"]||0},{label:"共享资金池",value:summary.mode_counts?.["shared-portfolio"]||0}]);
+  if(stage76TaskPollTimer) clearTimeout(stage76TaskPollTimer);
+  if(stage76TaskCatalog.some((task)=>["running","pause_requested","cancel_requested"].includes(task.status))) stage76TaskPollTimer=setTimeout(()=>loadStage76Tasks().catch(()=>{}),2000);
+  return stage76TaskCatalog;
+}
+
+async function handleStage76TaskAction(task, action) {
+  if(action==="start") { await requestJson(task.links.run,{method:"POST",body:JSON.stringify({wait:false})}); await loadStage76Tasks(); return; }
+  if(action==="pause"||action==="cancel") { await requestJson(task.links.detail+"/control",{method:"POST",body:JSON.stringify({action})}); await loadStage76Tasks(); return; }
+  if(action==="delete") { if(!window.confirm(`确认删除任务 ${task.task_id}？`))return; await requestJson(task.links.delete||task.links.detail,{method:"DELETE"}); await loadStage76Tasks(); return; }
+  if(action==="clone") {
+    if(task.mode==="single") { const payload=await requestJson(task.links.detail); fillStage75TaskForm($("#backtest-run-form"),payload.task.config||{}); $("#backtest-run-form").elements.run_id.value=newTaskId("single-run"); activateStage76Workspace("create","single"); }
+    else { const mode=task.mode==="independent-screening"?"independent":"portfolio"; await cloneStage75Task(mode,task.task_id); activateStage76Workspace("create",mode); }
+    return;
+  }
+  currentModeTask=task;
+  if(action==="result" || action==="report") {
+    if(task.mode==="single") { hideIndependentResultSelector(); await loadBacktestResultPanel(task.run_id); }
+    else if(task.mode==="independent-screening") await loadIndependentScreeningResultWorkspace(task);
+    else { hideIndependentResultSelector(); await loadBacktestResultPanel(task.run_id); }
+    openStage75ResultDock(task.run_id||"");
+    activateStage76ResultTab(action==="report"?"report":"overview");
+    return;
+  }
+}
+
+function stage76ReportDimensions(professional={}, detail={}) {
+  const normalized=normalizeEvaluationReport(professional); const dimensions=normalized?.dimensions||[];
+  if(!dimensions.length) return '<div class="empty-cell">当前结果缺少足够的 7 维评估证据，不使用演示值补齐。</div>';
+  return `<div class="stage76-report-dimensions">${dimensions.map((item,index)=>`<details ${index===0?"open":""}><summary><span>${escapeHtml(item.title)}</span><strong>${item.score} · ${escapeHtml(item.level?.text||"")}</strong></summary><div class="dimension-metrics">${(item.metrics||[]).map(([label,value])=>`<div class="dimension-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div><div class="mini-chart">${item.chart||""}</div></details>`).join("")}</div><details><summary>报告证据：交易记录</summary>${renderTable(detail.trades||[],[{key:"trade_time",label:"时间"},{key:"order_book_id",label:"股票"},{key:"side",label:"方向"},{key:"price",label:"价格"},{key:"quantity",label:"数量"}])}</details>`;
+}
+
+async function loadStage76EmbeddedIndependentRun(task, runId) {
+  const payload=await requestJson(`/api/reporting/backtest-modes/independent-screening/${encodeURIComponent(task.task_id)}/runs/${encodeURIComponent(runId)}`); const report=payload.report||{};
+  const target=$("#stage76-independent-single-report"); if(!target)return;
+  target.innerHTML=`<div class="stage76-report-hero"><span>任务内单股诊断</span><h4>${escapeHtml(report.symbol||"-")} · ${escapeHtml(report.name||"-")}</h4><p>该诊断只代表策略在当前股票独立资金账户上的适配性，不是组合评价。</p></div>${stage76ReportDimensions(report.professional_report||{},report.run_detail||{})}`;
+}
+
+async function loadStage76EmbeddedReport(task) {
+  const target=$("#stage76-embedded-report"); if(!target||!task)return;
+  target.innerHTML='<div class="empty-cell">正在加载专业报告...</div>';
+  if(task.mode==="single") {
+    const payload=await requestJson(`/api/reporting/strategy-evaluation/${encodeURIComponent(task.run_id)}`); const professional=payload.report||{};
+    target.innerHTML=`<div class="stage76-report-hero"><span>单股择时报告</span><h3>${escapeHtml(task.name||task.run_id)}</h3><p>先看核心结论，再按需展开 7 维诊断和证据。</p><div class="summary-grid"><div class="summary-item"><strong>综合评分</strong><span>${professional.average_score??"N/A"}</span></div><div class="summary-item"><strong>证据质量</strong><span>${escapeHtml(professional.evidence_quality?.grade||"unknown")}</span></div></div></div>${stage76ReportDimensions(professional,stage76CurrentResult||{})}`;
+    return;
+  }
+  const payload=await requestJson(`/api/reporting/backtest-modes/${encodeURIComponent(task.mode)}/${encodeURIComponent(task.task_id)}`); const report=payload.report||{};
+  if(task.mode==="shared-portfolio") {
+    const gate=report.data_quality_gate||{};
+    target.innerHTML=`<div class="stage76-report-hero"><span>多票组合报告</span><h3>${escapeHtml(task.name||task.task_id)}</h3><p>评价对象是一个共享资金池、多股票持仓的真实组合模拟账户。</p><div class="summary-grid"><div class="summary-item"><strong>综合评分</strong><span>${gate.score_allowed?(report.professional_report?.average_score??"N/A"):"N/A"}</span></div><div class="summary-item"><strong>证据门禁</strong><span>${escapeHtml(gate.status||"unknown")}</span></div><div class="summary-item"><strong>账户语义</strong><span>单一共享资金账户</span></div></div></div>${stage76ReportDimensions(report.professional_report||{},report.run_detail||{})}<details><summary>组合归因与持仓章节</summary><pre class="code-block">${escapeHtml(JSON.stringify(report.portfolio_sections||{},null,2))}</pre></details>`;
+    return;
+  }
+  const scope=report.sample_scope||{}, distribution=report.distribution||{}, runs=report.run_index||[];
+  target.innerHTML=`<div class="stage76-report-hero"><span>全市场普查报告</span><h3>${escapeHtml(report.title||task.name||task.task_id)}</h3><p>${escapeHtml(report.subtitle||"仅统计实际建仓股票。")}</p><div class="summary-grid"><div class="summary-item"><strong>股票池</strong><span>${scope.universe_count??0}</span></div><div class="summary-item"><strong>实际建仓</strong><span>${scope.entered_count??0}</span></div><div class="summary-item"><strong>正收益占比</strong><span>${distribution.positive_probability==null?"-":formatPercent(distribution.positive_probability)}</span></div><div class="summary-item"><strong>收益中位数</strong><span>${distribution.median==null?"-":formatPercent(distribution.median)}</span></div></div></div><details open><summary>一级：任务统计与收益分布</summary>${renderReturnDistributionHistogram(distribution.histogram||[])}${renderTable(Object.entries(report.classification_coverage||{}).map(([dimension,value])=>({dimension,...value})),[{key:"dimension",label:"分类维度"},{key:"covered_count",label:"已覆盖"},{key:"missing_count",label:"缺失"},{key:"coverage_ratio",label:"覆盖率"}])}</details><details><summary>一级：因子与收益关系</summary>${renderTable(report.factor_analysis?.numeric_relationships||[],[{key:"label",label:"特征"},{key:"sample_size",label:"样本"},{key:"spearman",label:"Spearman"},{key:"interpretation",label:"解释边界"}])}${renderTable(report.factor_analysis?.categorical_effects||[],[{key:"factor",label:"分类特征"},{key:"category_count",label:"分组"},{key:"best_category",label:"最高收益组"},{key:"worst_category",label:"最低收益组"},{key:"mean_spread",label:"均值差"}])}</details><details open><summary>二级：任务内单股 7 维诊断</summary><div class="stage76-independent-run-picker"><input id="stage76-independent-run-search" type="search" placeholder="搜索股票"><select id="stage76-independent-run-select">${runs.map((item)=>`<option value="${escapeHtml(item.run_id)}">${escapeHtml(item.symbol||"-")} · ${escapeHtml(item.name||"-")}</option>`).join("")}</select></div><div id="stage76-independent-single-report"><div class="empty-cell">选择实际建仓股票查看独立 Run 报告</div></div></details>`;
+  const select=$("#stage76-independent-run-select"), search=$("#stage76-independent-run-search");
+  select?.addEventListener("change",()=>loadStage76EmbeddedIndependentRun(task,select.value).catch((error)=>setFeedback(error.message,"error")));
+  search?.addEventListener("input",()=>{const q=search.value.trim().toLowerCase(); select.innerHTML=runs.filter((item)=>!q||`${item.symbol||""} ${item.name||""}`.toLowerCase().includes(q)).map((item)=>`<option value="${escapeHtml(item.run_id)}">${escapeHtml(item.symbol||"-")} · ${escapeHtml(item.name||"-")}</option>`).join("");});
+  if(runs[0]) await loadStage76EmbeddedIndependentRun(task,runs[0].run_id);
+}
+
+function stage76RunMode(run={}) {
+  if(run.extra_config?.screening_task_id) return "independent-single";
+  if(run.extra_config?.mode==="shared_cash_portfolio"||run.extra_config?.portfolio_mode==="shared_cash") return "shared-portfolio";
+  return "single";
+}
+function bindStage76Events() {
+  document.querySelectorAll("[data-stage76-workspace]").forEach((button)=>button.addEventListener("click",()=>{activatePage("backtest");activateStage76Workspace(button.dataset.stage76Workspace);}));
+  document.querySelectorAll("[data-stage76-mode]").forEach((button)=>button.addEventListener("click",()=>activateStage76Workspace("create",button.dataset.stage76Mode)));
+  document.querySelectorAll("[data-stage76-form-action]").forEach((button)=>button.addEventListener("click",()=>handleStage76FormTaskAction(button.dataset.stage76ActionMode,button.dataset.stage76FormAction).catch((error)=>setFeedback(error.message,"error"))));
+  document.querySelectorAll("[data-stage76-result-tab]").forEach((button)=>button.addEventListener("click",()=>activateStage76ResultTab(button.dataset.stage76ResultTab)));
+  activateStage76ResultTab("overview");
+  $("#stage76-code-validate")?.addEventListener("click",()=>$("#strategy-validate")?.click());
+  $("#stage76-code-theme")?.addEventListener("click",()=>setStage76CodeTheme($("#strategy-editor")?.closest(".stage76-code-editor-shell")?.dataset.theme==="dark"?"light":"dark"));
+  $("#strategy-library-sort")?.addEventListener("change",renderStrategyLibrary);
+  $("#backtest-common-config")?.addEventListener("input",()=>syncStage76CommonFields(currentBacktestView));
+  $("#backtest-common-strategy")?.addEventListener("change",(event)=>{const strategy=strategyCatalog.find((item)=>item.strategy_id===event.currentTarget.value);if(strategy)selectStrategy(strategy).catch((error)=>setFeedback(error.message,"error"));});
+  $("#single-task-create-only")?.addEventListener("click",(event)=>submitSingleBacktestTask(event,true).catch((error)=>setFeedback(error.message,"error")));
+  $("#stage76-task-filter")?.addEventListener("submit",(event)=>{event.preventDefault();stage76TaskPage=1;loadStage76Tasks().catch((error)=>setFeedback(error.message,"error"));});
+  $("#stage76-task-refresh")?.addEventListener("click",()=>loadStage76Tasks().catch((error)=>setFeedback(error.message,"error")));
+  $("#stage76-task-prev")?.addEventListener("click",()=>{stage76TaskPage=Math.max(1,stage76TaskPage-1);renderStage76TaskTable(stage76TaskCatalog);});
+  $("#stage76-task-next")?.addEventListener("click",()=>{stage76TaskPage+=1;renderStage76TaskTable(stage76TaskCatalog);});
+  $("#stage76-task-page-size")?.addEventListener("change",(event)=>{stage76TaskPageSize=Number(event.currentTarget.value)||20;stage76TaskPage=1;renderStage76TaskTable(stage76TaskCatalog);});
+  activateStage76Workspace("strategy");
+}
+function bindEvents() { configureStage75Shell(); configureStage76InformationArchitecture(); bindBacktestWorkspace(); bindStrategyManager(); configureReportingWorkspace(); configureStage75Relocations(); bindStage75Events(); bindStage76Events(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareWorkspace().then(() => setFeedback("A 股真实数据库已加载", "success")).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); $("#market-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", (event) => submitSingleBacktestTask(event, false).catch((error) => setFeedback(error.message, "error"))); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立选股任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("共享资金池组合任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
 function bindBacktestResultControls() {
   const prev = $("#backtest-table-prev");
   const next = $("#backtest-table-next");
@@ -2571,7 +3494,37 @@ function bindBacktestResultControls() {
   if (exportJson) exportJson.addEventListener("click", () => exportBacktestResultTable("json"));
   if (exportCsv) exportCsv.addEventListener("click", () => exportBacktestResultTable("csv"));
 }
-async function main() { bindEvents(); bindBacktestResultControls(); renderTraceability(); renderAcceptanceMatrix(); const requestedPage = new URLSearchParams(window.location.search).get("page"); if (requestedPage && pageTitles[requestedPage]) activatePage(requestedPage); try { await loadDashboard(); await loadBacktestModeTasks(); setFeedback("MVP 数据加载完成", "success"); } catch (error) { setFeedback(error.message, "error"); } }
+async function main() {
+  const params = new URLSearchParams(window.location.search);
+  bindEvents();
+  bindBacktestResultControls();
+  renderTraceability();
+  renderAcceptanceMatrix();
+  const requestedPage = params.get("page");
+  const requestedView = params.get("view");
+  const requestedWorkspace = params.get("workspace");
+  if (requestedView && ["strategy", "single", "independent", "portfolio", "research"].includes(requestedView)) activateBacktestView(requestedView);
+  if (requestedPage && pageTitles[requestedPage]) activatePage(requestedPage);
+  if (requestedPage === "backtest" && ["strategy", "create", "tasks", "research"].includes(requestedWorkspace)) activateStage76Workspace(requestedWorkspace, requestedView);
+  try {
+    await loadDashboard();
+    await loadBacktestModeTasks();
+    await loadStage76Tasks();
+    const compareIds = (params.get("compare") || "").split(",").filter(Boolean).slice(0, 4);
+    for (const runId of compareIds) await addStage75ComparisonRun(runId);
+    const runId = params.get("run");
+    if (runId && requestedPage === "backtest") {
+      stage76SelectedTask = stage76TaskCatalog.find((task) => task.run_id === runId) || stage76SelectedTask;
+      await loadBacktestResultPanel(runId);
+      renderStage76ResultTaskSwitcher();
+    }
+    const resultTab = params.get("result_tab");
+    if (resultTab && ["overview", "trades", "positions", "accounts", "report"].includes(resultTab)) activateStage76ResultTab(resultTab);
+    setFeedback("MVP 数据加载完成", "success");
+  } catch (error) {
+    setFeedback(error.message, "error");
+  }
+}
 main();
 
 

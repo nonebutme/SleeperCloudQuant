@@ -1,4 +1,4 @@
-﻿"""Smoke test for stage 43 strategy evaluation diagnostics."""
+"""Smoke test for Stage 74 evidence-based seven-dimension evaluation."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def main() -> None:
     from app.runtime import build_demo_app
 
     app = build_demo_app()
-    run_id = "stage43-strategy-diagnostics"
+    run_id = "stage74-strategy-diagnostics"
     status, payload = _dispatch(
         app,
         "POST",
@@ -40,34 +40,42 @@ def main() -> None:
         },
     )
     if status != 200 or payload.get("result", {}).get("status") != "completed":
-        raise SystemExit("stage43 smoke failed: backtest did not complete")
+        raise SystemExit("stage74 smoke failed: backtest did not complete")
 
     status, payload = _dispatch(app, "GET", f"/api/reporting/strategy-evaluation/{quote(run_id)}")
     report = payload.get("report", {})
     diagnostics = report.get("diagnostics", {})
     if status != 200 or report.get("average_score") is None:
-        raise SystemExit("stage43 smoke failed: evaluation missing")
+        raise SystemExit("stage74 smoke failed: evaluation missing")
     required_sections = {"return", "risk", "stability", "trade_quality", "capacity_cost", "exposure", "data_quality"}
     if not required_sections.issubset(set(diagnostics.keys())):
-        raise SystemExit("stage43 smoke failed: diagnostics sections missing")
-    if report.get("score_breakdown", {}).get("formula_version") != "stage43-diagnostic-score-v1":
-        raise SystemExit("stage43 smoke failed: score formula missing")
+        raise SystemExit("stage74 smoke failed: diagnostics sections missing")
+    if report.get("score_breakdown", {}).get("formula_version") != "stage74-seven-dimension-evidence-v2":
+        raise SystemExit("stage74 smoke failed: score formula mismatch")
+    if report.get("report_version") != "stage74-strategy-evaluation-v2":
+        raise SystemExit("stage74 smoke failed: report version mismatch")
+    evidence = report.get("evidence_quality", {})
+    if evidence.get("demo_fallback_used") is not False or any(item is None for item in evidence.get("unavailable_capabilities", [])):
+        raise SystemExit("stage74 smoke failed: evidence disclosure mismatch")
+    dimensions = report.get("dimensions") or []
+    if len(dimensions) != 7 or any(item.get("evidence_status") != "calculated_from_run_evidence" for item in dimensions):
+        raise SystemExit("stage74 smoke failed: dimension evidence metadata missing")
     if not report.get("decision_flags") or not any(flag.get("key") == "data_coverage" for flag in report.get("decision_flags", [])):
-        raise SystemExit("stage43 smoke failed: decision flags missing")
+        raise SystemExit("stage74 smoke failed: decision flags missing")
     if diagnostics.get("capacity_cost", {}).get("estimated_cost_rate") is None:
-        raise SystemExit("stage43 smoke failed: cost diagnostics missing")
+        raise SystemExit("stage74 smoke failed: cost diagnostics missing")
 
-    status, payload = _dispatch(app, "POST", f"/api/reporting/run-detail/{quote(run_id)}/report-package", {"title": "Stage 43 diagnostics package"})
+    status, payload = _dispatch(app, "POST", f"/api/reporting/run-detail/{quote(run_id)}/report-package", {"title": "Stage 74 diagnostics package"})
     package = payload.get("package", {})
     if status != 200 or package.get("strategy_evaluation", {}).get("diagnostics", {}).get("risk") is None:
-        raise SystemExit("stage43 smoke failed: package diagnostics missing")
+        raise SystemExit("stage74 smoke failed: package diagnostics missing")
     package_id = package.get("package_id")
     status, payload = _dispatch(app, "GET", f"/api/reporting/report-packages/{quote(package_id)}/export?format=json")
     exported = payload.get("export", {})
-    if status != 200 or "stage43-diagnostic-score-v1" not in exported.get("content", ""):
-        raise SystemExit("stage43 smoke failed: exported package diagnostics missing")
+    if status != 200 or "stage74-seven-dimension-evidence-v2" not in exported.get("content", ""):
+        raise SystemExit("stage74 smoke failed: exported package diagnostics missing")
 
-    print("stage43 strategy evaluation diagnostics smoke test passed")
+    print("stage74 strategy evaluation diagnostics smoke test passed")
 
 
 if __name__ == "__main__":

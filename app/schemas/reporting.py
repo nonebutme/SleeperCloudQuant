@@ -55,6 +55,8 @@ class StrategyEvaluationDimensionPayload:
     level: str
     metrics: list[StrategyEvaluationMetricPayload] = field(default_factory=list)
     chart: StrategyEvaluationChartPayload = field(default_factory=lambda: StrategyEvaluationChartPayload(kind="bar"))
+    evidence_status: str = "ready"
+    score_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +75,9 @@ class StrategyEvaluationReportPayload:
     score_breakdown: dict[str, Any] = field(default_factory=dict)
     decision_flags: list[dict[str, Any]] = field(default_factory=list)
     analysis_summary: dict[str, Any] = field(default_factory=dict)
+    report_version: str = "strategy-evaluation-v2"
+    evaluation_scope: str = "single_run_or_shared_portfolio"
+    evidence_quality: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

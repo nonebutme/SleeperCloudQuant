@@ -25,6 +25,7 @@ from app.services import (
     PersistentBacktestService,
     ReportingService,
     SharedPortfolioService,
+    SingleBacktestTaskService,
     StrategyService,
 )
 
@@ -41,6 +42,7 @@ class AppServiceRegistry:
     strategy_service: StrategyService
     independent_screening_service: IndependentScreeningService
     shared_portfolio_service: SharedPortfolioService
+    single_backtest_task_service: SingleBacktestTaskService | None = None
     backtest_mode_report_service: BacktestModeReportService | None = None
     ai_analysis_service: AIAnalysisService | None = None
     config_center_service: ConfigCenterService | None = None
@@ -66,6 +68,7 @@ def create_app(services: AppServiceRegistry) -> SimpleApiApp:
             services.strategy_service,
             services.independent_screening_service,
             services.shared_portfolio_service,
+            services.single_backtest_task_service,
         ),
         *build_reporting_routes(services.reporting_service, services.backtest_mode_report_service),
     ]

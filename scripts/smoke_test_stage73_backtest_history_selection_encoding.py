@@ -21,5 +21,5 @@ require('document.querySelectorAll("[data-report-package]")' in JS, "report pack
 require('document.querySelectorAll("[data-report-package-directory]")' in JS, "report package directory selected state missing")
 require("background: #eef5fb" in CSS and "independent-result-run-list button.is-selected" in CSS, "pale selected background missing")
 require("???" not in JS and "\ufffd" not in JS + HTML + CSS, "mojibake marker remains")
-require("/app.js?v=73" in HTML and "/styles.css?v=73" in HTML, "static cache version missing")
+require("/app.js?v=769" in HTML and "/styles.css?v=769" in HTML, "static cache version missing")
 print("Stage 73 history/selection/encoding smoke passed")

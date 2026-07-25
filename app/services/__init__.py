@@ -12,6 +12,7 @@ from .market_data_service import MarketDataService
 from .persistent_backtest_service import PersistentBacktestService
 from .reporting_service import ReportingService
 from .shared_portfolio_service import SharedPortfolioService
+from .single_backtest_task_service import SingleBacktestTaskService
 from .strategy_service import StrategyService
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     "PersistentBacktestService",
     "ReportingService",
     "SharedPortfolioService",
+    "SingleBacktestTaskService",
     "StrategyService",
 ]

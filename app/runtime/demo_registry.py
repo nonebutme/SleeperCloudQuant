@@ -24,6 +24,7 @@ from app.services import (
     PersistentBacktestService,
     ReportingService,
     SharedPortfolioService,
+    SingleBacktestTaskService,
     StrategyService,
 )
 from backtest_kernel import LocalSQLiteBacktestRuntime, RqalphaPackageRuntime, RqalphaRicequantGateway, RunSingleBacktest
@@ -92,6 +93,7 @@ def build_demo_service_registry() -> AppServiceRegistry:
         strategy_service,
         runtime_store,
     )
+    single_backtest_task_service = SingleBacktestTaskService(backtest_service)
     shared_portfolio_service = SharedPortfolioService(
         market_service,
         strategy_service,
@@ -121,6 +123,7 @@ def build_demo_service_registry() -> AppServiceRegistry:
         strategy_service=strategy_service,
         independent_screening_service=independent_screening_service,
         shared_portfolio_service=shared_portfolio_service,
+        single_backtest_task_service=single_backtest_task_service,
         backtest_mode_report_service=backtest_mode_report_service,
         ai_analysis_service=ai_analysis_service,
         config_center_service=config_center_service,

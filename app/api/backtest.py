@@ -43,6 +43,11 @@ from app.schemas.backtest import (
     SharedPortfolioTaskListResponsePayload,
     SharedPortfolioTaskResponsePayload,
     SharedPortfolioTaskRunRequestPayload,
+    SingleBacktestTaskCreateRequestPayload,
+    SingleBacktestTaskListQueryPayload,
+    SingleBacktestTaskListResponsePayload,
+    SingleBacktestTaskResponsePayload,
+    SingleBacktestTaskRunRequestPayload,
     ParameterMatrixTaskCreateRequestPayload,
     ParameterMatrixTaskListResponsePayload,
     ParameterMatrixTaskResponsePayload,
@@ -68,6 +73,7 @@ from app.services.batch_research_service import BatchResearchService
 from app.services.independent_screening_service import IndependentScreeningService
 from app.services.persistent_backtest_service import PersistentBacktestService
 from app.services.shared_portfolio_service import SharedPortfolioService
+from app.services.single_backtest_task_service import SingleBacktestTaskService
 from app.services.strategy_service import StrategyService
 from domain.backtest import BacktestRunRequest, BatchBacktestRunRequest
 
@@ -657,6 +663,44 @@ def run_parameter_scan(
         results=results,
         combinations=normalized_combinations,
     )
+def create_single_backtest_task(
+    service: SingleBacktestTaskService,
+    payload: SingleBacktestTaskCreateRequestPayload,
+) -> SingleBacktestTaskResponsePayload:
+    return SingleBacktestTaskResponsePayload(task=service.create_task(
+        task_id=payload.task_id, run_id=payload.run_id, name=payload.name,
+        strategy_name=payload.strategy_name, strategy_id=payload.strategy_id,
+        strategy_version=payload.strategy_version, symbol=payload.symbol,
+        benchmark=payload.benchmark, start_date=payload.start_date, end_date=payload.end_date,
+        initial_cash=payload.initial_cash, frequency=payload.frequency,
+        adjustment=payload.adjustment, parameters=payload.parameters,
+        extra_config=payload.extra_config,
+    ))
+
+
+def list_single_backtest_tasks(
+    service: SingleBacktestTaskService,
+    payload: SingleBacktestTaskListQueryPayload,
+) -> SingleBacktestTaskListResponsePayload:
+    return SingleBacktestTaskListResponsePayload(tasks=service.list_tasks(limit=int(payload.limit)))
+
+
+def get_single_backtest_task(service: SingleBacktestTaskService, task_id: str) -> SingleBacktestTaskResponsePayload:
+    return SingleBacktestTaskResponsePayload(task=service.get_task(task_id))
+
+
+def run_single_backtest_task(
+    service: SingleBacktestTaskService,
+    payload: SingleBacktestTaskRunRequestPayload,
+    task_id: str,
+) -> SingleBacktestTaskResponsePayload:
+    wait = payload.wait is True or str(payload.wait).lower() in {"1", "true", "yes"}
+    return SingleBacktestTaskResponsePayload(task=service.start_task(task_id, wait=wait))
+
+
+def delete_single_backtest_task(service: SingleBacktestTaskService, task_id: str) -> SingleBacktestTaskResponsePayload:
+    return SingleBacktestTaskResponsePayload(task=service.delete_task(task_id))
+
 def create_independent_screening_task(
     service: IndependentScreeningService,
     payload: IndependentScreeningTaskCreateRequestPayload,
@@ -781,8 +825,10 @@ def list_backtest_mode_tasks(
     independent_service: IndependentScreeningService,
     portfolio_service: SharedPortfolioService,
     payload: BacktestModeTaskDirectoryQueryPayload,
+    single_service: SingleBacktestTaskService | None = None,
 ) -> BacktestModeTaskDirectoryResponsePayload:
     tasks = [
+        *(_mode_task_entry("single", task) for task in (single_service.list_tasks(limit=200) if single_service else [])),
         *(_mode_task_entry("independent-screening", task) for task in independent_service.list_tasks(limit=200)),
         *(_mode_task_entry("shared-portfolio", task) for task in portfolio_service.list_tasks(limit=200)),
     ]
@@ -814,65 +860,83 @@ def list_backtest_mode_tasks(
 def _mode_task_entry(mode: str, task: dict[str, Any]) -> dict[str, Any]:
     config = dict(task.get("config") or {})
     progress = dict(task.get("progress") or {})
-    universe_count = int(progress.get("total") or task.get("universe_count") or 0)
-    if mode == "independent-screening":
+    universe_count = int(progress.get("total") or task.get("universe_count") or (1 if mode == "single" else 0))
+    if mode == "single":
         normalized_progress = {
-            "processed": int(progress.get("processed") or 0),
-            "total": universe_count,
+            "phase": str(progress.get("phase") or task.get("status") or "ready"),
+            "processed": int(progress.get("processed") or 0), "total": 1,
+            "percent": float(progress.get("percent") or 0.0), "entered": None,
+            "failed": 1 if task.get("status") == "failed" else 0, "canceled": 0,
+            "elapsed_seconds": float(progress.get("elapsed_seconds") or 0.0),
+            "throughput_per_minute": 0.0, "estimated_remaining_seconds": None,
+        }
+        mode_label, task_path = "单股测试", "single-backtest-tasks"
+    elif mode == "independent-screening":
+        normalized_progress = {
+            "processed": int(progress.get("processed") or 0), "total": universe_count,
             "percent": float(progress.get("percent") or 0.0),
-            "entered": int(progress.get("entered") or 0),
-            "failed": int(progress.get("failed") or 0),
+            "entered": int(progress.get("entered") or 0), "failed": int(progress.get("failed") or 0),
             "canceled": int(progress.get("canceled") or 0),
             "elapsed_seconds": float(progress.get("elapsed_seconds") or 0.0),
             "throughput_per_minute": float(progress.get("throughput_per_minute") or 0.0),
             "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
         }
-        mode_label = "独立选股建仓"
+        mode_label, task_path = "独立选股", "independent-screening-tasks"
     else:
         complete = str(task.get("status") or "") in {"completed", "partial_completed"}
         normalized_progress = {
             "phase": str(progress.get("phase") or ("completed" if complete else "ready")),
             "processed": int(progress.get("processed") or (universe_count if complete else 0)),
-            "total": universe_count,
-            "percent": float(progress.get("percent") or (100.0 if complete else 0.0)),
-            "prepared": int(progress.get("prepared") or 0),
-            "entered": None,
+            "total": universe_count, "percent": float(progress.get("percent") or (100.0 if complete else 0.0)),
+            "prepared": int(progress.get("prepared") or 0), "entered": None,
             "failed": int(progress.get("excluded") or (task.get("summary") or {}).get("excluded_symbol_count") or 0),
-            "canceled": 0,
-            "elapsed_seconds": float(progress.get("elapsed_seconds") or 0.0),
+            "canceled": 0, "elapsed_seconds": float(progress.get("elapsed_seconds") or 0.0),
             "throughput_per_minute": float(progress.get("throughput_per_minute") or 0.0),
             "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
         }
-        mode_label = "共享资金池组合"
+        mode_label, task_path = "共享资金池", "shared-portfolio-tasks"
     task_id = str(task.get("task_id") or "")
-    task_path = "independent-screening-tasks" if mode == "independent-screening" else "shared-portfolio-tasks"
+    status = str(task.get("status") or "unknown")
+    run_id = task.get("run_id")
+    result_ready = status in {"completed", "partial_completed", "partial_failed"} and bool(run_id or mode == "independent-screening")
+    capabilities = {
+        "can_start": status in {"ready", "paused", "interrupted", "failed", "partial_failed"},
+        "can_pause": mode == "independent-screening" and status == "running",
+        "can_cancel": mode == "independent-screening" and status in {"ready", "running", "pause_requested", "paused", "interrupted"},
+        "can_view_result": result_ready,
+        "can_view_report": result_ready,
+        "can_clone": status != "running",
+        "can_delete": status not in {"running", "pending", "pause_requested", "cancel_requested"},
+    }
+    report_link = (
+        f"/api/reporting/strategy-evaluation/{run_id}" if mode == "single" and run_id
+        else f"/api/reporting/backtest-modes/{mode}/{task_id}"
+    )
     return {
-        "task_id": task_id,
-        "mode": mode,
-        "mode_label": mode_label,
-        "name": str(config.get("name") or task_id),
-        "status": str(task.get("status") or "unknown"),
+        "task_id": task_id, "mode": mode, "mode_label": mode_label,
+        "name": str(config.get("name") or task_id), "status": status,
         "strategy_binding": {
             "strategy_id": str(config.get("strategy_id") or ""),
             "strategy_version": str(config.get("strategy_version") or ""),
             "source_sha256": str(config.get("source_sha256") or ""),
         },
         "date_window": dict(config.get("date_window") or {}),
-        "adjustment": str(config.get("adjustment") or "raw"),
-        "universe_count": universe_count,
-        "progress": normalized_progress,
-        "execution": dict(task.get("execution") or {}),
-        "run_id": task.get("run_id"),
-        "created_at": task.get("created_at"),
-        "updated_at": task.get("updated_at"),
-        "started_at": task.get("started_at"),
-        "finished_at": task.get("finished_at"),
+        "adjustment": str(config.get("adjustment") or "qfq"),
+        "universe_count": universe_count, "symbol": config.get("symbol"),
+        "progress": normalized_progress, "execution": dict(task.get("execution") or {}),
+        "run_id": run_id, "error_message": task.get("error_message"),
+        "created_at": task.get("created_at"), "updated_at": task.get("updated_at"),
+        "started_at": task.get("started_at"), "finished_at": task.get("finished_at"),
+        "capabilities": capabilities,
         "links": {
             "detail": f"/api/backtest/{task_path}/{task_id}",
             "run": f"/api/backtest/{task_path}/{task_id}/run",
-            "report": f"/api/reporting/backtest-modes/{mode}/{task_id}",
+            "delete": f"/api/backtest/{task_path}/{task_id}",
+            "result": f"/api/backtest/results/{run_id}/panel" if run_id else "",
+            "report": report_link,
         },
     }
+
 
 def build_backtest_routes(
     service: BacktestService | PersistentBacktestService,
@@ -880,6 +944,7 @@ def build_backtest_routes(
     strategy_service: StrategyService,
     independent_screening_service: IndependentScreeningService,
     shared_portfolio_service: SharedPortfolioService,
+    single_backtest_task_service: SingleBacktestTaskService | None = None,
 ) -> list[RouteDefinition]:
     return [
         RouteDefinition(
@@ -919,9 +984,43 @@ def build_backtest_routes(
         ),
         RouteDefinition(
             method="GET",
+            path="/api/backtest/single-backtest-tasks",
+            name="backtest_single_tasks",
+            handler=lambda payload: list_single_backtest_tasks(single_backtest_task_service, payload),
+            request_model=SingleBacktestTaskListQueryPayload,
+        ),
+        RouteDefinition(
+            method="POST",
+            path="/api/backtest/single-backtest-tasks",
+            name="backtest_single_task_create",
+            handler=lambda payload: create_single_backtest_task(single_backtest_task_service, payload),
+            request_model=SingleBacktestTaskCreateRequestPayload,
+        ),
+        RouteDefinition(
+            method="GET",
+            path="/api/backtest/single-backtest-tasks/{task_id}",
+            name="backtest_single_task_detail",
+            handler=lambda task_id: get_single_backtest_task(single_backtest_task_service, task_id),
+            request_model=None,
+        ),
+        RouteDefinition(
+            method="POST",
+            path="/api/backtest/single-backtest-tasks/{task_id}/run",
+            name="backtest_single_task_run",
+            handler=lambda payload, task_id: run_single_backtest_task(single_backtest_task_service, payload, task_id),
+            request_model=SingleBacktestTaskRunRequestPayload,
+        ),
+        RouteDefinition(
+            method="DELETE",
+            path="/api/backtest/single-backtest-tasks/{task_id}",
+            name="backtest_single_task_delete",
+            handler=lambda task_id: delete_single_backtest_task(single_backtest_task_service, task_id),
+            request_model=None,
+        ),        RouteDefinition(
+            method="GET",
             path="/api/backtest/mode-tasks",
             name="backtest_mode_task_directory",
-            handler=lambda payload: list_backtest_mode_tasks(independent_screening_service, shared_portfolio_service, payload),
+            handler=lambda payload: list_backtest_mode_tasks(independent_screening_service, shared_portfolio_service, payload, single_backtest_task_service),
             request_model=BacktestModeTaskDirectoryQueryPayload,
         ),
         RouteDefinition(

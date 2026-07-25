@@ -34,16 +34,26 @@ class BacktestModeReportService:
         run_id = str(task.get("run_id") or "")
         evaluation = self._reporting_service.get_strategy_evaluation(run_id) if run_id else None
         detail = self._reporting_service.get_run_detail(run_id) if run_id else None
+        professional_report = _plain(evaluation)
+        run_detail = _plain(detail)
         return {
             "report_mode": "shared_portfolio",
-            "report_version": "stage63-shared-portfolio-current-template-v1",
+            "report_version": "stage74-shared-portfolio-seven-dimension-v2",
             "status": task.get("status"),
             "task_id": task_id,
             "run_id": run_id or None,
-            "template": "current_strategy_evaluation_7_dimensions",
+            "template": "shared_portfolio_strategy_evaluation_7_dimensions_v2",
             "task": task,
-            "professional_report": _plain(evaluation),
-            "run_detail": _plain(detail),
+            "professional_report": professional_report,
+            "run_detail": run_detail,
+            "report_contract": {
+                "scope": "shared_portfolio_account",
+                "default_tab": "portfolio_evaluation",
+                "tabs": ["portfolio_evaluation", "attribution", "positions_and_trades", "data_quality"],
+                "demo_fallback_allowed": False,
+            },
+            "portfolio_sections": _shared_portfolio_sections(run_detail),
+            "data_quality_gate": _shared_data_quality_gate(professional_report, run_detail),
             "semantic_boundary": {
                 "account_scope": "single_shared_account",
                 "equity_curve": "one_portfolio_curve",
@@ -62,6 +72,7 @@ class BacktestModeReportService:
         distribution = _distribution_analysis(returns, seed=task_id)
         groups = {
             "market": _group_analysis(observations, lambda row: [str(row.get("market") or "未分类")]),
+            "board": _group_analysis(observations, lambda row: [str(row.get("board") or "其他板块")]),
             "entry_period": _group_analysis(observations, lambda row: [str(row.get("entry_period") or "未建仓时段")]),
             "industry": _group_analysis(observations, lambda row: list(row.get("industries") or ["未分类"])),
             "concept": _group_analysis(observations, lambda row: list(row.get("concepts") or ["未分类"])),
@@ -71,13 +82,14 @@ class BacktestModeReportService:
             "concept": _classification_coverage(observations, "concepts"),
             "entry_period": _classification_coverage(observations, "entry_period"),
         }
+        run_index = [_independent_run_index_entry(item) for item in entered]
         return {
             "report_mode": "independent_screening",
-            "report_version": "stage63-independent-statistical-report-v1",
+            "report_version": "stage74-independent-dual-layer-report-v2",
             "status": task.get("status"),
             "task_id": task_id,
-            "title": "独立选股建仓汇总专业分析报告",
-            "subtitle": "仅对实际建仓股票进行横截面统计；未建仓股票保留在筛选漏斗，不混入收益分布。",
+            "title": "独立选股双层专业分析报告",
+            "subtitle": "任务统计仅包含实际建仓股票；单股七维评估表示策略在该股票上的适配性。",
             "task": task,
             "sample_scope": {
                 "universe_count": task.get("progress", {}).get("total", len(all_items)),
@@ -98,16 +110,64 @@ class BacktestModeReportService:
             "group_comparisons": groups,
             "classification_coverage": coverage,
             "observations": observations,
+            "run_index": run_index,
+            "factor_analysis": _independent_factor_analysis(observations, groups, coverage),
+            "robustness_analysis": _robustness_analysis(returns),
+            "report_contract": {
+                "scope": "independent_capital_runs",
+                "default_tab": "task_statistics",
+                "tabs": ["task_statistics", "single_run_evaluation"],
+                "single_run_evaluation": "strategy_on_one_symbol_not_portfolio_diversification",
+                "demo_fallback_allowed": False,
+            },
             "professional_sections": _professional_sections(distribution, groups, coverage, task),
             "methodology": {
                 "normality_test": "Jarque-Bera; p-value uses chi-square(df=2) survival exp(-JB/2)",
                 "confidence_interval": "95% mean CI; normal critical for n>=30, small-sample t critical table otherwise",
                 "bootstrap": "deterministic 1000-resample percentile CI for mean",
-                "histogram": "Freedman-Diaconis width with bounded bin count",
+                "histogram": "fixed A-share return buckets for UI; adaptive Freedman-Diaconis bins retained separately",
                 "classification_as_of": "first effective BUY trade date",
                 "look_ahead_control": "only effective-dated historical classifications are accepted",
+                "correlation": "Spearman rank correlation; descriptive relationship, not causality",
             },
             "data_quality_notes": _data_quality_notes(returns, coverage),
+        }
+
+    def get_independent_run_report(self, task_id: str, run_id: str) -> dict[str, Any]:
+        task = self._independent.get_task(task_id)
+        if task.get("status") == "not_found":
+            return {"report_mode": "independent_single_run", "status": "task_not_found", "task_id": task_id, "run_id": run_id}
+        entered = [
+            item for item in self._read_all_items(task_id)
+            if item.get("entered") and item.get("status") == "completed" and item.get("run_id")
+        ]
+        selected = next((item for item in entered if str(item.get("run_id")) == run_id), None)
+        if selected is None:
+            return {"report_mode": "independent_single_run", "status": "run_not_in_task", "task_id": task_id, "run_id": run_id}
+        evaluation = self._reporting_service.get_strategy_evaluation(run_id)
+        detail = self._reporting_service.get_run_detail(run_id)
+        selected_index = next(index for index, item in enumerate(entered) if str(item.get("run_id")) == run_id)
+        return {
+            "report_mode": "independent_single_run",
+            "report_version": "stage74-independent-single-run-seven-dimension-v1",
+            "status": "ready" if evaluation is not None and detail is not None else "result_unavailable",
+            "task_id": task_id,
+            "run_id": run_id,
+            "symbol": selected.get("symbol"),
+            "name": selected.get("name"),
+            "item": selected,
+            "professional_report": _adapt_independent_single_evaluation(_plain(evaluation)),
+            "run_detail": _plain(detail),
+            "navigation": {
+                "run_ids": [str(item.get("run_id")) for item in entered],
+                "selected_index": selected_index,
+                "total": len(entered),
+            },
+            "semantic_boundary": {
+                "account_scope": "one_independent_virtual_account",
+                "evaluation_subject": "strategy_on_selected_symbol",
+                "not_portfolio_evaluation": True,
+            },
         }
 
     def _read_all_items(self, task_id: str) -> list[dict[str, Any]]:
@@ -134,6 +194,7 @@ class BacktestModeReportService:
             "symbol": item.get("symbol"),
             "name": item.get("name"),
             "market": item.get("market") or "未分类",
+            "board": _infer_market_board(str(item.get("symbol") or "")),
             "run_id": item.get("run_id"),
             "entry_date": entry_date or None,
             "entry_period": entry_date[:7] if entry_date else None,
@@ -145,6 +206,212 @@ class BacktestModeReportService:
             "sharpe": _optional_float(metrics.get("sharpe")),
         }
 
+
+def _infer_market_board(symbol: str) -> str:
+    code = symbol.split(".", 1)[0]
+    suffix = symbol.split(".", 1)[1].upper() if "." in symbol else ""
+    if suffix == "XBJ" or code.startswith(("4", "8", "9")):
+        return "北交所"
+    if code.startswith(("688", "689")):
+        return "科创板"
+    if code.startswith(("300", "301")):
+        return "创业板"
+    if code.startswith(("600", "601", "603", "605")):
+        return "沪市主板"
+    if code.startswith(("000", "001", "002", "003")):
+        return "深市主板"
+    return "其他板块"
+
+def _adapt_independent_single_evaluation(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    """将组合型通用报告的第 7 维改写为独立单股账户的数据可靠性。"""
+    if report is None:
+        return None
+    adapted = dict(report)
+    dimensions = [dict(item) for item in adapted.get("dimensions") or []]
+    evidence = dict(adapted.get("evidence_quality") or {})
+    points = dict(evidence.get("points") or {})
+    coverage = float(evidence.get("coverage_score") or 0.0)
+    trade_points = int(points.get("trade_points") or 0)
+    account_points = int(points.get("account_points") or 0)
+    score = max(0, min(100, round(coverage * 70 + min(trade_points, 5) * 4 + min(account_points, 3) * 3)))
+    level = "excellent" if score >= 85 else "good" if score >= 70 else "normal" if score >= 60 else "bad"
+    replacement = {
+        "key": "execution_data",
+        "short_label": "执行数据",
+        "title": "维度7：执行与数据可靠性",
+        "score": score,
+        "level": level,
+        "evidence_status": evidence.get("grade") or "low",
+        "score_reason": "评分仅依据该单股账户的真实账户、成交与覆盖证据，不使用组合分散度或演示值。",
+        "metrics": [
+            {"label": "证据等级", "value": evidence.get("grade") or "low"},
+            {"label": "数据覆盖", "value": f"{coverage * 100:.2f}%"},
+            {"label": "成交证据点", "value": trade_points},
+            {"label": "账户证据点", "value": account_points},
+        ],
+        "chart": {
+            "kind": "bar",
+            "rows": [
+                {"label": "数据覆盖", "value": round(coverage * 100, 2), "display": f"{coverage * 100:.2f}%"},
+                {"label": "成交证据", "value": trade_points, "display": str(trade_points)},
+                {"label": "账户证据", "value": account_points, "display": str(account_points)},
+            ],
+        },
+    }
+    dimensions = [replacement if item.get("key") == "diverse" else item for item in dimensions]
+    adapted["dimensions"] = dimensions
+    adapted["evaluation_scope"] = "independent_single_symbol_virtual_account"
+    adapted["report_version"] = "stage74-independent-single-run-seven-dimension-v1"
+    adapted["average_score"] = round(sum(float(item.get("score") or 0) for item in dimensions) / len(dimensions)) if dimensions else None
+    adapted["data_quality_notes"] = list(adapted.get("data_quality_notes") or []) + [
+        "独立选股单股报告不评价组合分散度；第 7 维仅评价该单股虚拟账户的执行与数据可靠性。"
+    ]
+    return adapted
+
+def _independent_run_index_entry(item: dict[str, Any]) -> dict[str, Any]:
+    metrics = dict(item.get("metrics") or {})
+    return {
+        "run_id": item.get("run_id"),
+        "symbol": item.get("symbol"),
+        "name": item.get("name"),
+        "market": item.get("market"),
+        "total_returns": _optional_float(metrics.get("total_returns")),
+        "annualized_returns": _optional_float(metrics.get("annualized_returns")),
+        "max_drawdown": _optional_float(metrics.get("max_drawdown")),
+        "sharpe": _optional_float(metrics.get("sharpe")),
+        "evaluation_link": f"/api/reporting/strategy-evaluation/{item.get('run_id')}",
+    }
+
+
+def _independent_factor_analysis(
+    observations: list[dict[str, Any]],
+    groups: dict[str, list[dict[str, Any]]],
+    coverage: dict[str, Any],
+) -> dict[str, Any]:
+    numeric_relationships = []
+    for key, label in (
+        ("annualized_returns", "年化收益"),
+        ("max_drawdown", "最大回撤"),
+        ("sharpe", "Sharpe"),
+    ):
+        pairs = [
+            (float(row[key]), float(row["total_returns"]))
+            for row in observations
+            if row.get(key) is not None and row.get("total_returns") is not None
+        ]
+        numeric_relationships.append({
+            "factor": key,
+            "label": label,
+            "sample_size": len(pairs),
+            "spearman": _spearman(pairs),
+            "interpretation": "performance_relationship_not_causality",
+        })
+    categorical = []
+    for key, rows in groups.items():
+        valid = [row for row in rows if row.get("sample_size")]
+        ordered = sorted(valid, key=lambda row: float(row.get("mean") or 0.0))
+        categorical.append({
+            "factor": key,
+            "category_count": len(valid),
+            "sample_size": sum(int(row.get("sample_size") or 0) for row in valid),
+            "best_category": ordered[-1].get("category") if ordered else None,
+            "worst_category": ordered[0].get("category") if ordered else None,
+            "mean_spread": (float(ordered[-1].get("mean") or 0.0) - float(ordered[0].get("mean") or 0.0)) if len(ordered) > 1 else None,
+            "status": "ready" if len(valid) > 1 else "insufficient_groups",
+        })
+    registry = [
+        {"factor": "market", "kind": "categorical", "status": "available", "as_of": "task_symbol_master"},
+        {"factor": "board", "kind": "categorical", "status": "available", "as_of": "symbol_code_rule"},
+        {"factor": "entry_period", "kind": "categorical", "status": "available", "as_of": "first_buy_date"},
+        {"factor": "industry", "kind": "categorical", "status": "available" if coverage["industry"]["covered_count"] else "unavailable", "as_of": "first_buy_date"},
+        {"factor": "concept", "kind": "multi_label", "status": "available" if coverage["concept"]["covered_count"] else "unavailable", "as_of": "first_buy_date"},
+        {"factor": "benchmark_beta_correlation", "kind": "continuous", "status": "data_asset_required", "required_asset": "historical_benchmark_aligned_returns"},
+        {"factor": "market_sentiment", "kind": "continuous", "status": "data_asset_required", "required_asset": "effective_dated_sentiment_series"},
+        {"factor": "market_hotspot", "kind": "categorical", "status": "data_asset_required", "required_asset": "effective_dated_hotspot_series"},
+        {"factor": "valuation_liquidity_size", "kind": "continuous", "status": "data_asset_required", "required_asset": "effective_dated_fundamental_factor_series"},
+    ]
+    return {
+        "version": "stage74-factor-registry-v1",
+        "outcome": "total_returns",
+        "numeric_relationships": numeric_relationships,
+        "categorical_effects": categorical,
+        "factor_registry": registry,
+        "causality_warning": "相关性和分组差异仅用于研究解释，不构成因果结论。",
+    }
+
+
+def _rank(values: list[float]) -> list[float]:
+    order = sorted(range(len(values)), key=lambda index: values[index])
+    ranks = [0.0] * len(values)
+    cursor = 0
+    while cursor < len(order):
+        end = cursor
+        while end + 1 < len(order) and values[order[end + 1]] == values[order[cursor]]:
+            end += 1
+        rank = (cursor + end) / 2.0 + 1.0
+        for position in range(cursor, end + 1):
+            ranks[order[position]] = rank
+        cursor = end + 1
+    return ranks
+
+
+def _spearman(pairs: list[tuple[float, float]]) -> float | None:
+    if len(pairs) < 3:
+        return None
+    left = _rank([row[0] for row in pairs])
+    right = _rank([row[1] for row in pairs])
+    left_mean = statistics.mean(left)
+    right_mean = statistics.mean(right)
+    numerator = sum((a - left_mean) * (b - right_mean) for a, b in zip(left, right))
+    denominator = math.sqrt(sum((a - left_mean) ** 2 for a in left) * sum((b - right_mean) ** 2 for b in right))
+    return numerator / denominator if denominator else None
+
+
+def _robustness_analysis(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"status": "insufficient_sample", "sample_size": 0}
+    ordered = sorted(values)
+    trimmed = ordered[1:-1] if len(ordered) >= 5 else ordered
+    return {
+        "status": "ready" if len(values) >= 8 else "limited_sample",
+        "sample_size": len(values),
+        "mean": statistics.mean(values),
+        "median": statistics.median(values),
+        "trimmed_mean": statistics.mean(trimmed),
+        "top_bottom_removed_count": len(values) - len(trimmed),
+        "conclusion_stable": abs(statistics.mean(values) - statistics.mean(trimmed)) <= max(statistics.pstdev(values), 1e-12),
+    }
+
+
+def _shared_portfolio_sections(detail: Any) -> dict[str, Any]:
+    if not isinstance(detail, dict):
+        return {"status": "run_unavailable"}
+    return {
+        "status": "ready",
+        "equity_point_count": len(detail.get("account_value_chart") or detail.get("accounts") or []),
+        "trade_count": len(detail.get("trades") or []),
+        "position_point_count": len(detail.get("positions") or []),
+        "yearly_return_count": len(detail.get("yearly_returns") or detail.get("yearly_return_chart") or []),
+        "metrics": detail.get("metrics") or {},
+        "sections": ["net_value_and_drawdown", "seven_dimensions", "attribution", "positions", "cost_capacity", "data_quality"],
+    }
+
+
+def _shared_data_quality_gate(evaluation: Any, detail: Any) -> dict[str, Any]:
+    if not isinstance(evaluation, dict) or not isinstance(detail, dict):
+        return {"status": "unavailable", "score_allowed": False, "reason": "run_or_evaluation_missing"}
+    dimensions = list(evaluation.get("dimensions") or [])
+    evidence_quality = dict(evaluation.get("evidence_quality") or {})
+    evidence_grade = str(evidence_quality.get("grade") or "low")
+    score_allowed = len(dimensions) == 7 and evidence_grade in {"high", "medium"}
+    return {
+        "status": "ready" if score_allowed else "limited",
+        "score_allowed": score_allowed,
+        "reason": None if score_allowed else "seven_dimensions_or_evidence_quality_insufficient",
+        "dimension_count": len(dimensions),
+        "demo_fallback_used": False,
+        "evidence_quality": evidence_quality,
+    }
 
 def _distribution_analysis(values: list[float], *, seed: str) -> dict[str, Any]:
     if not values:
@@ -204,7 +471,8 @@ def _distribution_analysis(values: list[float], *, seed: str) -> dict[str, Any]:
                 else "样本少于 8，未执行 Jarque-Bera 正态性检验。"
             ),
         },
-        "histogram": _histogram(values),
+        "histogram": _a_share_return_histogram(values),
+        "adaptive_histogram": _histogram(values),
     }
 
 
@@ -261,6 +529,37 @@ def _data_quality_notes(values: list[float], coverage: dict[str, Any]) -> list[s
     notes.append("统计关系不构成未来收益保证或投资建议。")
     return notes
 
+
+def _a_share_return_histogram(values: list[float]) -> list[dict[str, Any]]:
+    labels = ["跌停", "-8%-", "-8~-6%", "-6~-4%", "-4~-2%", "-2~0%", "0~2%", "2~4%", "4~6%", "6~8%", "8%+", "涨停"]
+    counts = [0] * len(labels)
+    for value in values:
+        if value <= -0.095:
+            index = 0
+        elif value < -0.08:
+            index = 1
+        elif value < -0.06:
+            index = 2
+        elif value < -0.04:
+            index = 3
+        elif value < -0.02:
+            index = 4
+        elif value < 0.0:
+            index = 5
+        elif value < 0.02:
+            index = 6
+        elif value < 0.04:
+            index = 7
+        elif value < 0.06:
+            index = 8
+        elif value < 0.08:
+            index = 9
+        elif value < 0.095:
+            index = 10
+        else:
+            index = 11
+        counts[index] += 1
+    return [{"bucket": label, "count": counts[index]} for index, label in enumerate(labels)]
 
 def _histogram(values: list[float]) -> list[dict[str, Any]]:
     if not values:

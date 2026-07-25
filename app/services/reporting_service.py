@@ -1,4 +1,4 @@
-﻿"""Service-layer facade for formal reporting reads."""
+"""Service-layer facade for formal reporting reads."""
 
 from __future__ import annotations
 
@@ -99,6 +99,7 @@ class ReportingService:
         max_single_weight = exposure_diag.get("max_single_weight")
         cost_rate = float(cost_diag.get("estimated_cost_rate") or 0.0)
         data_coverage = float(data_diag.get("coverage_score") or 0.0)
+        evidence_quality = _build_strategy_evidence_quality(diagnostics)
         calmar = annual_return / max(max_drawdown, 0.01)
         sortino = float(risk_diag.get("sortino_proxy") or max(0.0, sharpe * 1.1))
 
@@ -235,8 +236,8 @@ class ReportingService:
         score_breakdown = {
             "average_score": average,
             "dimension_scores": {item.key: item.score for item in dimensions},
-            "formula_version": "stage43-diagnostic-score-v1",
-            "weights": "equal_weight_7_dimensions",
+            "formula_version": "stage74-seven-dimension-evidence-v2",
+            "weights": "equal_weight_7_dimensions_with_evidence_disclosure",
         }
         decision_flags = _build_strategy_decision_flags(average=average, diagnostics=diagnostics)
         analysis_summary = _build_strategy_analysis_summary(detail=detail, average=average, diagnostics=diagnostics, decision_flags=decision_flags)
@@ -244,7 +245,7 @@ class ReportingService:
             run_id=detail.run_id,
             strategy_name=detail.strategy_name,
             title="量化策略 7 维全方位评估报告",
-            subtitle="阶段 43：基于本地回测明细、交易归因、风险曲线、成本和数据覆盖生成策略评价。",
+            subtitle="阶段 74：基于本地回测明细、交易归因、风险曲线、成本和数据覆盖生成证据化策略评价。",
             average_score=average,
             dimensions=dimensions,
             conclusions=_build_strategy_conclusions(average=average, diagnostics=diagnostics, decision_flags=decision_flags),
@@ -253,6 +254,9 @@ class ReportingService:
             score_breakdown=score_breakdown,
             decision_flags=decision_flags,
             analysis_summary=analysis_summary,
+            report_version="stage74-strategy-evaluation-v2",
+            evaluation_scope="single_run_or_shared_portfolio",
+            evidence_quality=evidence_quality,
         )
 
 
@@ -1695,7 +1699,7 @@ def _estimate_report_cost_rate(extra_config: Mapping[str, Any]) -> float:
     rqalpha = extra_config.get("rqalpha_local") if isinstance(extra_config.get("rqalpha_local"), Mapping) else {}
     keys = ("commission_rate", "tax_rate", "slippage_rate")
     configured = sum(abs(_float(rqalpha.get(key))) for key in keys)
-    return configured or 0.0018
+    return configured
 
 
 def _clamp_score(value: float, *, low: int = 35, high: int = 98) -> int:
@@ -1709,6 +1713,34 @@ def _money(value: Any) -> str:
     if abs(raw) >= 10000:
         return f"{raw / 10000:.2f}万"
     return f"{raw:.2f}"
+
+
+def _build_strategy_evidence_quality(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    data_quality = dict(diagnostics.get("data_quality") or {})
+    points = dict(data_quality.get("points") or {})
+    account_points = int(points.get("account_points") or 0)
+    trade_points = int(points.get("trade_points") or 0)
+    exposure_points = int(points.get("exposure_points") or 0)
+    yearly_points = int(points.get("yearly_points") or 0)
+    coverage = float(data_quality.get("coverage_score") or 0.0)
+    evidence_count = account_points + trade_points + exposure_points + yearly_points
+    if coverage >= 0.8 and account_points >= 2 and trade_points >= 1:
+        grade = "high"
+    elif coverage >= 0.5 and evidence_count >= 3:
+        grade = "medium"
+    else:
+        grade = "low"
+    return {
+        "grade": grade,
+        "coverage_score": coverage,
+        "points": points,
+        "demo_fallback_used": False,
+        "unavailable_capabilities": [item for item in [
+            "out_of_sample_validation" if yearly_points < 2 else None,
+            "real_capacity_model",
+            "full_factor_attribution",
+        ] if item],
+    }
 
 
 def _build_strategy_decision_flags(*, average: int, diagnostics: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1766,7 +1798,7 @@ def _build_strategy_analysis_summary(
     if not action_items:
         action_items.append("保留当前数据版本并进入更长样本或参数稳健性复核。")
     return {
-        "version": "stage50-report-analysis-v1",
+        "version": "stage74-report-analysis-v2",
         "verdict": verdict,
         "headline": f"综合评分 {average}/100，数据版本 {data_version}，最大回撤 {_pct(max_drawdown)}。",
         "cards": [
@@ -1832,6 +1864,8 @@ def _dimension(
         level=_level(bounded_score),
         metrics=[StrategyEvaluationMetricPayload(label=label, value=str(value)) for label, value in metrics],
         chart=chart,
+        evidence_status="calculated_from_run_evidence",
+        score_reason="按阶段 74 版本化公式使用真实回测诊断字段计算；缺失证据按零值计入并在报告级证据质量中披露。",
     )
 
 
