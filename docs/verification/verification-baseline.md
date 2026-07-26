@@ -1,36 +1,72 @@
 # 验证基线
 
-## 自动化验证命令
+## 统一自动化入口
 
-- 统一验证入口：`python scripts/run_formal_verifications.py`
-- 运行时与缓存验证：
-  - `python scripts/verify_formal_fake_runtime.py`
-  - `python scripts/verify_formal_reporting.py`
-  - `python scripts/verify_formal_sqlite_cache.py`
-- 因子与服务级 smoke：
-  - `python scripts/smoke_test_factor_lab.py`
-  - `python scripts/smoke_test_formal_services.py`
-- API 与访问面 smoke：
-  - `python scripts/smoke_test_formal_api.py`
-  - `python scripts/smoke_test_formal_http_adapter.py`
+```powershell
+.\.venv\Scripts\python.exe scripts\run_formal_verifications.py
+```
 
-## 人工验收范围
+该入口覆盖运行时、SQLite、A 股数据、策略库、三种回测模式、专业报告、API/HTTP、Web 工作台和历史阶段回归。
 
-- 核心流程是否可走通
-- 关键文案与业务术语是否一致
-- 风险提示是否充分
+## 阶段 77 最小分层验证
 
-## 当前阶段说明
+### 层 1：治理与静态一致性
 
-- `已确认`：当前验证基线服务于阶段 7“最小本地量化服务闭环”。
-- `已确认`：当前自动化验证重点覆盖 `data_platform`、`factor_lab`、`backtest_kernel`、`reporting`、`app/services`、`app/api` 与 `http_adapter` 的最小闭环。
-- `已确认`：当前不要求在本阶段补齐独立 `lint` 或完整 `tests/` 体系后，才允许继续真实开发。
-- `基于当前上下文推断`：后续若进入前端、AI 或报告快照实现，应在本基线之外新增对应专项验证，而不是直接扩写本阶段命令集。
+- Manifest、README、项目画像、技术边界、数据模型、运行时说明的阶段和目标一致。
+- 文档不得继续把已确认技术栈写成“待确认”。
+- `role_used` 必须使用正式角色列表。
+- 新经验先进入 staging；任务结束必须写日志。
 
-## 输出结构
+### 层 2：直接影响范围
 
-- `已验证项`
-- `未验证项`
-- `阻塞原因`
-- `潜在风险`
-- `发布判断`
+“查看结果 / 查看分析”调整必须至少覆盖：
+
+- JavaScript 语法检查。
+- 阶段 73、75、76 工作台回归。
+- 策略库 CRUD 与版本化策略回归。
+- 三模式结果与报告专项 smoke。
+- 空结果、失败任务、缺少报告证据、软删除任务和 URL 恢复。
+
+### 层 3：浏览器人工验收
+
+- PC 常用分辨率下的入口、信息层级、滚动、返回路径和任务切换。
+- “查看结果”与“查看分析”语义可区分，不出现相同内容换标题。
+- 三种模式不混用账户、指标、样本和报告解释。
+- 独立账户批量回测不默认把第一只股票的结果冒充任务整体结果。
+
+### 层 4：全系统发布门禁
+
+- `scripts/run_formal_verifications.py` 完整通过。
+- 行情最新完整交易日满足新鲜度门禁。
+- 用户完成人工业务验收。
+- 未验证项、风险和数据边界已披露。
+
+## 当前基线状态（2026-07-25）
+
+### 已验证项
+
+- Python 3.14.5 与项目虚拟环境可运行。
+- fake runtime、reporting、SQLite cache、旧市场 SQLite smoke 通过。
+- 阶段 76.9 直接影响范围回归已有通过记录。
+
+### 未验证项
+
+- 行情恢复后的完整正式验证。
+- 用户对“查看结果 / 查看分析”的业务与交互审批。
+- 5528 只全市场真实长周期回测。
+
+### 阻塞原因
+
+- `smoke_test_a_share_source_database.py` 报告 `raw quality is not passed`。
+- 当前规范行情最新日期为 2026-07-17。
+
+### 潜在风险
+
+- 局部前端回归通过不能替代全系统发布门禁。
+- 结果和分析当前共用加载链路，易造成语义与性能耦合。
+- 历史任务日志存在格式损坏，自动统计需先限定有效记录。
+
+### 发布判断
+
+- `可继续迭代`。
+- 当前不可宣称全系统可发布。

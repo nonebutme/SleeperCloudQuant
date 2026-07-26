@@ -19,7 +19,7 @@ def main() -> None:
     require(app_js, 'function newTaskId(prefix)', "Stage 69 smoke failed: automatic task IDs missing")
     require(app_js, 'values.task_id || newTaskId("screening")', "Stage 69 smoke failed: screening auto ID missing")
     require(app_js, 'values.task_id || newTaskId("portfolio")', "Stage 69 smoke failed: portfolio auto ID missing")
-    require(app_js, '独立选股创建失败：', "Stage 69 smoke failed: screening error feedback missing")
+    require(app_js, '独立账户批量回测创建失败：', "Stage 69 smoke failed: screening error feedback missing")
     require(app_js, 'function taskElapsedSeconds(task = {})', "Stage 69 smoke failed: elapsed time helper missing")
     require(app_js, 'function taskExecutionLabel(task = {})', "Stage 69 smoke failed: readable execution label missing")
     require(app_js, 'raw.phase === "preparing_symbols"', "Stage 69 smoke failed: portfolio preparation phase missing")

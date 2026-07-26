@@ -88,7 +88,7 @@ class BacktestModeReportService:
             "report_version": "stage74-independent-dual-layer-report-v2",
             "status": task.get("status"),
             "task_id": task_id,
-            "title": "独立选股双层专业分析报告",
+            "title": "独立账户批量回测双层专业分析报告",
             "subtitle": "任务统计仅包含实际建仓股票；单股七维评估表示策略在该股票上的适配性。",
             "task": task,
             "sample_scope": {
@@ -264,7 +264,7 @@ def _adapt_independent_single_evaluation(report: dict[str, Any] | None) -> dict[
     adapted["report_version"] = "stage74-independent-single-run-seven-dimension-v1"
     adapted["average_score"] = round(sum(float(item.get("score") or 0) for item in dimensions) / len(dimensions)) if dimensions else None
     adapted["data_quality_notes"] = list(adapted.get("data_quality_notes") or []) + [
-        "独立选股单股报告不评价组合分散度；第 7 维仅评价该单股虚拟账户的执行与数据可靠性。"
+        "独立账户批量回测单股报告不评价组合分散度；第 7 维仅评价该单股虚拟账户的执行与数据可靠性。"
     ]
     return adapted
 

@@ -63,7 +63,7 @@ def main() -> None:
     )
     task = service.create_task(
         task_id="stage61-screening-smoke",
-        name="阶段61独立选股 smoke",
+        name="阶段61独立账户批量回测 smoke",
         strategy_id="buy_and_hold",
         strategy_version="v1",
         symbols=[],

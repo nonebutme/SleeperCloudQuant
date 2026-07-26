@@ -299,7 +299,7 @@ class IndependentScreeningTaskCreateRequestPayload:
     """Create one frozen-universe independent-capital screening task."""
 
     task_id: str | None = None
-    name: str = "A股独立选股回测"
+    name: str = "A股独立账户批量回测"
     strategy_id: str = "moving_average_strategy"
     strategy_version: str | None = None
     symbols: list[str] = field(default_factory=list)

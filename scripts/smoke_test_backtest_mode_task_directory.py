@@ -23,7 +23,7 @@ def main() -> None:
         "task_id": "stage66-screening",
         "status": "completed",
         "config": {
-            "name": "全市场独立选股",
+            "name": "全市场独立账户批量回测",
             "strategy_id": "distribution_strategy",
             "strategy_version": "v3",
             "source_sha256": "screening-sha",
@@ -38,7 +38,7 @@ def main() -> None:
         "task_id": "stage66-portfolio",
         "status": "partial_completed",
         "config": {
-            "name": "共享资金池组合",
+            "name": "投资组合",
             "strategy_id": "portfolio_strategy",
             "strategy_version": "v2",
             "source_sha256": "portfolio-sha",

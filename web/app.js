@@ -417,7 +417,7 @@ function taskDisplayTitle(task = {}) {
   const binding = task.strategy_binding || {};
   const strategyId = binding.strategy_id || task.config?.strategy_id || "";
   const strategy = binding.strategy_name || strategyDisplayName(strategyId);
-  const mode = task.mode_label || (task.mode === "shared-portfolio" ? "共享资金池" : "独立选股");
+  const mode = task.mode_label || (task.mode === "shared-portfolio" ? "投资组合回测" : "独立账户批量回测");
   return task.name || (strategy + " · " + mode);
 }
 
@@ -448,7 +448,7 @@ function taskProgressModel(task = {}, mode = "") {
   else if (status === "running" && mode === "independent-screening") phase = "正在并发执行逐股策略";
   else if (status === "running" && mode === "shared-portfolio" && raw.phase === "preparing_symbols") phase = "正在逐股读取行情并计算策略信号";
   else if (status === "running" && mode === "shared-portfolio" && raw.phase === "simulating_account") phase = "股票准备完成，正在推进共享账户交易日";
-  else if (status === "running" && mode === "shared-portfolio") phase = "正在执行共享资金池组合回测";
+  else if (status === "running" && mode === "shared-portfolio") phase = "正在执行投资组合回测";
   else if (status === "paused") phase = "任务已暂停，可继续执行";
   else if (status === "completed") phase = "任务执行完成，结果可查看";
   else if (status === "partial_completed") phase = "任务完成，部分标的未完整执行";
@@ -564,9 +564,9 @@ function renderActiveTaskOverview() {
     ? singleInfo.label + " · " + singleRunState.symbol + (singleRunState.elapsedSeconds ? " · " + formatTaskSeconds(singleRunState.elapsedSeconds) : "")
     : "选择股票后开始快速验证";
   target.innerHTML =
-    '<article class="task-mode-item is-' + singleInfo.tone + '"><div><span class="task-mode-label">单股测试</span><h4>' + escapeHtml(singleTitle) + '</h4><p>' + escapeHtml(singleDetail) + '</p></div><button type="button" data-overview-view="single">进入测试</button></article>' +
-    modeOverviewItem("independent-screening", "独立选股", "independent") +
-    modeOverviewItem("shared-portfolio", "共享资金池", "portfolio");
+    '<article class="task-mode-item is-' + singleInfo.tone + '"><div><span class="task-mode-label">单品种测试</span><h4>' + escapeHtml(singleTitle) + '</h4><p>' + escapeHtml(singleDetail) + '</p></div><button type="button" data-overview-view="single">进入测试</button></article>' +
+    modeOverviewItem("independent-screening", "独立账户批量回测", "independent") +
+    modeOverviewItem("shared-portfolio", "投资组合回测", "portfolio");
   target.querySelectorAll("[data-overview-view]").forEach((button) => button.addEventListener("click", () => activateBacktestView(button.dataset.overviewView)));
 }
 
@@ -591,7 +591,7 @@ function renderBacktestResultsContext() {
   }
   if (context.kind === "single") {
     const task = context.task;
-    target.innerHTML = '<div class="results-context-main"><span class="task-mode-label">单股测试</span><h4>' + escapeHtml((task.strategyName || "单股策略") + " · " + (task.symbol || "-")) + '</h4><p title="' + escapeHtml(task.runId) + '">回测编号 ' + escapeHtml(shortTechnicalId(task.runId)) + ' · 已完成</p></div><span class="task-status-badge is-success">结果可查看</span>';
+    target.innerHTML = '<div class="results-context-main"><span class="task-mode-label">单品种测试</span><h4>' + escapeHtml((task.strategyName || "单股策略") + " · " + (task.symbol || "-")) + '</h4><p title="' + escapeHtml(task.runId) + '">回测编号 ' + escapeHtml(shortTechnicalId(task.runId)) + ' · 已完成</p></div><span class="task-status-badge is-success">结果可查看</span>';
     reportButton.disabled = false;
     if (deleteButton) deleteButton.disabled = !["completed", "failed"].includes(task.status);
     return;
@@ -627,7 +627,7 @@ function renderBacktestWorkspace() {
   if (!target) return;
   const strategyName = selectedStrategy?.name || selectedStrategy?.strategy_id || "尚未选择";
   const strategyVersion = selectedStrategy?.latest_version || "-";
-  const viewNames = { single: "单股回测", strategy: "策略库", independent: "独立选股", portfolio: "共享资金池", research: "研究实验", results: "结果详情" };
+  const viewNames = { single: "单品种测试", strategy: "策略库", independent: "独立账户批量回测", portfolio: "投资组合回测", research: "研究实验", results: "结果详情" };
   const runningTask = [currentScreeningTask, currentPortfolioTask].find((task) => ["running", "pending"].includes(task?.status));
   const resultContext = selectedResultContext();
   renderSummaryGrid(target, [
@@ -665,7 +665,7 @@ function renderBacktestConfigPreview(form, target, mode) {
   const limit = Number(values.symbol_limit || 0);
   const scope = explicitSymbols.length ? `指定 ${explicitSymbols.length} 只股票` : (values.market ? values.market : (limit > 0 ? `前 ${limit} 只 A 股` : "全部当前 A 股"));
   const items = [
-    { label: "回测模式", value: mode === "independent" ? "独立资金逐股回测" : "单一共享资金池" },
+    { label: "回测模式", value: mode === "independent" ? "独立资金逐股回测" : "单一共享资金账户" },
     { label: "策略", value: selectedStrategy?.name || selectedStrategy?.strategy_id || "请选择策略" },
     { label: "股票范围", value: scope },
     { label: "回测期间", value: `${values.start_date || "-"} 至 ${values.end_date || "-"}` },
@@ -722,9 +722,9 @@ function backtestQueryDateDefaults() {
 function renderSingleRunHistory(runs = []) {
   const target = $("#single-run-history");
   if (!target) return;
-  target.innerHTML = runs.length ? runs.map((run) => `<article class="compact-task-row ${run.run_id === currentBacktestResultRunId ? "is-selected" : ""}" data-single-history-run="${escapeHtml(run.run_id)}"><div><span class="task-status-badge is-${backtestStatusInfo(run.status).tone}">${escapeHtml(backtestStatusInfo(run.status).label)}</span><h4>${escapeHtml(run.strategy_name || run.run_id)}</h4><p>${escapeHtml(run.run_id)} · ${escapeHtml(run.universe || "-")} · ${formatTaskTimestamp(run.created_at)}</p></div><div class="task-row-actions"><button type="button" data-single-result="${escapeHtml(run.run_id)}">查看结果</button><button type="button" class="danger-button" data-single-delete="${escapeHtml(run.run_id)}">删除</button></div></article>`).join("") : '<div class="empty-cell">暂无单股历史任务</div>';
+  target.innerHTML = runs.length ? runs.map((run) => `<article class="compact-task-row ${run.run_id === currentBacktestResultRunId ? "is-selected" : ""}" data-single-history-run="${escapeHtml(run.run_id)}"><div><span class="task-status-badge is-${backtestStatusInfo(run.status).tone}">${escapeHtml(backtestStatusInfo(run.status).label)}</span><h4>${escapeHtml(run.strategy_name || run.run_id)}</h4><p>${escapeHtml(run.run_id)} · ${escapeHtml(run.universe || "-")} · ${formatTaskTimestamp(run.created_at)}</p></div><div class="task-row-actions"><button type="button" data-single-result="${escapeHtml(run.run_id)}">查看结果</button><button type="button" class="danger-button" data-single-delete="${escapeHtml(run.run_id)}">删除</button></div></article>`).join("") : '<div class="empty-cell">暂无单品种测试历史任务</div>';
   target.querySelectorAll("[data-single-result]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); currentModeTask = null; hideIndependentResultSelector(); target.querySelectorAll("[data-single-history-run]").forEach((card) => card.classList.toggle("is-selected", card.dataset.singleHistoryRun === button.dataset.singleResult)); loadBacktestResultPanel(button.dataset.singleResult).then(() => openBacktestWorkspaceView("results")).catch((error) => setFeedback(error.message, "error")); }));
-  target.querySelectorAll("[data-single-delete]").forEach((button) => button.addEventListener("click", async (event) => { event.stopPropagation(); if (!window.confirm("确认删除该单股回测历史任务？删除后仅从工作台隐藏。")) return; await requestJson(`/api/backtest/results/${encodeURIComponent(button.dataset.singleDelete)}`, { method: "DELETE" }); if (currentBacktestResultRunId === button.dataset.singleDelete) { currentBacktestResultRunId = ""; } await loadSingleRunHistory(); setFeedback("单股历史任务已删除", "success"); }));
+  target.querySelectorAll("[data-single-delete]").forEach((button) => button.addEventListener("click", async (event) => { event.stopPropagation(); if (!window.confirm("确认删除该单品种测试历史任务？删除后仅从工作台隐藏。")) return; await requestJson(`/api/backtest/results/${encodeURIComponent(button.dataset.singleDelete)}`, { method: "DELETE" }); if (currentBacktestResultRunId === button.dataset.singleDelete) { currentBacktestResultRunId = ""; } await loadSingleRunHistory(); setFeedback("单品种测试历史任务已删除", "success"); }));
 }
 async function loadSingleRunHistory() { const payload = await requestJson("/api/backtest/runs"); const runs = (payload.runs || []).filter((run) => !run.extra_config?.screening_task_id && run.extra_config?.mode !== "shared_cash_portfolio" && run.extra_config?.portfolio_mode !== "shared_cash"); renderSingleRunHistory(runs); return runs; }
 function configurePcBacktestWorkspace() {
@@ -880,16 +880,16 @@ async function loadIndependentScreeningTasks() {
     const progress = taskProgressModel(task, "independent-screening");
     const info = backtestStatusInfo(task.status);
     return '<article class="compact-task-row is-' + info.tone + (task.task_id === currentScreeningTaskId ? " is-selected" : "") + '" data-screening-task="' + escapeHtml(task.task_id) + '">' +
-      '<div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span><h4>' + escapeHtml(strategyDisplayName(task.config?.strategy_id) + " · 独立选股") + '</h4><p>' + escapeHtml(taskExecutionLabel(task)) + ' · ' + progress.total + ' 只' + (taskElapsedSeconds(task) > 0 ? ' · 耗时 ' + escapeHtml(formatTaskSeconds(taskElapsedSeconds(task))) : '') + '</p></div>' +
+      '<div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span><h4>' + escapeHtml(strategyDisplayName(task.config?.strategy_id) + " · 独立账户批量回测") + '</h4><p>' + escapeHtml(taskExecutionLabel(task)) + ' · ' + progress.total + ' 只' + (taskElapsedSeconds(task) > 0 ? ' · 耗时 ' + escapeHtml(formatTaskSeconds(taskElapsedSeconds(task))) : '') + '</p></div>' +
       '<div class="task-card-progress"><div><i style="width:' + progress.percent + '%"></i></div><span>' + Math.round(progress.percent) + '% · ' + progress.processed + '/' + progress.total + '</span></div></article>';
-  }).join("") || '<div class="empty-cell">暂无独立选股任务</div>';
+  }).join("") || '<div class="empty-cell">暂无独立账户批量回测任务</div>';
   document.querySelectorAll("[data-screening-task]").forEach((card) => card.addEventListener("click", async () => {
     const task = tasks.find((item) => item.task_id === card.dataset.screeningTask);
     document.querySelectorAll("[data-screening-task]").forEach((item) => item.classList.toggle("is-selected", item === card));
     currentModeTask = task ? {
       task_id: task.task_id,
       mode: "independent-screening",
-      mode_label: "独立选股",
+      mode_label: "独立账户批量回测",
       name: task.config?.name || task.task_id,
       status: task.status,
       strategy_binding: { strategy_id: task.config?.strategy_id, strategy_version: task.config?.strategy_version },
@@ -936,13 +936,13 @@ async function createIndependentScreeningTask(event) {
   const submit = event.submitter || form.querySelector('button[type="submit"]');
   const originalLabel = submit?.textContent || "创建任务";
   if (submit) { submit.disabled = true; submit.textContent = "正在创建..."; }
-  setFeedback("正在创建独立选股任务，请稍候");
+  setFeedback("正在创建独立账户批量回测任务，请稍候");
   try {
     const values = Object.fromEntries(new FormData(form).entries());
     const backtestForm = Object.fromEntries(new FormData($("#backtest-run-form")).entries());
     const body = {
       task_id: values.task_id || newTaskId("screening"),
-      name: (selectedStrategy?.name || "策略") + " 独立选股",
+      name: (selectedStrategy?.name || "策略") + " 独立账户批量回测",
       strategy_id: selectedStrategy?.strategy_id || backtestForm.strategy_id || "moving_average_strategy",
       strategy_version: selectedStrategy?.latest_version || backtestForm.strategy_version || "v1",
       symbols: String(values.symbols || "").split(/[,，\s]+/).filter(Boolean),
@@ -966,30 +966,30 @@ async function createIndependentScreeningTask(event) {
     currentModeTask = modeTaskCatalog.find((task) => task.mode === "independent-screening" && task.task_id === currentScreeningTaskId) || currentModeTask;
     renderModeTaskSelection(currentModeTask);
     form.elements.task_id.value = "";
-    setFeedback("独立选股任务已创建：" + taskDisplayTitle(currentModeTask || {}), "success");
+    setFeedback("独立账户批量回测任务已创建：" + taskDisplayTitle(currentModeTask || {}), "success");
   } catch (error) {
-    setFeedback("独立选股创建失败：" + error.message, "error");
+    setFeedback("独立账户批量回测创建失败：" + error.message, "error");
     throw error;
   } finally {
     if (submit) { submit.disabled = false; submit.textContent = originalLabel; }
   }
 }
 async function runIndependentScreeningTask() {
-  if (!currentScreeningTaskId) throw new Error("请先创建或选择独立选股任务");
+  if (!currentScreeningTaskId) throw new Error("请先创建或选择独立账户批量回测任务");
   await requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(currentScreeningTaskId)}/run`, { method: "POST", body: JSON.stringify({ wait: false }) });
   await loadIndependentScreeningTask(currentScreeningTaskId);
   await loadBacktestModeTasks();
-  setFeedback(`独立选股任务已启动：${currentScreeningTaskId}`, "success");
+  setFeedback(`独立账户批量回测任务已启动：${currentScreeningTaskId}`, "success");
 }
 async function controlIndependentScreeningTask(action) {
-  if (!currentScreeningTaskId) throw new Error("请先创建或选择独立选股任务");
+  if (!currentScreeningTaskId) throw new Error("请先创建或选择独立账户批量回测任务");
   const payload = await requestJson(
     `/api/backtest/independent-screening-tasks/${encodeURIComponent(currentScreeningTaskId)}/control`,
     { method: "POST", body: JSON.stringify({ action }) },
   );
   renderScreeningTask(payload.task || {});
   await loadBacktestModeTasks();
-  setFeedback(`独立选股任务控制已提交：${action}`, "success");
+  setFeedback(`独立账户批量回测任务控制已提交：${action}`, "success");
 }
 function renderPortfolioTask(task = {}) {
   if (task.task_id) setStage76ModeTaskState("portfolio",true,task);
@@ -1045,16 +1045,16 @@ async function loadSharedPortfolioTasks() {
     const progress = taskProgressModel(task, "shared-portfolio");
     const info = backtestStatusInfo(task.status);
     return '<article class="compact-task-row is-' + info.tone + (task.task_id === currentPortfolioTaskId ? " is-selected" : "") + '" data-portfolio-task="' + escapeHtml(task.task_id) + '">' +
-      '<div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span><h4>' + escapeHtml(strategyDisplayName(task.config?.strategy_id) + " · 共享资金池") + '</h4><p>' + escapeHtml(taskExecutionLabel(task)) + ' · ' + (task.universe_count || 0) + ' 只 · 最多持仓 ' + (task.config?.max_positions || "-") + (taskElapsedSeconds(task) > 0 ? ' · 耗时 ' + escapeHtml(formatTaskSeconds(taskElapsedSeconds(task))) : '') + '</p></div>' +
+      '<div><span class="task-status-badge is-' + info.tone + '">' + escapeHtml(info.label) + '</span><h4>' + escapeHtml(strategyDisplayName(task.config?.strategy_id) + " · 投资组合回测") + '</h4><p>' + escapeHtml(taskExecutionLabel(task)) + ' · ' + (task.universe_count || 0) + ' 只 · 最多持仓 ' + (task.config?.max_positions || "-") + (taskElapsedSeconds(task) > 0 ? ' · 耗时 ' + escapeHtml(formatTaskSeconds(taskElapsedSeconds(task))) : '') + '</p></div>' +
       '<div class="task-card-progress"><div><i style="width:' + progress.percent + '%"></i></div><span>' + Math.round(progress.percent) + '% · ' + progress.processed + '/' + progress.total + '</span></div></article>';
-  }).join("") || '<div class="empty-cell">暂无共享资金池任务</div>';
+  }).join("") || '<div class="empty-cell">暂无投资组合回测任务</div>';
   document.querySelectorAll("[data-portfolio-task]").forEach((card) => card.addEventListener("click", async () => {
     const task = tasks.find((item) => item.task_id === card.dataset.portfolioTask);
     document.querySelectorAll("[data-portfolio-task]").forEach((item) => item.classList.toggle("is-selected", item === card));
     currentModeTask = task ? {
       task_id: task.task_id,
       mode: "shared-portfolio",
-      mode_label: "共享资金池",
+      mode_label: "投资组合回测",
       name: task.config?.name || task.task_id,
       status: task.status,
       strategy_binding: { strategy_id: task.config?.strategy_id, strategy_version: task.config?.strategy_version },
@@ -1101,13 +1101,13 @@ async function createSharedPortfolioTask(event) {
   const submit = event.submitter || form.querySelector('button[type="submit"]');
   const originalLabel = submit?.textContent || "创建组合任务";
   if (submit) { submit.disabled = true; submit.textContent = "正在创建..."; }
-  setFeedback("正在创建共享资金池任务，请稍候");
+  setFeedback("正在创建投资组合回测任务，请稍候");
   try {
     const values = Object.fromEntries(new FormData(form).entries());
     const backtestForm = Object.fromEntries(new FormData($("#backtest-run-form")).entries());
     const body = {
       task_id: values.task_id || newTaskId("portfolio"),
-      name: (selectedStrategy?.name || "策略") + " 共享资金池组合",
+      name: (selectedStrategy?.name || "策略") + " 投资组合",
       strategy_id: selectedStrategy?.strategy_id || backtestForm.strategy_id || "moving_average_strategy",
       strategy_version: selectedStrategy?.latest_version || backtestForm.strategy_version || "v1",
       symbols: String(values.symbols || "").split(/[,，\s]+/).filter(Boolean),
@@ -1135,20 +1135,20 @@ async function createSharedPortfolioTask(event) {
     currentModeTask = modeTaskCatalog.find((task) => task.mode === "shared-portfolio" && task.task_id === currentPortfolioTaskId) || currentModeTask;
     renderModeTaskSelection(currentModeTask);
     form.elements.task_id.value = "";
-    setFeedback("共享资金池任务已创建：" + taskDisplayTitle(currentModeTask || {}), "success");
+    setFeedback("投资组合回测任务已创建：" + taskDisplayTitle(currentModeTask || {}), "success");
   } catch (error) {
-    setFeedback("共享资金池创建失败：" + error.message, "error");
+    setFeedback("投资组合回测创建失败：" + error.message, "error");
     throw error;
   } finally {
     if (submit) { submit.disabled = false; submit.textContent = originalLabel; }
   }
 }
 async function runSharedPortfolioTask() {
-  if (!currentPortfolioTaskId) throw new Error("请先创建或选择共享资金池组合任务");
+  if (!currentPortfolioTaskId) throw new Error("请先创建或选择投资组合回测任务");
   await requestJson(`/api/backtest/shared-portfolio-tasks/${encodeURIComponent(currentPortfolioTaskId)}/run`, { method: "POST", body: JSON.stringify({ wait: false }) });
   await loadSharedPortfolioTask(currentPortfolioTaskId);
   await loadBacktestModeTasks();
-  setFeedback(`共享资金池组合任务已启动：${currentPortfolioTaskId}`, "success");
+  setFeedback(`投资组合回测任务已启动：${currentPortfolioTaskId}`, "success");
 }
 
 function taskCanDelete(task = {}) {
@@ -1267,7 +1267,7 @@ async function loadIndependentScreeningResultWorkspace(task, preferredRunId = ""
     currentBacktestResultRunId = "";
     currentBacktestRunIdPrefix = "";
     target.innerHTML = '<div class="empty-cell">该任务暂无实际建仓股票，因此没有可展示的交易明细。</div>';
-    $("#backtest-result-panel-tables").innerHTML = '<div class="empty-cell">独立选股仅展示实际建仓股票的真实回测结果。</div>';
+    $("#backtest-result-panel-tables").innerHTML = '<div class="empty-cell">独立账户批量回测仅展示实际建仓股票的真实回测结果。</div>';
     $("#backtest-result-page-table").innerHTML = "";
     $("#backtest-result-panel-output").textContent = "";
     return null;
@@ -1365,8 +1365,8 @@ async function loadBacktestModeTasks(values = null) {
   const summary = payload.summary || {};
   renderSummaryGrid($("#mode-task-directory-summary"), [
     { label: "任务总数", value: summary.task_count || 0 },
-    { label: "独立选股", value: summary.mode_counts?.["independent-screening"] || 0 },
-    { label: "共享资金池", value: summary.mode_counts?.["shared-portfolio"] || 0 },
+    { label: "独立账户批量回测", value: summary.mode_counts?.["independent-screening"] || 0 },
+    { label: "投资组合回测", value: summary.mode_counts?.["shared-portfolio"] || 0 },
     { label: "运行中", value: summary.status_counts?.running || 0 },
     { label: "已完成", value: (summary.status_counts?.completed || 0) + (summary.status_counts?.partial_completed || 0) },
     { label: "异常", value: (summary.status_counts?.failed || 0) + (summary.status_counts?.partial_failed || 0) },
@@ -1817,7 +1817,7 @@ async function runBacktest(payload) {
     const elapsed = singleRunState.startedAt ? (Date.now() - singleRunState.startedAt) / 1000 : 0;
     setSingleRunState({
       status: result.status === "failed" ? "failed" : "completed",
-      phase: result.status === "failed" ? "单股回测执行失败" : "单股回测完成，结果已载入",
+      phase: result.status === "failed" ? "单品种测试执行失败" : "单品种测试完成，结果已载入",
       elapsedSeconds: elapsed,
       startedAt: null,
       result,
@@ -1830,7 +1830,7 @@ async function runBacktest(payload) {
     const elapsed = singleRunState.startedAt ? (Date.now() - singleRunState.startedAt) / 1000 : 0;
     setSingleRunState({
       status: "failed",
-      phase: "单股回测失败：" + error.message,
+      phase: "单品种测试失败：" + error.message,
       elapsedSeconds: elapsed,
       startedAt: null,
       error: error.message,
@@ -2275,7 +2275,7 @@ function renderModeReportContext(report = {}) {
   const target = $("#mode-report-context");
   if (!target) return;
   const boundary = report.semantic_boundary || {};
-  target.innerHTML = `<strong>${report.report_mode === "shared_portfolio" ? "共享资金池组合报告" : "独立选股双层报告"}</strong><span>任务 ${escapeHtml(report.task_id || "-")}</span><span>版本 ${escapeHtml(report.report_version || "-")}</span><span>${escapeHtml(boundary.account_scope || report.report_contract?.scope || "-")}</span>`;
+  target.innerHTML = `<strong>${report.report_mode === "shared_portfolio" ? "投资组合回测报告" : "独立账户批量回测双层报告"}</strong><span>任务 ${escapeHtml(report.task_id || "-")}</span><span>版本 ${escapeHtml(report.report_version || "-")}</span><span>${escapeHtml(boundary.account_scope || report.report_contract?.scope || "-")}</span>`;
 }
 function configureModeReportTabs(mode) {
   const tabs = $("#mode-report-tabs");
@@ -2420,7 +2420,7 @@ async function loadBacktestModeReport(event) {
       try {
         await loadReports(report.run_id, report.run_id.replace(/-shared-portfolio$/, ""));
       } catch (error) {
-        setFeedback(`共享资金池主报告已生成；附属报告暂不可用：${error.message}`, "error");
+        setFeedback(`投资组合回测主报告已生成；附属报告暂不可用：${error.message}`, "error");
         return report;
       }
     }
@@ -2720,7 +2720,7 @@ function stage75RunLabel(run = {}) {
   const date = String(run.created_at || run.started_at || "").replace("T", " ").slice(0, 16) || "时间未知";
   const strategy = run.strategy_name || run.strategy_id || "未命名策略";
   const universe = run.universe || run.symbol || run.extra_config?.symbol || "组合/股票池";
-  const modeLabel={single:"单股测试","independent-single":"独立选股单股","shared-portfolio":"共享资金池"}[stage76RunMode(run)] || "回测";
+  const modeLabel={single:"单品种测试","independent-single":"独立账户批量回测单股","shared-portfolio":"投资组合回测"}[stage76RunMode(run)] || "回测";
   return `${modeLabel} · ${strategy} · ${universe} · ${run.start_date || "-"}~${run.end_date || "-"} · ${date}`;
 }
 
@@ -2855,14 +2855,14 @@ function refreshStage75StrategyOptions() {
 function applyStage75CommonConfig() {
   const mode = currentBacktestView;
   const form = mode === "single" ? $("#backtest-run-form") : mode === "independent" ? $("#screening-task-form") : mode === "portfolio" ? $("#portfolio-task-form") : null;
-  if (!form) { setFeedback("请切换到单股测试、独立选股或共享资金池后再应用", "error"); return; }
+  if (!form) { setFeedback("请切换到单品种测试、独立账户批量回测或投资组合回测后再应用", "error"); return; }
   const mapping = { start_date: $("#backtest-common-start")?.value, end_date: $("#backtest-common-end")?.value, adjustment: $("#backtest-common-adjustment")?.value, initial_cash: $("#backtest-common-cash")?.value };
   Object.entries(mapping).forEach(([name, value]) => { if (form.elements[name] && value) form.elements[name].value = value; });
   const strategy = strategyCatalog.find((item) => item.strategy_id === $("#backtest-common-strategy")?.value);
   if (strategy) selectStrategy(strategy).catch((error) => setFeedback(error.message, "error"));
   form.dispatchEvent(new Event("input", { bubbles: true }));
   saveStage75Draft(mode);
-  setFeedback(`公共参数已应用到${mode === "single" ? "单股测试" : mode === "independent" ? "独立选股" : "共享资金池"}`, "success");
+  setFeedback(`公共参数已应用到${mode === "single" ? "单品种测试" : mode === "independent" ? "独立账户批量回测" : "投资组合回测"}`, "success");
 }
 
 function saveStage75Draft(mode = currentBacktestView) {
@@ -2958,7 +2958,7 @@ async function createAndRunStage75(mode, button) {
     const event = { preventDefault() {}, currentTarget: form, submitter: createButton };
     if (independent) { await createIndependentScreeningTask(event); button.textContent = "启动中..."; await runIndependentScreeningTask(); }
     else { await createSharedPortfolioTask(event); button.textContent = "启动中..."; await runSharedPortfolioTask(); }
-    setFeedback(`${independent ? "独立选股" : "共享资金池"}任务已创建并启动`, "success");
+    setFeedback(`${independent ? "独立账户批量回测" : "投资组合回测"}任务已创建并启动`, "success");
     setStage76ModeTaskState(mode,true,independent?currentScreeningTask:currentPortfolioTask);
   } finally { button.disabled = false; button.textContent = original; }
 }
@@ -3187,7 +3187,7 @@ function configureStage76InformationArchitecture() {
   modeTabs.id = "stage76-create-mode-tabs";
   modeTabs.className = "stage76-create-mode-tabs";
   modeTabs.hidden = true;
-  modeTabs.innerHTML = '<button type="button" data-stage76-mode="single">单股测试</button><button type="button" data-stage76-mode="independent">独立选股</button><button type="button" data-stage76-mode="portfolio">共享资金池</button>';
+  modeTabs.innerHTML = '<button type="button" data-stage76-mode="single">单品种测试</button><button type="button" data-stage76-mode="independent">独立账户批量回测</button><button type="button" data-stage76-mode="portfolio">投资组合回测</button>';
   common?.before(modeTabs);
   const singleForm = $("#backtest-run-form");
   if (singleForm) {
@@ -3268,7 +3268,7 @@ function configureStage76InformationArchitecture() {
   taskPanel.id = "stage76-task-workbench";
   taskPanel.className = "panel panel-wide stage76-task-workbench";
   taskPanel.hidden = true;
-  taskPanel.innerHTML = '<div class="panel-header"><div><h3>任务工作台</h3><p>表格式分页查看三种回测任务；操作按钮由任务当前能力决定。</p></div><button type="button" id="stage76-task-refresh">刷新任务</button></div><form id="stage76-task-filter" class="task-filter-bar"><label><span>模式</span><select name="mode"><option value="">全部模式</option><option value="single">单股测试</option><option value="independent-screening">独立选股</option><option value="shared-portfolio">共享资金池</option></select></label><label><span>状态</span><select name="status"><option value="">全部状态</option><option value="ready">待执行</option><option value="running">运行中</option><option value="completed">已完成</option><option value="partial_completed">部分完成</option><option value="failed">失败</option></select></label><label><span>搜索</span><input name="search" placeholder="任务编号、策略或股票"></label><label><span>每页</span><select id="stage76-task-page-size"><option value="20">20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></label><input name="limit" type="hidden" value="500"><button type="submit">查询</button></form><div id="stage76-task-summary" class="summary-grid"></div><div id="stage76-task-table" class="stage76-task-table"><div class="empty-cell">正在读取任务...</div></div><div id="stage76-task-pager" class="stage76-task-pager"><button type="button" id="stage76-task-prev">上一页</button><span id="stage76-task-page-info">第 1 页</span><button type="button" id="stage76-task-next">下一页</button></div>';
+  taskPanel.innerHTML = '<div class="panel-header"><div><h3>任务工作台</h3><p>表格式分页查看三种回测任务；操作按钮由任务当前能力决定。</p></div><button type="button" id="stage76-task-refresh">刷新任务</button></div><form id="stage76-task-filter" class="task-filter-bar"><label><span>模式</span><select name="mode"><option value="">全部模式</option><option value="single">单品种测试</option><option value="independent-screening">独立账户批量回测</option><option value="shared-portfolio">投资组合回测</option></select></label><label><span>状态</span><select name="status"><option value="">全部状态</option><option value="ready">待执行</option><option value="running">运行中</option><option value="completed">已完成</option><option value="partial_completed">部分完成</option><option value="failed">失败</option></select></label><label><span>搜索</span><input name="search" placeholder="任务编号、策略或股票"></label><label><span>每页</span><select id="stage76-task-page-size"><option value="20">20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></label><input name="limit" type="hidden" value="500"><button type="submit">查询</button></form><div id="stage76-task-summary" class="summary-grid"></div><div id="stage76-task-table" class="stage76-task-table"><div class="empty-cell">正在读取任务...</div></div><div id="stage76-task-pager" class="stage76-task-pager"><button type="button" id="stage76-task-prev">上一页</button><span id="stage76-task-page-info">第 1 页</span><button type="button" id="stage76-task-next">下一页</button></div>';
   $("#page-backtest .section-grid")?.append(taskPanel);
   const resultPanel=document.querySelector(".stage75-result-dock");
   if(resultPanel && !$("#stage76-result-tabs")) {
@@ -3279,8 +3279,8 @@ function configureStage76InformationArchitecture() {
     const overview=document.createElement("section"); overview.className="stage76-result-section"; overview.dataset.stage76ResultSection="overview";
     [$("#independent-result-run-selector"),$("#backtest-result-panel-summary"),$("#backtest-data-version-summary"),$("#backtest-result-panel-metrics"),$("#backtest-result-equity-chart"),$("#backtest-result-drawdown-chart"),$("#backtest-trade-attribution"),$("#backtest-risk-metrics"),$("#backtest-exposure-summary"),$("#backtest-portfolio-panel-summary"),$("#backtest-asset-consistency-summary"),$("#backtest-portfolio-equity-chart")].filter(Boolean).forEach((node)=>overview.append(node));
     const trades=document.createElement("section"); trades.className="stage76-result-section"; trades.dataset.stage76ResultSection="trades"; trades.innerHTML='<div class="panel-header"><div><h4>交易明细</h4><p>按当前任务和股票上下文展示真实成交记录。</p></div></div><div id="stage76-result-trades"></div>';
-    const positions=document.createElement("section"); positions.className="stage76-result-section"; positions.dataset.stage76ResultSection="positions"; positions.innerHTML='<div class="panel-header"><div><h4>持仓快照</h4><p>单股为独立账户持仓；共享资金池为组合账户多票持仓。</p></div></div><div id="stage76-result-positions"></div>';
-    const accounts=document.createElement("section"); accounts.className="stage76-result-section"; accounts.dataset.stage76ResultSection="accounts"; accounts.innerHTML='<div class="panel-header"><div><h4>账户快照</h4><p>独立选股切换股票后查看对应独立资金账户。</p></div></div><div id="stage76-result-accounts"></div>';
+    const positions=document.createElement("section"); positions.className="stage76-result-section"; positions.dataset.stage76ResultSection="positions"; positions.innerHTML='<div class="panel-header"><div><h4>持仓快照</h4><p>单股为独立账户持仓；投资组合回测为组合账户多票持仓。</p></div></div><div id="stage76-result-positions"></div>';
+    const accounts=document.createElement("section"); accounts.className="stage76-result-section"; accounts.dataset.stage76ResultSection="accounts"; accounts.innerHTML='<div class="panel-header"><div><h4>账户快照</h4><p>独立账户批量回测切换股票后查看对应独立资金账户。</p></div></div><div id="stage76-result-accounts"></div>';
     const report=document.createElement("section"); report.className="stage76-result-section"; report.dataset.stage76ResultSection="report"; report.innerHTML='<div class="panel-header"><div><h4>分层分析报告</h4><p>核心结论优先，详细章节按需展开；无需跳离当前任务。</p></div></div><div id="stage76-embedded-report"><div class="empty-cell">选择任务后加载报告</div></div>';
     resultPanel.append(overview,trades,positions,accounts,report);
     const legacyTables=$("#backtest-result-panel-tables"); if(legacyTables) legacyTables.hidden=true;
@@ -3399,7 +3399,7 @@ async function loadStage76Tasks(filters={}) {
     } else if(mode==="independent"){currentScreeningTask=latest;setStage76ModeTaskState(mode,true,latest);renderScreeningTask(latest);}
     else {currentPortfolioTask=latest;setStage76ModeTaskState(mode,true,latest);renderPortfolioTask(latest);}
   });
-  const summary=payload.summary||{}; renderSummaryGrid($("#stage76-task-summary"),[{label:"任务总数",value:summary.task_count||0},{label:"单股测试",value:summary.mode_counts?.single||0},{label:"独立选股",value:summary.mode_counts?.["independent-screening"]||0},{label:"共享资金池",value:summary.mode_counts?.["shared-portfolio"]||0}]);
+  const summary=payload.summary||{}; renderSummaryGrid($("#stage76-task-summary"),[{label:"任务总数",value:summary.task_count||0},{label:"单品种测试",value:summary.mode_counts?.single||0},{label:"独立账户批量回测",value:summary.mode_counts?.["independent-screening"]||0},{label:"投资组合回测",value:summary.mode_counts?.["shared-portfolio"]||0}]);
   if(stage76TaskPollTimer) clearTimeout(stage76TaskPollTimer);
   if(stage76TaskCatalog.some((task)=>["running","pause_requested","cancel_requested"].includes(task.status))) stage76TaskPollTimer=setTimeout(()=>loadStage76Tasks().catch(()=>{}),2000);
   return stage76TaskCatalog;
@@ -3448,7 +3448,7 @@ async function loadStage76EmbeddedReport(task) {
   const payload=await requestJson(`/api/reporting/backtest-modes/${encodeURIComponent(task.mode)}/${encodeURIComponent(task.task_id)}`); const report=payload.report||{};
   if(task.mode==="shared-portfolio") {
     const gate=report.data_quality_gate||{};
-    target.innerHTML=`<div class="stage76-report-hero"><span>多票组合报告</span><h3>${escapeHtml(task.name||task.task_id)}</h3><p>评价对象是一个共享资金池、多股票持仓的真实组合模拟账户。</p><div class="summary-grid"><div class="summary-item"><strong>综合评分</strong><span>${gate.score_allowed?(report.professional_report?.average_score??"N/A"):"N/A"}</span></div><div class="summary-item"><strong>证据门禁</strong><span>${escapeHtml(gate.status||"unknown")}</span></div><div class="summary-item"><strong>账户语义</strong><span>单一共享资金账户</span></div></div></div>${stage76ReportDimensions(report.professional_report||{},report.run_detail||{})}<details><summary>组合归因与持仓章节</summary><pre class="code-block">${escapeHtml(JSON.stringify(report.portfolio_sections||{},null,2))}</pre></details>`;
+    target.innerHTML=`<div class="stage76-report-hero"><span>多票组合报告</span><h3>${escapeHtml(task.name||task.task_id)}</h3><p>评价对象是一个共享资金账户、多股票持仓的真实组合模拟账户。</p><div class="summary-grid"><div class="summary-item"><strong>综合评分</strong><span>${gate.score_allowed?(report.professional_report?.average_score??"N/A"):"N/A"}</span></div><div class="summary-item"><strong>证据门禁</strong><span>${escapeHtml(gate.status||"unknown")}</span></div><div class="summary-item"><strong>账户语义</strong><span>单一共享资金账户</span></div></div></div>${stage76ReportDimensions(report.professional_report||{},report.run_detail||{})}<details><summary>组合归因与持仓章节</summary><pre class="code-block">${escapeHtml(JSON.stringify(report.portfolio_sections||{},null,2))}</pre></details>`;
     return;
   }
   const scope=report.sample_scope||{}, distribution=report.distribution||{}, runs=report.run_index||[];
@@ -3483,7 +3483,7 @@ function bindStage76Events() {
   $("#stage76-task-page-size")?.addEventListener("change",(event)=>{stage76TaskPageSize=Number(event.currentTarget.value)||20;stage76TaskPage=1;renderStage76TaskTable(stage76TaskCatalog);});
   activateStage76Workspace("strategy");
 }
-function bindEvents() { configureStage75Shell(); configureStage76InformationArchitecture(); bindBacktestWorkspace(); bindStrategyManager(); configureReportingWorkspace(); configureStage75Relocations(); bindStage75Events(); bindStage76Events(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareWorkspace().then(() => setFeedback("A 股真实数据库已加载", "success")).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); $("#market-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", (event) => submitSingleBacktestTask(event, false).catch((error) => setFeedback(error.message, "error"))); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立选股任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("共享资金池组合任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
+function bindEvents() { configureStage75Shell(); configureStage76InformationArchitecture(); bindBacktestWorkspace(); bindStrategyManager(); configureReportingWorkspace(); configureStage75Relocations(); bindStage75Events(); bindStage76Events(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareWorkspace().then(() => setFeedback("A 股真实数据库已加载", "success")).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); $("#market-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", (event) => submitSingleBacktestTask(event, false).catch((error) => setFeedback(error.message, "error"))); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立账户批量回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("投资组合回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
 function bindBacktestResultControls() {
   const prev = $("#backtest-table-prev");
   const next = $("#backtest-table-next");

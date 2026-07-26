@@ -5,15 +5,15 @@
 - 项目名称：`SleeperCloudQuant`
 - 行业：`量化分析 / 金融科技`
 - 产品形态：`本地化 Web 分析系统`
-- 当前阶段：`startup-bootstrap`
-- 当前目标：`先完成本地化量化分析系统的项目画像、边界澄清与最小验证基线，再进入真实开发。`
+- 当前阶段：`stage-77-governance-and-results-analysis`
+- 当前目标：`在阶段 76.9 统一策略回测工作台基础上，先完成治理基线、角色与记忆闭环修复，再进入“查看结果 / 查看分析”的业务定义、交互审批与实现。`
 
 ## 二、项目内优先约束
 
 1. 本项目规则只补充项目特定边界，不重复全局 `AGENTS.md`、`agents/orchestrator.md` 和领域编排器已定义内容。
 2. 软件开发任务默认走 `software-dev` 领域，并使用 `agents/role-registry.md` 中的正式角色名记录 `role_used`。
 3. 项目创建或启动后，应先执行项目启动引导，自动生成项目画像、验证基线与启动清单，再进入真实迭代。
-4. 未完成项目画像或验证基线前，不应直接进入高成本实现。
+4. 项目画像、技术边界、数据模型、运行时说明或验证基线与真实系统发生漂移时，应先完成治理基线对齐，再进入下一阶段实现。
 5. 若任务涉及已有代码理解、开源仓库比较或模块复用，应先进入 `code-archaeologist -> multi-repo-comparator -> reuse-integration-planner -> solution-architect` 链路，再进入实现。
 
 ## 三、项目工作原则

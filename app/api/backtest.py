@@ -870,7 +870,7 @@ def _mode_task_entry(mode: str, task: dict[str, Any]) -> dict[str, Any]:
             "elapsed_seconds": float(progress.get("elapsed_seconds") or 0.0),
             "throughput_per_minute": 0.0, "estimated_remaining_seconds": None,
         }
-        mode_label, task_path = "单股测试", "single-backtest-tasks"
+        mode_label, task_path = "单品种测试", "single-backtest-tasks"
     elif mode == "independent-screening":
         normalized_progress = {
             "processed": int(progress.get("processed") or 0), "total": universe_count,
@@ -881,7 +881,7 @@ def _mode_task_entry(mode: str, task: dict[str, Any]) -> dict[str, Any]:
             "throughput_per_minute": float(progress.get("throughput_per_minute") or 0.0),
             "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
         }
-        mode_label, task_path = "独立选股", "independent-screening-tasks"
+        mode_label, task_path = "独立账户批量回测", "independent-screening-tasks"
     else:
         complete = str(task.get("status") or "") in {"completed", "partial_completed"}
         normalized_progress = {
@@ -894,7 +894,7 @@ def _mode_task_entry(mode: str, task: dict[str, Any]) -> dict[str, Any]:
             "throughput_per_minute": float(progress.get("throughput_per_minute") or 0.0),
             "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
         }
-        mode_label, task_path = "共享资金池", "shared-portfolio-tasks"
+        mode_label, task_path = "投资组合回测", "shared-portfolio-tasks"
     task_id = str(task.get("task_id") or "")
     status = str(task.get("status") or "unknown")
     run_id = task.get("run_id")
