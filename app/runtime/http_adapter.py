@@ -56,6 +56,9 @@ def create_http_handler(app: SimpleApiApp) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             self._handle_request("POST")
 
+        def do_PUT(self) -> None:  # noqa: N802
+            self._handle_request("PUT")
+
         def do_DELETE(self) -> None:  # noqa: N802
             self._handle_request("DELETE")
 
@@ -65,7 +68,7 @@ def create_http_handler(app: SimpleApiApp) -> type[BaseHTTPRequestHandler]:
         def _handle_request(self, method: str) -> None:
             parsed = urlparse(self.path)
             body = None
-            if method == "POST":
+            if method in {"POST", "PUT"}:
                 content_length = int(self.headers.get("Content-Length") or "0")
                 body = self.rfile.read(content_length) if content_length > 0 else b""
             try:
@@ -156,7 +159,7 @@ def _build_route_payload(
             for key, values in parse_qs(query_string, keep_blank_values=True).items()
         }
         return _instantiate_request_model(route, raw_query)
-    if route.method.upper() == "POST":
+    if route.method.upper() in {"POST", "PUT"}:
         return _instantiate_request_model(route, _load_json_object(body))
     return None
 

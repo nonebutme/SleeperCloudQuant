@@ -1,4 +1,4 @@
-﻿"""Smoke test for stage 46 backtest data asset trace binding."""
+"""Smoke test for stage 46 backtest data asset trace binding."""
 
 from __future__ import annotations
 
@@ -36,8 +36,8 @@ def main() -> None:
     status, payload = _dispatch(app, "GET", "/api/market/local-price-bars/assets", query_string=f"symbol={symbol}&limit=5")
     asset_payload = payload.get("assets", {})
     asset = (asset_payload.get("assets") or [{}])[0]
-    data_version = asset.get("data_version")
-    if status != 200 or not data_version:
+    local_asset_version = asset.get("data_version")
+    if status != 200 or not local_asset_version:
         raise SystemExit("stage46 smoke failed: data asset version missing before backtest")
 
     backtest_request = {
@@ -61,8 +61,11 @@ def main() -> None:
     trace = panel.get("data_asset_trace", {})
     if status != 200 or trace.get("status") != "bound":
         raise SystemExit("stage46 smoke failed: result panel data asset trace not bound")
-    if trace.get("asset", {}).get("data_version") != data_version or panel.get("summary", {}).get("data_version") != data_version:
+    data_version = trace.get("asset", {}).get("data_version")
+    if not data_version or panel.get("summary", {}).get("data_version") != data_version:
         raise SystemExit("stage46 smoke failed: result panel data version mismatch")
+    if trace.get("manifest", {}).get("scope") != "published_canonical_a_share_release":
+        raise SystemExit("stage46 smoke failed: backtest did not freeze a published canonical release")
 
     workflow_request = {
         "symbol": symbol,
@@ -99,4 +102,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

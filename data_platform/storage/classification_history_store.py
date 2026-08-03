@@ -113,6 +113,75 @@ class ClassificationHistoryStore:
             if str(row["valid_from"]) == latest
         ]
 
+    def resolve_many(
+        self,
+        as_of_by_symbol: dict[str, str],
+    ) -> dict[str, dict[str, list[str]]]:
+        """Resolve industry/concept labels for many symbols with bounded queries."""
+        targets = {
+            _symbol(symbol): str(as_of or "")[:10]
+            for symbol, as_of in as_of_by_symbol.items()
+            if _symbol(symbol) and str(as_of or "")[:10]
+        }
+        result = {
+            symbol: {"industry": [], "concept": []}
+            for symbol in targets
+        }
+        latest: dict[tuple[str, str], str] = {}
+        symbols = sorted(targets)
+        with self._connect() as connection:
+            for offset in range(0, len(symbols), 500):
+                batch = symbols[offset : offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"""SELECT symbol, dimension, category, valid_from, valid_to
+                        FROM classification_intervals
+                        WHERE symbol IN ({placeholders})
+                          AND dimension IN ('industry', 'concept')
+                        ORDER BY symbol, dimension, valid_from DESC, category""",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    symbol = str(row["symbol"])
+                    dimension = str(row["dimension"])
+                    target_date = targets[symbol]
+                    valid_from = str(row["valid_from"])
+                    valid_to = str(row["valid_to"] or "")
+                    if valid_from > target_date or (valid_to and valid_to < target_date):
+                        continue
+                    key = (symbol, dimension)
+                    selected_date = latest.get(key)
+                    if selected_date is None:
+                        latest[key] = valid_from
+                    elif selected_date != valid_from:
+                        continue
+                    result[symbol][dimension].append(str(row["category"]))
+        return result
+    def fetch_intervals(
+        self,
+        symbols: Iterable[str],
+        *,
+        dimension: str = "industry",
+    ) -> list[dict[str, Any]]:
+        """Fetch effective-dated intervals once for point-in-time analytical joins."""
+
+        normalized = sorted({_symbol(value) for value in symbols if _symbol(value)})
+        if not normalized:
+            return []
+        result: list[dict[str, Any]] = []
+        with self._connect() as connection:
+            for offset in range(0, len(normalized), 500):
+                batch = normalized[offset : offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"""SELECT symbol, category, valid_from, valid_to, source, source_version
+                        FROM classification_intervals
+                        WHERE symbol IN ({placeholders}) AND dimension=?
+                        ORDER BY symbol, valid_from, category""",
+                    (*batch, str(dimension).lower()),
+                ).fetchall()
+                result.extend(dict(row) for row in rows)
+        return result
     def coverage(self) -> dict[str, Any]:
         with self._connect() as connection:
             rows = connection.execute(

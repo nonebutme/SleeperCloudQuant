@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import runpy
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from _project_bootstrap import ensure_project_root_on_sys_path
@@ -10,7 +12,24 @@ from _project_bootstrap import ensure_project_root_on_sys_path
 
 def _run_script(script_name: str) -> None:
     script_path = Path(__file__).resolve().parent / script_name
-    runpy.run_path(str(script_path), run_name="__main__")
+    project_root = script_path.parent.parent
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        item
+        for item in (str(project_root), environment.get("PYTHONPATH", ""))
+        if item
+    )
+    environment["SCQ_DISABLE_BACKGROUND_SCHEDULER"] = "1"
+    subprocess.run(
+        [
+            sys.executable,
+            str(script_path.parent / "_run_formal_isolated.py"),
+            str(script_path),
+        ],
+        check=True,
+        cwd=project_root,
+        env=environment,
+    )
 
 
 def main() -> None:
@@ -22,16 +41,30 @@ def main() -> None:
         "smoke_test_legacy_sqlite_market_data.py",
         "smoke_test_a_share_source_database.py",
         "smoke_test_a_share_canonical_store.py",
+        "smoke_test_stage78_data_governance.py",
+        "smoke_test_stage78_2_incremental_scheduler.py",
+        "smoke_test_stage78_2_scheduler_api.py",
+        "smoke_test_stage86_data_center.py",
+        "smoke_test_stage86_data_center_ui.py",
+        "smoke_test_m4_asset_browser_ui.py",
+        "smoke_test_market_panorama.py",
+        "smoke_test_m4_index_market.py",
+        "smoke_test_vtable_global_adoption.py",
+        "smoke_test_quant_ui_candidate.py",
+        "smoke_test_stage78_3_context_backfill.py",
         "smoke_test_a_share_full_market_quality.py",
         "smoke_test_local_sqlite_backtest_runtime.py",
         "smoke_test_versioned_custom_strategies.py",
         "smoke_test_strategy_library_crud.py",
         "smoke_test_independent_screening_backtest.py",
+        "smoke_test_independent_signal_analysis.py",
         "smoke_test_shared_portfolio_backtest.py",
         "smoke_test_backtest_mode_reports.py",
         "smoke_test_stage74_professional_report_workspace.py",
         "smoke_test_stage75_quant_workbench_ux.py",
         "smoke_test_stage76_unified_backtest_workspace.py",
+        "smoke_test_stage77_backtest_report_ui.py",
+        "smoke_test_stage80_85_advanced_reports.py",
         "smoke_test_backtest_mode_task_directory.py",
         "smoke_test_full_market_backtest_scheduler.py",
         "smoke_test_classification_batch_sync.py",
@@ -92,32 +125,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

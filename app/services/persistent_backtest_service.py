@@ -10,6 +10,7 @@ from app.runtime.sqlite_runtime_store import SqliteRuntimeStore
 from domain.backtest.models import BacktestResultSummary, BacktestRunRequest
 
 from .backtest_service import BacktestService
+from .backtest_advanced_analysis import build_advanced_analysis
 
 
 class PersistentBacktestService:
@@ -31,6 +32,8 @@ class PersistentBacktestService:
         return [dict(item) for item in self._runtime_store.list_backtest_runs(limit=limit)]
     def run_once(self, request: BacktestRunRequest) -> BacktestResultSummary:
         started_at = _utc_now()
+        data_asset_trace = self._build_data_asset_trace(request=request, bound_at=started_at)
+        extra_config = _merge_data_asset_trace(request.extra_config, data_asset_trace)
         self._runtime_store.upsert_backtest_run(
             run_id=request.run_id,
             strategy_name=request.strategy_name,
@@ -43,10 +46,29 @@ class PersistentBacktestService:
             created_at=started_at,
             completed_at=None,
             parameters=request.parameters,
-            extra_config=request.extra_config,
+            extra_config=extra_config,
             raw_result={},
             error_message=None,
         )
+        if data_asset_trace.get("status") == "data_not_ready":
+            message = f"data_not_ready:{data_asset_trace.get('reason') or 'published_version_unavailable'}"
+            self._runtime_store.upsert_backtest_run(
+                run_id=request.run_id,
+                strategy_name=request.strategy_name,
+                strategy_id=request.strategy_id,
+                status="failed",
+                benchmark=request.benchmark,
+                universe=request.symbol,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                created_at=started_at,
+                completed_at=_utc_now(),
+                parameters=request.parameters,
+                extra_config=extra_config,
+                raw_result={},
+                error_message=message,
+            )
+            raise RuntimeError(message)
         try:
             result, raw_result = self._backtest_service.run_once_with_raw_result(request)
         except Exception as exc:
@@ -62,7 +84,7 @@ class PersistentBacktestService:
                 created_at=started_at,
                 completed_at=_utc_now(),
                 parameters=request.parameters,
-                extra_config=request.extra_config,
+                extra_config=extra_config,
                 raw_result={},
                 error_message=str(exc),
             )
@@ -71,10 +93,6 @@ class PersistentBacktestService:
 
         detail_payload = _extract_runtime_detail(raw_result)
         completed_at = _utc_now()
-        extra_config = _merge_data_asset_trace(
-            request.extra_config,
-            self._build_data_asset_trace(request=request, bound_at=completed_at),
-        )
         self._runtime_store.upsert_backtest_run(
             run_id=request.run_id,
             strategy_name=result.strategy_name,
@@ -124,6 +142,54 @@ class PersistentBacktestService:
 
 
     def _build_data_asset_trace(self, *, request: BacktestRunRequest, bound_at: str) -> dict[str, Any]:
+        adjustment = str(request.extra_config.get("adjustment") or "raw")
+        if self._market_data_service is not None and hasattr(
+            self._market_data_service, "get_published_data_version"
+        ):
+            try:
+                resolved = dict(self._market_data_service.get_published_data_version(
+                    symbol=request.symbol,
+                    adjustment=adjustment,
+                    start_date=request.start_date,
+                    end_date=request.end_date,
+                    benchmark=request.benchmark,
+                ))
+            except Exception as exc:
+                return {
+                    "status": "data_not_ready",
+                    "symbol": request.symbol,
+                    "start_date": request.start_date,
+                    "end_date": request.end_date,
+                    "bound_at": bound_at,
+                    "reason": f"published_version_lookup_failed:{type(exc).__name__}",
+                }
+            governance_status = str(resolved.get("status") or "")
+            if governance_status == "bound":
+                return {
+                    "status": "bound",
+                    "symbol": request.symbol,
+                    "start_date": request.start_date,
+                    "end_date": request.end_date,
+                    "bound_at": bound_at,
+                    "asset": resolved,
+                    "manifest": {
+                        "scope": "published_canonical_a_share_release",
+                        "members": resolved.get("members") or [],
+                        "quality_report_id": resolved.get("quality_report_id"),
+                    },
+                    "source_endpoint": "canonical-governance:data_versions",
+                    "notes": [
+                        "Published data version was resolved before backtest execution.",
+                        "The immutable version is reused when the run is persisted.",
+                    ],
+                }
+            if governance_status != "unsupported":
+                return {
+                    **resolved,
+                    "status": "data_not_ready",
+                    "bound_at": bound_at,
+                }
+
         if self._market_data_service is None or not hasattr(self._market_data_service, "get_local_price_bar_assets"):
             return {
                 "status": "unsupported",
@@ -196,17 +262,40 @@ class PersistentBacktestService:
                 "exposure_summary": {},
             }
         metrics = _index_metric_rows(self._runtime_store.fetch_backtest_metrics(run_id))
-        trades = _dict_rows(self._runtime_store.fetch_backtest_trades(run_id))
-        positions = _dict_rows(self._runtime_store.fetch_backtest_positions(run_id))
-        accounts = _dict_rows(self._runtime_store.fetch_backtest_accounts(run_id))
+        raw_result = dict(run.get("raw_result") or {})
+        trades = _merge_artifact_rows(
+            _dict_rows(self._runtime_store.fetch_backtest_trades(run_id)),
+            raw_result.get("trades") or [],
+        )
+        positions = _merge_artifact_rows(
+            _dict_rows(self._runtime_store.fetch_backtest_positions(run_id)),
+            raw_result.get("positions") or [],
+        )
+        accounts = _merge_artifact_rows(
+            _dict_rows(self._runtime_store.fetch_backtest_accounts(run_id)),
+            raw_result.get("accounts") or [],
+        )
         yearly_returns = _dict_rows(self._runtime_store.fetch_backtest_yearly_returns(run_id))
         logs = _dict_rows(self._runtime_store.fetch_backtest_logs(run_id))
         equity_curve = _build_equity_curve(accounts)
         drawdown_curve = _build_drawdown_curve(equity_curve)
-        trade_attribution = _build_trade_attribution(trades, parameter_snapshot=dict(run.get("extra_config") or {}))
+        extra_config = dict(run.get("extra_config") or {})
+        trade_attribution = _build_trade_attribution(trades, parameter_snapshot=extra_config)
+        metrics["trade_fill_count"] = len(trades)
+        metrics["trade_count"] = trade_attribution.get("roundtrip_count")
+        metrics["win_rate"] = trade_attribution.get("estimated_win_rate")
+        metrics["profit_loss_ratio"] = trade_attribution.get("profit_loss_ratio")
         risk_metrics = _build_risk_metrics(equity_curve, drawdown_curve)
         exposure_summary = _build_exposure_summary(positions, accounts)
-        extra_config = dict(run.get("extra_config") or {})
+        advanced = build_advanced_analysis(
+            account_rows=accounts,
+            benchmark_curve=_dict_rows(raw_result.get("benchmark_curve") or []),
+            excess_curve=_dict_rows(raw_result.get("excess_curve") or []),
+            trades=trades,
+            metrics=metrics,
+            raw_result=raw_result,
+            extra_config=extra_config,
+        )
         input_snapshot = dict(self._runtime_store.fetch_backtest_input_snapshot(run_id) or {}) if hasattr(self._runtime_store, "fetch_backtest_input_snapshot") else {}
         persisted_trace = dict((input_snapshot.get("payload") or {}).get("trace") or {}) if input_snapshot else {}
         data_asset_trace = persisted_trace or dict(extra_config.get("data_asset_trace") or {})
@@ -229,7 +318,8 @@ class PersistentBacktestService:
                 "created_at": run.get("created_at"),
                 "completed_at": run.get("completed_at"),
                 "error_message": run.get("error_message"),
-                "trade_count": len(trades),
+                "trade_count": trade_attribution.get("roundtrip_count") or 0,
+                "trade_fill_count": len(trades),
                 "position_count": len(positions),
                 "account_points": len(accounts),
                 "year_count": len(yearly_returns),
@@ -252,7 +342,16 @@ class PersistentBacktestService:
             "trade_attribution": trade_attribution,
             "risk_metrics": risk_metrics,
             "exposure_summary": exposure_summary,
-        }
+            "price_bars": advanced["price_bars"],
+            "signal_evidence": advanced["signal_evidence"],
+            "monthly_return_heatmap": advanced["monthly_return_heatmap"],
+            "excess_drawdown_curve": advanced["excess_drawdown_curve"],
+            "market_regimes": advanced["market_regimes"],
+            "execution_quality": advanced["execution_quality"],
+            "cost_capacity_stress": advanced["cost_capacity_stress"],
+            "robustness": advanced["robustness"],
+            "parameter_sensitivity": advanced["parameter_sensitivity"],
+            "report_governance": advanced["report_governance"],        }
 
 
     def get_input_snapshot(self, run_id: str) -> dict[str, Any]:
@@ -556,6 +655,14 @@ def _index_metric_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return metrics
 
 
+def _merge_artifact_rows(
+    persisted: Sequence[Mapping[str, Any]],
+    raw: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    if len(persisted) != len(raw):
+        return [dict(row) for row in persisted]
+    return [{**dict(saved), **dict(source)} for saved, source in zip(persisted, raw)]
+
 def _dict_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
@@ -696,6 +803,7 @@ def _build_trade_attribution(
     cost_by_symbol: dict[str, float] = {}
     sell_win_count = 0
     sell_loss_count = 0
+    realized_pnls: list[float] = []
     for trade in trades:
         side = str(trade.get("side") or "").upper()
         symbol = str(trade.get("order_book_id") or "")
@@ -708,9 +816,13 @@ def _build_trade_attribution(
             sell_amount += amount
             avg_cost = cost_by_symbol.get(symbol, 0.0) / quantity_by_symbol.get(symbol, 1.0) if quantity_by_symbol.get(symbol, 0.0) > 0 else None
             if avg_cost is not None:
-                if price >= avg_cost:
+                explicit_pnl = _to_float(trade.get("pnl") if trade.get("pnl") is not None else trade.get("realized_pnl"))
+                fees = abs(_to_float(trade.get("commission")) or 0.0) + abs(_to_float(trade.get("tax")) or 0.0)
+                realized_pnl = explicit_pnl if explicit_pnl is not None else amount - fees - avg_cost * quantity
+                realized_pnls.append(realized_pnl)
+                if realized_pnl > 0:
                     sell_win_count += 1
-                else:
+                elif realized_pnl < 0:
                     sell_loss_count += 1
             quantity_by_symbol[symbol] = max(0.0, quantity_by_symbol.get(symbol, 0.0) - quantity)
             cost_by_symbol[symbol] = max(0.0, cost_by_symbol.get(symbol, 0.0) - (avg_cost or 0.0) * quantity)
@@ -719,7 +831,13 @@ def _build_trade_attribution(
             buy_amount += amount
             quantity_by_symbol[symbol] = quantity_by_symbol.get(symbol, 0.0) + quantity
             cost_by_symbol[symbol] = cost_by_symbol.get(symbol, 0.0) + amount
-    roundtrip_count = sell_win_count + sell_loss_count
+    roundtrip_count = len(realized_pnls)
+    wins = [value for value in realized_pnls if value > 0]
+    losses = [value for value in realized_pnls if value < 0]
+    profit_loss_ratio = (
+        (sum(wins) / len(wins)) / abs(sum(losses) / len(losses))
+        if wins and losses else None
+    )
     cost_rate = _estimate_cost_rate(parameter_snapshot or {})
     estimated_cost = traded_amount * cost_rate
     return {
@@ -734,6 +852,7 @@ def _build_trade_attribution(
         "estimated_win_count": sell_win_count,
         "estimated_loss_count": sell_loss_count,
         "estimated_win_rate": sell_win_count / roundtrip_count if roundtrip_count else None,
+        "profit_loss_ratio": profit_loss_ratio,
         "estimated_cost": estimated_cost,
         "estimated_cost_rate": cost_rate,
         "method": "avg_cost_sell_price_estimate",

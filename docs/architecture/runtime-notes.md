@@ -74,3 +74,21 @@ PC Web 与 API 同源服务：
 - `smoke_test_a_share_source_database.py`：因 `raw quality is not passed` 中止。
 
 当前规范行情最新日期为 2026-07-17。恢复数据新鲜度并重跑完整验证前，不宣称全系统可发布。
+
+## M4 市场全景运行说明（2026-07-30）
+
+- 独立全景库：`var/runtime/market_panorama.sqlite3`
+- 全景只读接口：`GET /api/market/panorama?trade_date=YYYY-MM-DD&symbol=...&asset_type=stock|index`
+- M2 数据集：`industry_board`、`concept_board`、`industry_flow`、`concept_flow`、`events`、`panorama_all`、`industry_classification_repair`。
+- 独立任务入口：`python scripts/run_market_panorama_sync_job.py --job-id <任务号>`。
+- `SCQ_PANORAMA_WORKERS`：全景同步并发，默认 4，最大 8。
+- 虚拟环境当前没有 `Crypto`；行业分类失败修复沿用系统 Python 已安装的 PyCryptodome，不修改项目依赖或锁文件。
+
+当前真实覆盖：规范 A 股 `qfq` 日线完整到 2026-07-28，六个指数到 2026-07-29；正式已发布版本截止仍以治理库记录为准，较新观察不自动视为正式发布。
+## M4 市场全景 P0—P3 执行结果（2026-07-30）
+
+- P0：本地行业全景、`GET /api/market/panorama` 与 M4 K 线交易日下钻已接通；请求 `2026-07-28` 时行业热度 90 行。
+- P1：行业/概念板块历史已分别落库 90/374 个板块；概念资金流已落库 15 个板块、591 行历史记录。行业资金流免费上游当前全部失败，接口明确返回 `unavailable`，不生成模拟值。
+- P2：`000001` 在 `2026-07-28` 已落库 2 条可追溯新闻；公告源当日无返回时保持空，不用新闻伪装公告。
+- P3：行业分类失败项经两轮修复后仍有 24 项受免费上游失败影响；A 股目标日 9 个缺口已由停牌接口逐项核验，调度器按目标日保存停牌状态并允许证据充分的 0 行完成。任务 `a-share-sync-20260728-0952b4b524` 最终 5533/5533 完成、0 隔离，发布版本 `scq-20260728-033fc57a7de87fe4`。
+- 验证：市场全景、M4、数据中心、VTable、停牌调度器聚焦回归全部通过；M4、数据中心、全局 VTable 浏览器验收通过。完整正式验证仍在既有 raw/hfq 新鲜度门禁处中止，原因是两种口径最新日仍为 `2026-07-17`。

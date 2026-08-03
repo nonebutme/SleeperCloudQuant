@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>策略工作室（候选）· SleeperCloudQuant</title>
+  <link rel="stylesheet" href="/vtable-adapter.css?v=1">
+  <link rel="stylesheet" href="/quant-ui-candidate.css?v=2">
+  <link rel="stylesheet" href="/strategy-studio.css?v=1">
+</head>
+<body class="quant-ui-standard">
+  <header class="studio-topbar">
+    <div>
+      <p class="studio-kicker">STRATEGY MANIFEST · CANDIDATE</p>
+      <h1>策略工作室</h1>
+      <p>以数据集为研究输入，固化资产、信号、组合、风控、执行与代码版本。</p>
+    </div>
+    <div class="studio-top-actions">
+      <span id="api-status" class="status-pill">正在连接</span>
+      <button id="theme-toggle" class="secondary" type="button">切换主题</button>
+      <a class="button-link secondary" href="/?page=backtest">返回备用策略编辑器</a>
+    </div>
+  </header>
+
+  <div class="studio-layout">
+    <aside class="studio-rail" aria-label="策略清单导航">
+      <div class="rail-title"><strong>清单结构</strong><span>Manifest v1</span></div>
+      <nav id="section-nav">
+        <button class="is-active" type="button" data-target="overview">01 概览</button>
+        <button type="button" data-target="datasets">02 资产与数据集</button>
+        <button type="button" data-target="signals">03 信号与因子</button>
+        <button type="button" data-target="portfolio">04 组合构建</button>
+        <button type="button" data-target="risk">05 风险约束</button>
+        <button type="button" data-target="execution">06 执行假设</button>
+        <button type="button" data-target="code">07 策略代码</button>
+        <button type="button" data-target="validation">08 验证与保存</button>
+      </nav>
+      <div class="rail-note">
+        <strong>不可变规则</strong>
+        <p>同一策略 ID 与版本保存后不可覆盖；修改需创建新版本。</p>
+      </div>
+    </aside>
+
+    <main class="studio-main">
+      <section id="overview" class="studio-section">
+        <div class="section-heading"><div><span>01</span><h2>策略概览</h2></div><p>定义策略身份与研究范围。</p></div>
+        <div class="form-grid three">
+          <label><span>策略 ID</span><input id="strategy-id" value="tech-momentum-rotation" required></label>
+          <label><span>版本</span><input id="strategy-version" value="v1" required></label>
+          <label><span>策略名称</span><input id="strategy-name" value="科技动量赢家轮动" required></label>
+          <label><span>资产范围</span><select id="asset-universe"><option value="explicit_symbols">指定证券</option><option value="dataset_universe">数据集动态范围</option><option value="index_constituents">指数成分</option></select></label>
+          <label class="span-two"><span>证券代码（逗号分隔）</span><input id="asset-symbols" value="000300.XSHG,399006.XSHE"></label>
+        </div>
+      </section>
+
+      <section id="datasets" class="studio-section">
+        <div class="section-heading"><div><span>02</span><h2>资产与数据集</h2></div><p>目录权威来自数据中心；此处只声明策略依赖。</p></div>
+        <div class="dataset-toolbar">
+          <label><span>搜索</span><input id="dataset-search" type="search" placeholder="数据集 ID、名称或说明"></label>
+          <label><span>状态</span><select id="dataset-status"><option value="">全部</option><option value="connected">已连接</option><option value="unavailable">不可用</option><option value="disabled">已停用</option></select></label>
+          <button id="dataset-refresh" type="button">刷新目录</button>
+          <span id="dataset-summary">读取中…</span>
+        </div>
+        <div class="table-shell">
+          <table data-vtable-mode="edit" aria-label="数据集产品目录">
+            <thead><tr><th>选择</th><th>数据集</th><th>名称</th><th>层级</th><th>状态</th><th>Schema</th><th>生产者</th></tr></thead>
+            <tbody id="dataset-body"></tbody>
+          </table>
+        </div>
+        <div class="requirement-editor">
+          <h3>已选数据集需求</h3>
+          <div id="selected-datasets" class="selected-list"><p class="empty-state">尚未选择数据集。</p></div>
+        </div>
+      </section>
+
+      <section id="signals" class="studio-section">
+        <div class="section-heading"><div><span>03</span><h2>信号与因子</h2></div><p>因子库产物以派生数据集和稳定因子 ID 接入。</p></div>
+        <div class="form-grid two">
+          <label><span>因子 ID（逗号分隔）</span><input id="factor-ids" value="momentum_12m,volatility_20d"></label>
+          <label><span>信号方向</span><select id="signal-direction"><option value="long_only">仅做多</option><option value="long_short">多空</option></select></label>
+          <label><span>排序方式</span><select id="signal-ranking"><option value="descending">降序</option><option value="ascending">升序</option></select></label>
+          <label><span>调仓频率</span><select id="signal-frequency"><option value="monthly">每月</option><option value="weekly">每周</option><option value="daily">每日</option></select></label>
+        </div>
+      </section>
+
+      <section id="portfolio" class="studio-section">
+        <div class="section-heading"><div><span>04</span><h2>组合构建</h2></div><p>把信号转换为可复现的目标权重。</p></div>
+        <div class="form-grid three">
+          <label><span>权重方法</span><select id="weighting"><option value="equal_weight">等权</option><option value="signal_weight">信号加权</option><option value="risk_parity">风险平价</option></select></label>
+          <label><span>最大持仓数</span><input id="max-positions" type="number" min="1" value="10"></label>
+          <label><span>目标总敞口</span><input id="gross-exposure" type="number" min="0" step="0.1" value="1"></label>
+        </div>
+      </section>
+
+      <section id="risk" class="studio-section">
+        <div class="section-heading"><div><span>05</span><h2>风险约束</h2></div><p>声明回测前置的组合与单标的约束。</p></div>
+        <div class="form-grid three">
+          <label><span>最大回撤阈值</span><input id="max-drawdown" type="number" min="0" max="1" step="0.01" value="0.20"></label>
+          <label><span>单标的最大权重</span><input id="max-position-weight" type="number" min="0" max="1" step="0.01" value="0.20"></label>
+          <label><span>止损阈值</span><input id="stop-loss" type="number" min="0" max="1" step="0.01" value="0.10"></label>
+        </div>
+      </section>
+
+      <section id="execution" class="studio-section">
+        <div class="section-heading"><div><span>06</span><h2>执行假设</h2></div><p>显式记录成本与成交假设，避免回测口径漂移。</p></div>
+        <div class="form-grid three">
+          <label><span>成交时点</span><select id="fill-timing"><option value="next_open">次日开盘</option><option value="same_close">当日收盘</option><option value="vwap">VWAP</option></select></label>
+          <label><span>佣金率</span><input id="commission" type="number" min="0" step="0.0001" value="0.0003"></label>
+          <label><span>滑点率</span><input id="slippage" type="number" min="0" step="0.0001" value="0.001"></label>
+        </div>
+      </section>
+
+      <section id="code" class="studio-section">
+        <div class="section-heading"><div><span>07</span><h2>策略代码</h2></div><p>保存源码摘要与运行入口；当前候选版不直接执行代码。</p></div>
+        <label class="code-editor"><span>Python 源码</span><textarea id="strategy-source" spellcheck="false">def generate_targets(context):
+    return context.rank("momentum_12m").top(10).equal_weight()</textarea></label>
+        <div class="hash-row"><span>SHA-256</span><code id="source-hash">计算中…</code></div>
+      </section>
+
+      <section id="validation" class="studio-section">
+        <div class="section-heading"><div><span>08</span><h2>验证与保存</h2></div><p>保存前检查身份、数据集可用性与关键研究声明。</p></div>
+        <div class="validation-grid">
+          <label class="check-card"><input id="pit-check" type="checkbox" checked><span><strong>时点一致性</strong><small>要求使用当时可见数据，防止未来信息泄漏。</small></span></label>
+          <label class="check-card"><input id="survivorship-check" type="checkbox" checked><span><strong>生存者偏差</strong><small>证券范围需保留历史成员关系。</small></span></label>
+          <label class="check-card"><input id="oos-check" type="checkbox" checked><span><strong>样本外验证</strong><small>正式回测前必须声明样本外区间。</small></span></label>
+        </div>
+        <div id="validation-output" class="validation-output" aria-live="polite">尚未保存。</div>
+        <div class="save-row">
+          <p>保存将创建不可变策略版本；如需修改，请递增版本号。</p>
+          <button id="save-manifest" type="button">验证并保存策略清单</button>
+        </div>
+      </section>
+
+      <section class="studio-section library-section">
+        <div class="section-heading"><div><span>LIB</span><h2>策略版本库</h2></div><p>已保存的不可变策略清单。</p></div>
+        <div class="table-shell">
+          <table data-vtable-mode="edit" aria-label="策略版本库">
+            <thead><tr><th>策略 ID</th><th>版本</th><th>名称</th><th>数据集</th><th>验证状态</th><th>创建时间</th></tr></thead>
+            <tbody id="manifest-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/vendor/vtable/vtable.min.js?v=1.23.1"></script>
+  <script src="/vtable-adapter.js?v=2"></script>
+  <script src="/strategy-studio.js?v=1"></script>
+</body>
+</html>

@@ -52,9 +52,9 @@ def main() -> None:
         "stage76-result-tabs",
         "renderStage76ResultDetails",
         "loadStage76EmbeddedReport",
-        "单股择时报告",
-        "全市场普查报告",
-        "多票组合报告",
+        "window.ReportUI?.renderSingleAnalysis",
+        "window.ReportUI?.renderBatchAnalysis",
+        "window.ReportUI?.renderPortfolioAnalysis",
         "仅支持相同回测模式的 Run 对比",
         "oldTabs.remove()",
         'const editorMeta = $("#strategy-editor-meta")',
@@ -63,7 +63,7 @@ def main() -> None:
         "stage76TaskPageSize",
         "stage76-task-table-header",
         "stage76-retired-result-technical",
-        'action==="result" || action==="report"',
+        'action==="analysis" || action==="result" || action==="report"',
         "configureStage76ModeForm",
         "syncStage76CommonFields",
         "setStage76ModeTaskState",
@@ -82,8 +82,7 @@ def main() -> None:
         "versionSelectorBlock.append(versionHistory)",
         "stage76-code-resize-handle",
         "stage76-sidebar-subnav",
-        'data-stage76-form-action="result"',
-        'data-stage76-form-action="report"',
+        'data-stage76-form-action="analysis"',
         '"function-call"',
     ]:
         assert marker in app_js, marker
@@ -97,7 +96,8 @@ def main() -> None:
     assert 'if(task.mode==="single") { activatePage("reporting")' not in app_js
     for marker in [".stage76-workspace-nav", ".stage76-task-row", ".stage76-result-tabs", ".stage76-report-hero", ".stage76-task-pager", "Stage 76.2 PC density", "Stage 76.3 unified forms", ".stage76-mode-form", ".stage76-mode-task-state", "Stage 76.4 strategy editor", ".stage76-code-editor-shell", "Stage 76.5 compact current-task strip", "Stage 76.6 strategy guide", "Stage 76.7 restored version selector", "Stage 76.9 sidebar workspace navigation"]:
         assert marker in css, marker
-    assert "/app.js?v=769" in html and "/styles.css?v=769" in html
+    assert "/app.js?v=780" in html and "/styles.css?v=769" in html
+    assert "/report-ui.js?v=780" in html and "/report-ui.css?v=780" in html
 
     with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
         service = SingleBacktestTaskService(_BacktestService(), Path(temp_dir) / "single.sqlite3")

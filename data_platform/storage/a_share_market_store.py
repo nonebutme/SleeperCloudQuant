@@ -322,8 +322,11 @@ class AShareMarketStore:
 
     def get_overview(self) -> dict[str, Any]:
         if not self.is_available():
-            return {"status": "unavailable", "source": "canonical_a_share_sqlite",
-                    "read_only": False}
+            return {
+                "status": "unavailable",
+                "source": "canonical_a_share_sqlite",
+                "read_only": False,
+            }
         with closing(self._connect(read_only=True)) as connection:
             catalog_symbol_count = int(connection.execute(
                 "SELECT COUNT(*) FROM market_symbols"
@@ -332,21 +335,84 @@ class AShareMarketStore:
                 "SELECT COUNT(*) FROM market_symbols WHERE listing_status='current'"
             ).fetchone()[0])
             historical_catalog_count = catalog_symbol_count - current_symbol_count
-            history_count = int(connection.execute(
-                "SELECT COUNT(DISTINCT symbol) FROM market_daily_prices WHERE adjustment='raw'"
-            ).fetchone()[0])
+
+            published_version = None
+            published_members: dict[str, sqlite3.Row] = {}
+            has_versions = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='data_versions'
+                """
+            ).fetchone()
+            if has_versions:
+                published_version = connection.execute(
+                    """
+                    SELECT data_version_id, as_of_trade_date, quality_report_id
+                    FROM data_versions WHERE status='published'
+                    ORDER BY as_of_trade_date DESC, published_at DESC LIMIT 1
+                    """
+                ).fetchone()
+                if published_version:
+                    published_members = {
+                        str(row["adjustment"]): row
+                        for row in connection.execute(
+                            """
+                            SELECT adjustment, row_count, symbol_count,
+                                   min_date, max_date, quality_status
+                            FROM data_version_members
+                            WHERE data_version_id=?
+                              AND dataset='market_daily_prices'
+                            """,
+                            (published_version["data_version_id"],),
+                        ).fetchall()
+                    }
+
+            raw_member = published_members.get("raw")
+            history_count = (
+                int(raw_member["symbol_count"] or 0)
+                if raw_member is not None
+                else int(connection.execute(
+                    """
+                    SELECT COUNT(DISTINCT symbol) FROM market_daily_prices
+                    WHERE adjustment='raw'
+                    """
+                ).fetchone()[0])
+            )
             adjustments = {}
             for mode in TABLES:
-                row = connection.execute(
+                member = published_members.get(mode)
+                observed = connection.execute(
                     """
-                    SELECT COUNT(*) AS rows, COUNT(DISTINCT symbol) AS symbols,
-                           MIN(trade_date) AS min_date, MAX(trade_date) AS max_date
-                    FROM market_daily_prices WHERE adjustment=?
+                    SELECT trade_date FROM market_daily_prices
+                    WHERE adjustment=? ORDER BY trade_date DESC LIMIT 1
                     """,
                     (mode,),
                 ).fetchone()
-                max_date = str(row["max_date"] or "")
-                stale_days = (date.today() - date.fromisoformat(max_date)).days if max_date else None
+                observed_max_date = str(observed["trade_date"] or "") if observed else ""
+                if member is not None:
+                    row_count = int(member["row_count"] or 0)
+                    symbol_count = int(member["symbol_count"] or 0)
+                    min_date = member["min_date"]
+                    max_date = str(member["max_date"] or "")
+                    member_quality = str(member["quality_status"] or "")
+                else:
+                    row = connection.execute(
+                        """
+                        SELECT COUNT(*) AS rows, COUNT(DISTINCT symbol) AS symbols,
+                               MIN(trade_date) AS min_date, MAX(trade_date) AS max_date
+                        FROM market_daily_prices WHERE adjustment=?
+                        """,
+                        (mode,),
+                    ).fetchone()
+                    row_count = int(row["rows"] or 0)
+                    symbol_count = int(row["symbols"] or 0)
+                    min_date = row["min_date"]
+                    max_date = str(row["max_date"] or "")
+                    member_quality = ""
+                stale_days = (
+                    (date.today() - date.fromisoformat(max_date)).days
+                    if max_date else None
+                )
                 fresh_current_symbol_count = int(connection.execute(
                     """
                     SELECT COUNT(DISTINCT p.symbol)
@@ -359,44 +425,64 @@ class AShareMarketStore:
                 ).fetchone()[0]) if max_date else 0
                 fresh_coverage_pct = (
                     fresh_current_symbol_count / current_symbol_count * 100
-                    if current_symbol_count
-                    else 0.0
+                    if current_symbol_count else 0.0
+                )
+                quality_status = (
+                    "passed"
+                    if member_quality in {"", "passed"}
+                    and stale_days is not None
+                    and stale_days <= 7
+                    and fresh_coverage_pct >= 98.0
+                    else "needs_attention"
                 )
                 adjustments[mode] = {
                     "table": "market_daily_prices",
-                    "row_count": int(row["rows"] or 0),
-                    "symbol_count": int(row["symbols"] or 0),
-                    "min_date": row["min_date"], "max_date": row["max_date"],
-                    "duplicate_row_count": 0, "stale_days": stale_days,
+                    "row_count": row_count,
+                    "symbol_count": symbol_count,
+                    "min_date": min_date,
+                    "max_date": max_date,
+                    "observed_max_date": observed_max_date,
+                    "has_unpublished_observations": bool(
+                        observed_max_date and observed_max_date > max_date
+                    ),
+                    "duplicate_row_count": 0,
+                    "stale_days": stale_days,
                     "fresh_current_symbol_count": fresh_current_symbol_count,
                     "missing_current_symbol_count": max(
                         0, current_symbol_count - fresh_current_symbol_count
                     ),
                     "fresh_coverage_pct": round(fresh_coverage_pct, 4),
-                    "quality_status": (
-                        "passed"
-                        if stale_days is not None
-                        and stale_days <= 7
-                        and fresh_coverage_pct >= 98.0
-                        else "needs_attention"
-                    ),
+                    "quality_status": quality_status,
                 }
         return {
-            "status": "ready", "source": "canonical_a_share_sqlite",
-            "provider": "akshare", "database_path": str(self.database_path.resolve()),
-            "database_size_bytes": self.database_path.stat().st_size, "read_only": False,
+            "status": "ready",
+            "source": "canonical_a_share_sqlite",
+            "provider": "akshare",
+            "database_path": str(self.database_path.resolve()),
+            "database_size_bytes": self.database_path.stat().st_size,
+            "read_only": False,
+            "published_data_version": (
+                str(published_version["data_version_id"])
+                if published_version else None
+            ),
+            "published_as_of_trade_date": (
+                str(published_version["as_of_trade_date"])
+                if published_version else None
+            ),
             "catalog_symbol_count": catalog_symbol_count,
-            "current_symbol_count": current_symbol_count, "current_symbol_duplicate_count": 0,
+            "current_symbol_count": current_symbol_count,
+            "current_symbol_duplicate_count": 0,
             "history_symbol_count": history_count,
             "history_only_symbol_count": historical_catalog_count,
-            "markets": ["SSE", "SZSE", "BSE"], "adjustments": adjustments,
+            "markets": ["SSE", "SZSE", "BSE"],
+            "adjustments": adjustments,
             "acceptance_scope": {
-                "frequency": "daily", "start_date": adjustments["raw"]["min_date"],
+                "frequency": "daily",
+                "start_date": adjustments["raw"]["min_date"],
                 "end_date": adjustments["raw"]["max_date"],
                 "includes_historical_symbols": True,
             },
         }
-
     def list_symbols(
         self, *, query: str = "", market: str = "", limit: int = 100, offset: int = 0,
     ) -> dict[str, Any]:
@@ -438,6 +524,7 @@ class AShareMarketStore:
         code = _normalize_symbol(symbol)
         mode = _normalize_adjustment(adjustment)
         filters = ["symbol=?", "adjustment=?"]
+        filters.append("NOT EXISTS (SELECT 1 FROM security_trading_status_daily s WHERE s.symbol=market_daily_prices.symbol AND s.trade_date=market_daily_prices.trade_date AND s.is_tradable=0)")
         values: list[Any] = [code, mode]
         if start_date:
             filters.append("trade_date>=?")
@@ -448,6 +535,11 @@ class AShareMarketStore:
         where = " AND ".join(filters)
         page_limit = max(1, min(int(limit), 2000))
         page_offset = max(0, int(offset))
+        quality: dict[str, Any] = {
+            "status": "not_evaluated",
+            "missing_count": None,
+            "invalid_count": None,
+        }
         with closing(self._connect(read_only=True)) as connection:
             total = int(connection.execute(
                 f"SELECT COUNT(*) FROM market_daily_prices WHERE {where}", values
@@ -459,11 +551,83 @@ class AShareMarketStore:
                     ORDER BY trade_date DESC LIMIT ? OFFSET ?""",
                 (*values, page_limit, page_offset),
             ).fetchall()
+            coverage_start_row = connection.execute(
+                "SELECT MIN(trade_date) FROM market_daily_prices WHERE symbol=? AND adjustment=?",
+                (code, mode),
+            ).fetchone()
+            coverage_start_date = coverage_start_row[0] if coverage_start_row else None
+            if start_date and end_date:
+                missing = connection.execute(
+                    """
+                    SELECT COUNT(*) AS count,
+                           MIN(cal.trade_date) AS first_missing_date,
+                           MAX(cal.trade_date) AS last_missing_date
+                    FROM market_trade_calendar cal
+                    WHERE cal.market='CN' AND cal.is_open=1
+                      AND cal.trade_date BETWEEN ? AND ?
+                      AND cal.trade_date >= MAX(
+                          COALESCE((
+                              SELECT MIN(effective_from) FROM security_lifecycle_events
+                              WHERE symbol=? AND event_type='listed'
+                          ), ?),
+                          COALESCE((
+                              SELECT MIN(first_price.trade_date) FROM market_daily_prices first_price
+                              WHERE first_price.symbol=? AND first_price.adjustment=?
+                          ), ?)
+                      )
+                      AND cal.trade_date < COALESCE((
+                          SELECT MIN(effective_from)
+                          FROM security_lifecycle_events
+                          WHERE symbol=? AND event_type IN ('delisted','terminated')
+                      ), '9999-12-31')
+                      AND NOT EXISTS (
+                          SELECT 1 FROM market_daily_prices p
+                          WHERE p.symbol=? AND p.adjustment=?
+                            AND p.trade_date=cal.trade_date
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM security_trading_status_daily s
+                          WHERE s.symbol=? AND s.trade_date=cal.trade_date
+                            AND s.is_tradable=0
+                      )
+                    """,
+                    (str(start_date), str(end_date), code, str(start_date), code, mode,
+                     str(start_date), code, code, mode, code),
+                ).fetchone()
+                invalid_count = int(connection.execute(
+                    f"""SELECT COUNT(*) FROM market_daily_prices
+                        WHERE {where} AND (
+                            open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+                            OR high < MAX(open, close, low)
+                            OR low > MIN(open, close, high)
+                            OR volume < 0
+                        )""",
+                    values,
+                ).fetchone()[0])
+                missing_count = int(missing["count"] or 0)
+                outside_coverage = bool(
+                    coverage_start_date and str(end_date) < str(coverage_start_date)
+                )
+                quality = {
+                    "status": (
+                        "outside_coverage" if outside_coverage
+                        else "passed" if missing_count == 0 and invalid_count == 0
+                        else "needs_attention"
+                    ),
+                    "expected_count": None if outside_coverage else total + missing_count,
+                    "stored_count": total,
+                    "missing_count": None if outside_coverage else missing_count,
+                    "first_missing_date": missing["first_missing_date"],
+                    "last_missing_date": missing["last_missing_date"],
+                    "coverage_start_date": coverage_start_date,
+                    "invalid_count": invalid_count,
+                }
         return {
             "status": "ready", "source": "canonical_a_share_sqlite", "provider": "akshare",
             "read_only": False, "symbol": code, "market": _market(code), "adjustment": mode,
             "start_date": start_date, "end_date": end_date, "total": total,
             "duplicate_rows_removed": 0, "limit": page_limit, "offset": page_offset,
+            "quality": quality,
             "rows": [dict(row) for row in rows],
         }
 
@@ -480,6 +644,7 @@ class AShareMarketStore:
         code = _normalize_symbol(symbol)
         mode = _normalize_adjustment(adjustment)
         filters = ["symbol=?", "adjustment=?"]
+        filters.append("NOT EXISTS (SELECT 1 FROM security_trading_status_daily s WHERE s.symbol=market_daily_prices.symbol AND s.trade_date=market_daily_prices.trade_date AND s.is_tradable=0)")
         values: list[Any] = [code, mode]
         if start_date:
             filters.append("trade_date>=?")

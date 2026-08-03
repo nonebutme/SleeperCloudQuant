@@ -1,4 +1,4 @@
-﻿"""Minimal reporting-domain models."""
+"""Minimal reporting-domain models."""
 
 from __future__ import annotations
 
@@ -20,10 +20,25 @@ class BacktestRunDetailModel:
     extra_config: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
     account_value_chart: list[dict[str, Any]] = field(default_factory=list)
+    drawdown_curve: list[dict[str, Any]] = field(default_factory=list)
+    benchmark_curve: list[dict[str, Any]] = field(default_factory=list)
+    excess_curve: list[dict[str, Any]] = field(default_factory=list)
     trade_activity_chart: list[dict[str, Any]] = field(default_factory=list)
     position_exposure_chart: list[dict[str, Any]] = field(default_factory=list)
     yearly_return_chart: list[dict[str, Any]] = field(default_factory=list)
-
+    trades: list[dict[str, Any]] = field(default_factory=list)
+    positions: list[dict[str, Any]] = field(default_factory=list)
+    accounts: list[dict[str, Any]] = field(default_factory=list)
+    price_bars: list[dict[str, Any]] = field(default_factory=list)
+    signal_evidence: dict[str, Any] = field(default_factory=dict)
+    monthly_return_heatmap: dict[str, Any] = field(default_factory=dict)
+    excess_drawdown_curve: list[dict[str, Any]] = field(default_factory=list)
+    market_regimes: dict[str, Any] = field(default_factory=dict)
+    execution_quality: dict[str, Any] = field(default_factory=dict)
+    cost_capacity_stress: dict[str, Any] = field(default_factory=dict)
+    robustness: dict[str, Any] = field(default_factory=dict)
+    parameter_sensitivity: dict[str, Any] = field(default_factory=dict)
+    report_governance: dict[str, Any] = field(default_factory=dict)
 
 @dataclass(frozen=True, slots=True)
 class BatchExperimentRowModel:

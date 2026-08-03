@@ -1,4 +1,5 @@
 """Static smoke checks for Stage 73 backtest history, selection and encoding fixes."""
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,5 +22,18 @@ require('document.querySelectorAll("[data-report-package]")' in JS, "report pack
 require('document.querySelectorAll("[data-report-package-directory]")' in JS, "report package directory selected state missing")
 require("background: #eef5fb" in CSS and "independent-result-run-list button.is-selected" in CSS, "pale selected background missing")
 require("???" not in JS and "\ufffd" not in JS + HTML + CSS, "mojibake marker remains")
-require("/app.js?v=769" in HTML and "/styles.css?v=769" in HTML, "static cache version missing")
+asset_versions = dict(
+    re.findall(r"/(styles\.css|app\.js|report-ui\.css|report-ui\.js)\?v=(\d+)", HTML)
+)
+require(
+    {"styles.css", "app.js", "report-ui.css", "report-ui.js"} <= asset_versions.keys(),
+    "static cache version missing",
+)
+require(
+    asset_versions["report-ui.css"]
+    == asset_versions["report-ui.js"]
+    == asset_versions["app.js"]
+    and int(asset_versions["app.js"]) >= int(asset_versions["styles.css"]),
+    "static cache versions are inconsistent",
+)
 print("Stage 73 history/selection/encoding smoke passed")

@@ -1,0 +1,29 @@
+const baseUrl=process.argv[2]||"http://127.0.0.1:8010";
+const debugUrl=process.argv[3]||"http://127.0.0.1:9224/json";
+const debugOrigin=new URL(debugUrl).origin;
+const target=await fetch(`${debugOrigin}/json/new?${encodeURIComponent("about:blank")}`,{method:"PUT"}).then(r=>r.json());
+const socket=new WebSocket(target.webSocketDebuggerUrl);
+await new Promise((resolve,reject)=>{socket.addEventListener("open",resolve,{once:true});socket.addEventListener("error",reject,{once:true})});
+let sequence=0;const pending=new Map(),exceptions=[];
+socket.addEventListener("message",event=>{const message=JSON.parse(String(event.data));if(message.id&&pending.has(message.id)){const request=pending.get(message.id);pending.delete(message.id);message.error?request.reject(new Error(JSON.stringify(message.error))):request.resolve(message.result||{})}if(message.method==="Runtime.exceptionThrown")exceptions.push(message.params?.exceptionDetails?.exception?.description||message.params?.exceptionDetails?.text||"Runtime exception")});
+const command=(method,params={})=>{const id=++sequence;socket.send(JSON.stringify({id,method,params}));return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}))};
+const evaluate=async(expression,awaitPromise=false)=>{const response=await command("Runtime.evaluate",{expression,awaitPromise,returnByValue:true});if(response.exceptionDetails)throw new Error(JSON.stringify(response.exceptionDetails));return response.result?.value};
+const wait=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
+try{
+  await command("Page.enable");await command("Runtime.enable");
+  await command("Page.addScriptToEvaluateOnNewDocument",{source:`(()=>{const original=window.fetch.bind(window);window.__deleteCalls=[];window.confirm=()=>true;window.fetch=async(input,init={})=>{const url=String(input);if(String(init.method||'GET').toUpperCase()==='DELETE'&&url.includes('/api/data-center/sync/tasks/')){window.__deleteCalls.push({url,method:'DELETE'});return new Response(JSON.stringify({result:{job_id:decodeURIComponent(url.split('/').pop()),status:'deleted',market_data_deleted:false}}),{status:200,headers:{'Content-Type':'application/json'}})}return original(input,init)}})();`});
+  await command("Emulation.setDeviceMetricsOverride",{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+  await command("Page.navigate",{url:`${baseUrl}/?page=market&dc_view=sync`});await wait(6500);
+  const before=await evaluate(`(()=>{const button=document.querySelector('[data-task-delete]');return{button:!!button,jobId:button?.dataset.taskDelete||'',label:button?.textContent||'',active:document.querySelector('.dc-view.is-active')?.id||''}})()`);
+  if(!before.button)throw new Error(JSON.stringify({phase:"delete-button",before,exceptions}));
+  await evaluate(`document.querySelector('[data-task-delete]').click()`);await wait(1200);
+  const deletion=await evaluate(`(()=>({calls:window.__deleteCalls,feedback:document.querySelector('#global-feedback')?.textContent||'',stillUsable:!!document.querySelector('#dc-sync-task-list')}))()`);
+  await evaluate(`document.querySelector('[data-dc-view="quality"]').click()`);await wait(2500);
+  const widths=[1920,1440,1280,1024,768,480,390],responsive=[];
+  for(const width of widths){await command("Emulation.setDeviceMetricsOverride",{width,height:1000,deviceScaleFactor:1,mobile:false});await wait(500);responsive.push(await evaluate(`(()=>{const root=document.querySelector('#dc-view-quality'),surface=root?.querySelector('.dc-surface'),control=root?.querySelector('button:not([disabled]),input,select'),styles=getComputedStyle(surface||root),controlStyles=getComputedStyle(control||root),workspace=getComputedStyle(root?.querySelector('.dc-quality-workspace')||root);return{width:${width},body:document.body.clientWidth,scroll:document.body.scrollWidth,active:root?.classList.contains('is-active')===true,summaryColumns:getComputedStyle(root?.querySelector('.dc-quality-summary')||root).gridTemplateColumns,workspaceColumns:workspace.gridTemplateColumns,surfaceRadius:styles.borderRadius,controlHeight:Math.round(control?.getBoundingClientRect().height||0),controlRadius:controlStyles.borderRadius}})()`))}
+  await evaluate(`document.documentElement.setAttribute('data-theme','dark')`);await wait(300);
+  const theme=await evaluate(`(()=>{const shell=document.querySelector('.quant-ui-standard')||document.body,surface=document.querySelector('#dc-view-quality .dc-surface');return{token:getComputedStyle(shell).getPropertyValue('--q-bg-card').trim(),surface:getComputedStyle(surface).backgroundColor}})()`);
+  const checks={deleteButton:before.button&&before.label.includes("删除"),deleteRequest:deletion.calls.length===1&&deletion.calls[0].url.endsWith(encodeURIComponent(before.jobId)),deleteFeedback:deletion.feedback.includes("已同步数据未删除"),allWidthsActive:responsive.every(x=>x.active),allWidthsNoOverflow:responsive.every(x=>x.scroll<=x.body+2),desktopWorkspace:responsive.filter(x=>x.width>=1280).every(x=>x.workspaceColumns.split(" ").length>=2),compactWorkspace:responsive.filter(x=>x.width<=1024).every(x=>x.workspaceColumns.split(" ").length===1),globalControlSize:responsive.every(x=>x.controlHeight>=32&&x.controlRadius==="4px"),globalCardRadius:responsive.every(x=>x.surfaceRadius==="6px"),darkTheme:theme.token.length>0&&theme.surface.length>0,noExceptions:exceptions.length===0};
+  if(Object.values(checks).some(value=>value!==true))throw new Error(JSON.stringify({checks,before,deletion,responsive,theme,exceptions},null,2));
+  console.log(JSON.stringify({checks,before,responsive,theme},null,2));
+}finally{await command("Page.close").catch(()=>{});socket.close()}

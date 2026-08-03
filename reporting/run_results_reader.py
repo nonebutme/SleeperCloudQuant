@@ -45,14 +45,15 @@ class RunResultsReader:
             for row in self._store.fetch_backtest_metrics(run_id)
         }
         metrics = _fill_derived_metrics(metrics)
+        raw_result = dict(run.get("raw_result") or {})
         return BacktestRunDetail(
             run=run,
             metrics=metrics,
             logs=self._store.fetch_backtest_logs(run_id),
-            trades=self._store.fetch_backtest_trades(run_id),
-            positions=self._store.fetch_backtest_positions(run_id),
+            trades=_merge_artifact_rows(self._store.fetch_backtest_trades(run_id), raw_result.get("trades") or []),
+            positions=_merge_artifact_rows(self._store.fetch_backtest_positions(run_id), raw_result.get("positions") or []),
             accounts=_ensure_account_snapshot_times(
-                self._store.fetch_backtest_accounts(run_id),
+                _merge_artifact_rows(self._store.fetch_backtest_accounts(run_id), raw_result.get("accounts") or []),
                 fallback_time=str(run.get("completed_at") or run.get("created_at") or ""),
             ),
             yearly_returns=self._store.fetch_backtest_yearly_returns(run_id),
@@ -179,6 +180,14 @@ class RunResultsReader:
             )
         return sorted(rows, key=lambda item: item["year"])
 
+
+def _merge_artifact_rows(
+    persisted: Sequence[Mapping[str, Any]],
+    raw: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    if len(persisted) != len(raw):
+        return [dict(row) for row in persisted]
+    return [{**dict(saved), **dict(source)} for saved, source in zip(persisted, raw)]
 
 def _ensure_account_snapshot_times(
     accounts: Sequence[Mapping[str, Any]],

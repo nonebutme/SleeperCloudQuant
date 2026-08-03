@@ -27,6 +27,7 @@ from domain.report.models import (
     BacktestRunDetailModel,
 )
 from reporting import BatchComparisonService, RunResultsReader
+from app.services.backtest_advanced_analysis import build_advanced_analysis
 
 
 class ReportingService:
@@ -47,6 +48,22 @@ class ReportingService:
         if detail is None:
             return None
         run = dict(detail.run)
+        raw_result = dict(run.get("raw_result") or {})
+        account_value_chart = _dict_rows(self._results_reader.build_account_value_chart(detail))
+        benchmark_curve = _dict_rows(raw_result.get("benchmark_curve") or [])
+        excess_curve = _dict_rows(raw_result.get("excess_curve") or [])
+        trades = _dict_rows(detail.trades)
+        positions = _dict_rows(detail.positions)
+        accounts = _dict_rows(detail.accounts)
+        advanced = build_advanced_analysis(
+            account_rows=accounts,
+            benchmark_curve=benchmark_curve,
+            excess_curve=excess_curve,
+            trades=trades,
+            metrics=dict(detail.metrics),
+            raw_result=raw_result,
+            extra_config=dict(run.get("extra_config") or {}),
+        )
         return BacktestRunDetailModel(
             run_id=str(run.get("run_id") or run_id),
             strategy_name=str(run.get("strategy_name") or "--"),
@@ -57,9 +74,10 @@ class ReportingService:
             strategy_id=_optional_str(run.get("strategy_id")),
             extra_config=dict(run.get("extra_config") or {}),
             metrics=dict(detail.metrics),
-            account_value_chart=_dict_rows(
-                self._results_reader.build_account_value_chart(detail)
-            ),
+            account_value_chart=account_value_chart,
+            drawdown_curve=_account_drawdown_curve(account_value_chart),
+            benchmark_curve=benchmark_curve,
+            excess_curve=excess_curve,
             trade_activity_chart=_dict_rows(
                 self._results_reader.build_trade_activity_chart(detail)
             ),
@@ -69,6 +87,19 @@ class ReportingService:
             yearly_return_chart=_dict_rows(
                 self._results_reader.build_yearly_return_chart(detail)
             ),
+            trades=trades,
+            positions=positions,
+            accounts=accounts,
+            price_bars=list(advanced["price_bars"]),
+            signal_evidence=dict(advanced["signal_evidence"]),
+            monthly_return_heatmap=dict(advanced["monthly_return_heatmap"]),
+            excess_drawdown_curve=list(advanced["excess_drawdown_curve"]),
+            market_regimes=dict(advanced["market_regimes"]),
+            execution_quality=dict(advanced["execution_quality"]),
+            cost_capacity_stress=dict(advanced["cost_capacity_stress"]),
+            robustness=dict(advanced["robustness"]),
+            parameter_sensitivity=dict(advanced["parameter_sensitivity"]),
+            report_governance=dict(advanced["report_governance"]),
         )
 
     def get_strategy_evaluation(self, run_id: str) -> StrategyEvaluationReportPayload | None:
@@ -1947,6 +1978,20 @@ def _to_batch_row_model(row: Any) -> BatchExperimentRowModel:
     )
 
 
+def _account_drawdown_curve(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    peak: float | None = None
+    points: list[dict[str, Any]] = []
+    for row in rows:
+        value = _optional_float(row.get("total_value"))
+        if value is None or value <= 0:
+            continue
+        peak = value if peak is None else max(peak, value)
+        points.append({
+            "snapshot_time": row.get("snapshot_time"),
+            "value": value / peak - 1.0 if peak else 0.0,
+        })
+    return points
+
 def _dict_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [dict(item) for item in rows]
 
@@ -1955,42 +2000,3 @@ def _optional_str(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

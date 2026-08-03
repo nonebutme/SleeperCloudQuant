@@ -29,7 +29,7 @@ def main() -> None:
         assert marker in app, marker
     for marker in ["Stage 75 PC quant workbench", ".strategy-pc-workbench", ".stage75-result-dock", ".comparison-chart-grid"]:
         assert marker in css, marker
-    assert "/app.js?v=769" in html
+    assert "/app.js?v=780" in html
     assert "/styles.css?v=769" in html
     assert "最多同时对比 4 个 Run" in app
     assert "不会自动启动" in app

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from app.api.contracts import RouteDefinition
 from app.schemas.market import (
@@ -8,6 +8,10 @@ from app.schemas.market import (
     AShareOverviewResponse,
     AShareSymbolsQuery,
     AShareSymbolsResponse,
+    IndexDailyPricesQuery,
+    IndexDailyPricesResponse,
+    IndexSymbolsQuery,
+    IndexSymbolsResponse,
     MarketDataBrowserQuery,
     MarketDataBrowserResponse,
     MarketLocalPriceBarStatusQuery,
@@ -20,6 +24,8 @@ from app.schemas.market import (
     MarketLocalPriceBarRepairResponse,
     MarketLocalPriceBarsQuery,
     MarketLocalPriceBarsResponse,
+    MarketPanoramaQuery,
+    MarketPanoramaResponse,
     MarketPriceHistoryQuery,
     MarketPriceHistoryResponse,
     MarketSyncPriceHistoryRequest,
@@ -65,6 +71,44 @@ def get_a_share_daily_prices(
         offset=query.offset,
     ))
 
+
+def get_index_symbols(
+    service: MarketDataService,
+    query: IndexSymbolsQuery,
+) -> IndexSymbolsResponse:
+    catalog = service.list_index_symbols()
+    if query.market:
+        catalog = {
+            **catalog,
+            "items": [
+                item for item in catalog["items"]
+                if str(item.get("market") or "") == query.market
+            ],
+        }
+    return IndexSymbolsResponse(catalog=catalog)
+
+
+def get_index_daily_prices(
+    service: MarketDataService,
+    query: IndexDailyPricesQuery,
+) -> IndexDailyPricesResponse:
+    return IndexDailyPricesResponse(daily=service.get_index_daily_prices(
+        index_symbol=query.index_symbol,
+        start_date=query.start_date,
+        end_date=query.end_date,
+        limit=query.limit,
+        offset=query.offset,
+    ))
+
+
+def get_market_panorama(service: MarketDataService, query: MarketPanoramaQuery) -> MarketPanoramaResponse:
+    return MarketPanoramaResponse(
+        panorama=service.get_market_panorama(
+            trade_date=query.trade_date,
+            symbol=query.symbol,
+            asset_type=query.asset_type,
+        )
+    )
 
 def get_market_data_browser(service: MarketDataService, query: MarketDataBrowserQuery) -> MarketDataBrowserResponse:
     return MarketDataBrowserResponse(
@@ -189,6 +233,26 @@ def build_market_routes(service: MarketDataService) -> list[RouteDefinition]:
             request_model=AShareDailyPricesQuery,
         ),
         RouteDefinition(
+            method="GET",
+            path="/api/market/index-symbols",
+            name="market_index_symbols",
+            handler=lambda query: get_index_symbols(service, query),
+            request_model=IndexSymbolsQuery,
+        ),
+        RouteDefinition(
+            method="GET",
+            path="/api/market/index-daily",
+            name="market_index_daily",
+            handler=lambda query: get_index_daily_prices(service, query),
+            request_model=IndexDailyPricesQuery,
+        ),
+        RouteDefinition(
+            method="GET",
+            path="/api/market/panorama",
+            name="market_panorama",
+            handler=lambda query: get_market_panorama(service, query),
+            request_model=MarketPanoramaQuery,
+        ),        RouteDefinition(
             method="GET",
             path="/api/market/data-browser",
             name="market_data_browser",

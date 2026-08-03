@@ -1,4 +1,4 @@
-﻿"""Configuration center service for the Web MVP."""
+"""Configuration center service for the Web MVP."""
 
 from __future__ import annotations
 
@@ -17,13 +17,20 @@ from config_center import UnifiedConfigManager
 class ConfigCenterService:
     """Expose TradingAgents-style runtime configuration status without leaking secrets."""
 
-    def __init__(self, manager: UnifiedConfigManager | None = None, draft_path: Path | None = None, sync_task_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        manager: UnifiedConfigManager | None = None,
+        draft_path: Path | None = None,
+        sync_task_path: Path | None = None,
+        a_share_scheduler: Any | None = None,
+    ) -> None:
         self._manager = manager or UnifiedConfigManager()
         self._draft_path = draft_path or Path("var/runtime/config_runtime_draft.json")
         self._sync_task_path = sync_task_path or Path("var/runtime/market_provider_sync_tasks.json")
         self._market_bar_store = SqliteMetadataStore(Path("tmp") / "formal_http_demo.sqlite3")
         self._market_sync_tasks: dict[str, dict[str, Any]] = {}
         self._market_sync_task_counter = 0
+        self._a_share_scheduler = a_share_scheduler
 
     def get_status(self) -> dict[str, Any]:
         profiles = self._manager.get_backtest_profiles()
@@ -283,6 +290,89 @@ class ConfigCenterService:
         self._save_market_provider_sync_tasks()
         return self._public_sync_task(task)
 
+    def get_a_share_scheduler_status(self) -> dict[str, Any]:
+        if self._a_share_scheduler is None:
+            return {"status": "unsupported", "reason": "a_share_scheduler_not_configured"}
+        return dict(self._a_share_scheduler.get_status())
+
+    def configure_a_share_scheduler(
+        self,
+        *,
+        enabled: bool,
+        run_time: str,
+        timezone_name: str,
+        adjustments: list[str],
+    ) -> dict[str, Any]:
+        if self._a_share_scheduler is None:
+            return {"status": "unsupported", "reason": "a_share_scheduler_not_configured"}
+        result = dict(self._a_share_scheduler.configure(
+            enabled=enabled,
+            run_time=run_time,
+            timezone_name=timezone_name,
+            adjustments=adjustments,
+        ))
+        if enabled:
+            result["background"] = self._a_share_scheduler.start_background()
+        else:
+            result["background"] = self._a_share_scheduler.stop_background()
+        return result
+
+    def list_a_share_sync_jobs(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        if self._a_share_scheduler is None:
+            return []
+        return list(self._a_share_scheduler.list_jobs(limit=limit))
+
+    def create_a_share_sync_job(
+        self,
+        *,
+        target_trade_date: str,
+        symbols: list[str],
+        all_current: bool,
+        adjustments: list[str],
+        run_now: bool,
+    ) -> dict[str, Any]:
+        if self._a_share_scheduler is None:
+            return {"status": "unsupported", "reason": "a_share_scheduler_not_configured"}
+        if not target_trade_date:
+            raise ValueError("target_trade_date is required")
+        job = dict(self._a_share_scheduler.create_job(
+            target_trade_date=target_trade_date,
+            symbols=symbols or None,
+            all_current=all_current,
+            adjustments=adjustments,
+            mode="manual",
+        ))
+        if run_now and job.get("status") == "queued":
+            return dict(self._a_share_scheduler.run_job(str(job["job_id"])))
+        return job
+
+    def get_a_share_sync_job(self, job_id: str) -> dict[str, Any]:
+        if self._a_share_scheduler is None:
+            return {"job_id": job_id, "status": "unsupported"}
+        return dict(self._a_share_scheduler.get_job(job_id, include_items=True))
+
+    def run_a_share_sync_job(self, job_id: str) -> dict[str, Any]:
+        if self._a_share_scheduler is None:
+            return {"job_id": job_id, "status": "unsupported"}
+        return dict(self._a_share_scheduler.run_job(job_id))
+
+    def retry_a_share_sync_job(self, job_id: str, *, run_now: bool = True) -> dict[str, Any]:
+        if self._a_share_scheduler is None:
+            return {"job_id": job_id, "status": "unsupported"}
+        job = dict(self._a_share_scheduler.retry_quarantined(job_id))
+        if run_now and job.get("status") == "queued":
+            return dict(self._a_share_scheduler.run_job(job_id))
+        return job
+
+    def tick_a_share_scheduler(self) -> dict[str, Any]:
+        if self._a_share_scheduler is None:
+            return {"status": "unsupported", "reason": "a_share_scheduler_not_configured"}
+        return dict(self._a_share_scheduler.run_due())
+
+    def recover_a_share_scheduler(self) -> dict[str, Any]:
+        if self._a_share_scheduler is None:
+            return {"status": "unsupported", "reason": "a_share_scheduler_not_configured"}
+        return dict(self._a_share_scheduler.recover_interrupted_jobs())
     def _load_market_provider_sync_tasks(self) -> None:
         if not self._sync_task_path.exists():
             self._market_sync_tasks = {}

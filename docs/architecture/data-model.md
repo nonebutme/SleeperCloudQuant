@@ -88,3 +88,38 @@ Web Demo 运行结果库：`tmp/formal_http_demo.sqlite3`
 - “查看分析”按需读取模式化报告，不应为打开分析而强制预加载全部结果明细。
 - 独立账户批量回测结果默认先展示任务级漏斗和分布，任务内单股 Run 由用户主动选择。
 - 两个入口可复用任务上下文与查看器容器，但必须拥有独立加载状态、失败状态和验收标准。
+
+## 阶段 78.0 数据治理扩展（已审批并由 78.1 落地）
+
+- 规范事实层拟新增交易日历、证券生命周期、日交易状态、公司行动、复权因子和指数日线六类数据集。
+- 治理层拟新增不可变数据版本、版本成员和质量报告；只有 `published` 版本可供新回测绑定。
+- 新回测必须在输入快照中固化统一数据版本；无法还原的历史 Run 保留 `legacy_unverifiable`，不伪造版本。
+- 首轮迁移只增不改，不删除、重命名或改变现有 `market_daily_prices` 契约。
+- 完整逻辑契约、数据源能力矩阵、调度和回退方案见 `docs/architecture/stage-78-0-data-governance-architecture-freeze.md`。
+## 阶段 78.1 实现状态
+
+- 六类规范事实表与版本、成员、质量报告治理表已增量创建，既有 `market_daily_prices` 契约未改变。
+- 首个正式发布版本为 `scq-20260724-2135cd2b85852362`，截止交易日 `2026-07-24`。
+- 新回测在创建或执行前解析并冻结 `published` 版本；无正式版本时明确进入 `data_not_ready`。
+- 沪深 300 基准由 `market_index_daily_prices` 正式读取。
+- 实施范围、数量、验证和边界见 `docs/architecture/stage-78-1-governance-skeleton-sample-integration.md`。
+## 阶段 78.2 调度状态模型
+
+- `market_incremental_sync_jobs`：规范增量任务、目标交易日、汇总进度、质量报告与发布版本。
+- `market_incremental_sync_items`：按标的和复权口径持久化断点、尝试次数、退避、错误与隔离状态。
+- `market_scheduler_settings`：应用内调度启用状态、时区、盘后时间、限频、并发、重试及最近调度信息。
+- 调度顺序固定为目录、交易日历、目标日、沪深300、价格工作项、质量门禁、原子发布。
+- 新版本重算行情、交易日历和指数成员摘要；未全市场刷新的上下文成员沿用上一正式版本并保留来源。
+- 实现和运行边界见 `docs/architecture/stage-78-2-incremental-sync-scheduler.md`。
+
+## M4 市场全景数据模型（P0—P3）
+
+独立全景库：`var/runtime/market_panorama.sqlite3`
+
+- `panorama_board_catalog`：行业/概念板块代码、名称、来源和观察时间。
+- `panorama_board_daily`：板块日线、涨跌幅、成交量额及来源。
+- `panorama_board_fund_flow`：行业/概念历史资金流分解。
+- `panorama_events`：按交易日与证券保存公告、新闻、原文链接和证据。
+- `panorama_sync_jobs`、`panorama_sync_items`：数据集级任务与板块/证券级工作项、进度、错误和重试状态。
+
+全景查询不要求五个分区使用同一物理表，但必须逐分区声明请求日、有效日、状态和来源。行业本地回退按 `qfq` 横截面与 point-in-time 分类区间连接；分类标准证据保留，不静默混为单一标准。

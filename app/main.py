@@ -9,6 +9,7 @@ from app.api import (
     build_ai_routes,
     build_backtest_routes,
     build_config_routes,
+    build_data_center_routes,
     build_factor_routes,
     build_market_routes,
     build_reporting_routes,
@@ -19,6 +20,7 @@ from app.services import (
     BacktestModeReportService,
     BatchResearchService,
     ConfigCenterService,
+    DataCenterService,
     FactorResearchService,
     IndependentScreeningService,
     MarketDataService,
@@ -46,6 +48,7 @@ class AppServiceRegistry:
     backtest_mode_report_service: BacktestModeReportService | None = None
     ai_analysis_service: AIAnalysisService | None = None
     config_center_service: ConfigCenterService | None = None
+    data_center_service: DataCenterService | None = None
 
 
 @dataclass
@@ -74,6 +77,8 @@ def create_app(services: AppServiceRegistry) -> SimpleApiApp:
     ]
     if services.ai_analysis_service is not None:
         routes.extend(build_ai_routes(services.ai_analysis_service))
+    if services.data_center_service is not None:
+        routes.extend(build_data_center_routes(services.data_center_service))
     if services.config_center_service is not None:
         routes.extend(build_config_routes(services.config_center_service))
     return SimpleApiApp(title="SleeperCloudQuant Formal API", routes=routes)

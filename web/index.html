@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SleeperCloudQuant Web MVP</title>
   <link rel="stylesheet" href="/styles.css?v=769">
+  <link rel="stylesheet" href="/vtable-adapter.css?v=1">
+  <link rel="stylesheet" href="/report-ui.css?v=780">
+  <link rel="stylesheet" href="/data_center.css?v=879">
+  <link rel="stylesheet" href="/quant-ui-candidate.css?v=2">
+  <link rel="stylesheet" href="/m4_asset_browser.css?v=1">
 </head>
 <body>
   <div class="app-shell">
@@ -13,6 +18,14 @@
       <nav class="nav-tabs" aria-label="主导航">
         <button class="nav-tab is-active" type="button" data-page="dashboard">总览</button>
         <button class="nav-tab" type="button" data-page="market">数据中心</button>
+        <div class="dc-sidebar-subnav" aria-label="数据中心下级菜单">
+          <button class="is-active" type="button" data-dc-view="overview"><span>M0</span> 总览指挥舱</button>
+          <button type="button" data-dc-view="routes"><span>M1</span> 数据源管理</button>
+          <button type="button" data-dc-view="sync"><span>M2</span> 同步执行器</button>
+          <button type="button" data-dc-view="quality"><span>M3</span> 质量纠错</button>
+          <button type="button" data-dc-view="assets"><span>M4</span> 资产浏览</button>
+          <button type="button" data-dc-view="versions"><span>M5</span> 快照管理</button>
+        </div>
         <button class="nav-tab" type="button" data-page="factor">因子分析</button>
         <button class="nav-tab" type="button" data-page="backtest">策略回测</button>
         <button class="nav-tab" type="button" data-page="ai">AI 分析</button>
@@ -33,16 +46,234 @@
       </section>
 
       <section id="page-market" class="page-section"><div class="section-grid">
-        <section class="panel panel-wide"><div class="panel-header"><div><h3>A 股真实数据库</h3><p>读取项目规范化 A 股数据库；旧 stockmarket.db 仅作为只读迁移源。</p></div><span id="a-share-source-state">等待读取</span></div><div id="a-share-overview" class="summary-grid"></div><div class="table-wrap"><table><thead><tr><th>口径</th><th>数据行</th><th>股票数</th><th>最早</th><th>最晚</th><th>重复</th><th>最新日覆盖</th><th>质量</th></tr></thead><tbody id="a-share-adjustment-body"></tbody></table></div><pre id="a-share-overview-output" class="code-block">尚未读取真实数据库总览</pre></section>
-        <section class="panel panel-wide"><div class="panel-header"><div><h3>A 股股票目录</h3><p>覆盖沪市、深市、北交所，并保留历史或已退市代码。</p></div></div><form id="a-share-symbol-form" class="control-row"><label><span>代码或名称</span><input name="query" placeholder="例如 000001 / 平安银行"></label><label><span>市场</span><select name="market"><option value="">全部</option><option value="SSE">沪市</option><option value="SZSE">深市</option><option value="BSE">北交所</option></select></label><label><span>每页</span><input name="limit" type="number" min="1" max="500" value="50"></label><label><span>偏移</span><input name="offset" type="number" min="0" value="0"></label><button type="submit">检索股票</button></form><div id="a-share-symbol-summary" class="summary-grid"></div><div class="table-wrap"><table><thead><tr><th>代码</th><th>名称</th><th>市场</th><th>回测代码</th><th>状态</th></tr></thead><tbody id="a-share-symbol-body"></tbody></table></div></section>
-        <section class="panel panel-wide"><div class="panel-header"><div><h3>A 股日线行情</h3><p>支持不复权、前复权、后复权；查询结果按交易日倒序分页。</p></div></div><form id="a-share-daily-form" class="control-row"><label><span>股票代码</span><input name="symbol" value="000001"></label><label><span>复权</span><select name="adjustment"><option value="raw">不复权</option><option value="qfq">前复权</option><option value="hfq">后复权</option></select></label><label><span>开始</span><input name="start_date" type="date" value="2015-01-05"></label><label><span>结束</span><input name="end_date" type="date" value="2026-07-17"></label><label><span>每页</span><input name="limit" type="number" min="1" max="2000" value="120"></label><label><span>偏移</span><input name="offset" type="number" min="0" value="0"></label><button type="submit">查询日线</button></form><div id="a-share-daily-summary" class="summary-grid"></div><div id="a-share-daily-chart" class="kline-chart"></div><div class="table-wrap"><table><thead><tr><th>日期</th><th>开</th><th>高</th><th>低</th><th>收</th><th>成交量</th><th>成交额</th><th>涨跌幅</th><th>换手率</th></tr></thead><tbody id="a-share-daily-body"></tbody></table></div><pre id="a-share-daily-output" class="code-block">尚未查询真实日线</pre></section>        <section class="panel panel-wide"><div class="panel-header"><h3>数据中心</h3><p>行情趋势使用 K 线图展示 open/high/low/close；默认读取本地旧 SQLite 行情。</p></div><form id="market-query-form" class="control-row"><label><span>标的</span><input name="symbol" value="000001.XSHE"></label><label><span>开始</span><input name="start_date" type="date" value="2020-01-02"></label><label><span>结束</span><input name="end_date" type="date" value="2020-01-10"></label><button type="submit">刷新数据</button></form></section>
-        <section class="panel panel-wide"><div class="panel-header"><h3>K 线图</h3><p>绿色表示收涨，红色表示收跌；下方保留原始 OHLC 表。</p></div><div id="candlestick-chart" class="kline-chart"></div><div class="table-wrap"><table><thead><tr><th>日期</th><th>开</th><th>高</th><th>低</th><th>收</th><th>成交量</th></tr></thead><tbody id="price-history-body"></tbody></table></div></section>
-        <section class="panel panel-wide"><div class="panel-header"><h3>本地数据浏览器</h3></div><div id="market-browser-symbols" class="definition-list"></div><div id="market-browser-chart" class="kline-chart"></div><div class="table-wrap"><table><thead><tr><th>日期</th><th>开</th><th>高</th><th>低</th><th>收</th><th>量</th><th>来源</th></tr></thead><tbody id="market-browser-body"></tbody></table></div><pre id="market-browser-output" class="code-block">尚未加载本地数据浏览器</pre></section>
-        <section class="panel"><div class="panel-header"><h3>交易日历</h3></div><ul id="trading-calendar-list" class="simple-list"></ul></section>
-        <section class="panel"><div class="panel-header"><h3>同步与数据源</h3></div><div id="market-status" class="summary-grid"></div></section>
-        <section class="panel"><div class="panel-header"><h3>本地数据资产</h3></div><div id="market-assets-list" class="definition-list"></div><pre id="market-assets-output" class="code-block">尚未加载本地数据资产</pre></section>
-        <section class="panel panel-wide"><div class="panel-header"><h3>回测资产目录</h3></div><form id="backtest-asset-directory-form" class="control-row"><label><span>标的</span><input name="symbol" value="000001.XSHE"></label><label><span>Dataset</span><input name="dataset" value="price_history"></label><label><span>数据版本</span><input name="data_version" placeholder="可选"></label><label><span>质量</span><input name="quality_status" placeholder="needs_attention/passed"></label><label><span>覆盖</span><input name="coverage_status" placeholder="active/partial"></label><label><span>Limit</span><input name="limit" type="number" min="1" max="500" value="50"></label><button type="submit">筛选资产</button><button id="backtest-asset-migration-dry-run" type="button">迁移预检</button><button id="backtest-asset-migration-run" type="button">执行迁移</button></form><div id="backtest-asset-directory-summary" class="summary-grid"></div><div id="backtest-asset-directory-list" class="definition-list"></div><pre id="backtest-asset-directory-output" class="code-block">尚未加载回测资产目录</pre><pre id="backtest-asset-migration-output" class="code-block">尚未执行历史输入快照迁移诊断</pre></section>        <section class="panel"><div class="panel-header"><h3>本地行情存储</h3></div><div id="market-local-storage-status" class="summary-grid"></div><button id="market-repair-gaps" type="button">修复缺口</button><pre id="market-local-bars-output" class="code-block">尚未读取本地行情表</pre><pre id="market-quality-output" class="code-block">尚未执行质量检查</pre></section>
-      </div></section>
+        <header class="dc-hero panel panel-wide"><div><span class="dc-eyebrow">STAGE 86 · NONCOMMERCIAL LOCAL RESEARCH</span><h3>数据中心工作台</h3><p>默认只读正式发布快照；未发布观察、隔离项和历史版本始终分开展示。</p></div><div class="dc-badges"><span id="dc-default-version">默认版本：—</span><span id="dc-health">健康：读取中</span><span id="dc-unpublished">未发布观察：—</span></div></header>
+        <div class="dc-global-status"><span id="dc-footer-storage">规范库占用：读取中</span><span id="dc-footer-latest">最新行情：读取中</span><span id="dc-footer-issues">待处理：读取中</span></div>
+        <div id="dc-view-overview" class="dc-view panel-wide is-active">
+          <section class="panel dc-command-panel">
+            <div class="panel-header"><div><h3>总览指挥舱</h3><p>先回答当前默认版本能否支持研究，再检查最新发布、最新观察和阻断项。</p></div><button id="dc-overview-refresh" type="button">刷新总览</button></div>
+            <div id="dc-overview-metrics" class="dc-status-cards"></div><div id="dc-version-divergence" class="dc-inline-alert" hidden></div>
+            <div class="dc-overview-columns"><section class="dc-surface"><div class="dc-surface-title"><h4>最近人工同步</h4><span>最近任务</span></div><div id="dc-recent-tasks" class="dc-timeline"></div></section><section class="dc-surface"><div class="dc-surface-title"><h4>关键版本时间轴</h4><span>最近 5 个</span></div><div id="dc-overview-version-timeline" class="dc-timeline"></div></section></div>
+            <div id="dc-system-summary" class="dc-system-summary"></div><div class="dc-overview-actions"><button type="button" data-dc-jump="sync">生成缺口同步预览</button><button type="button" data-dc-jump="quality" class="secondary-button">进入质量工坊</button></div>
+            <details class="technical-details"><summary>查看技术状态 JSON</summary><pre id="dc-overview-output" class="code-block">正在读取数据中心状态…</pre></details>
+          </section>
+          <section class="panel panel-wide"><div class="panel-header"><div><h3>A 股数据基座</h3><p>集中展示规范库覆盖、三种复权口径和质量状态；证券与行情查询统一在 M4 资产浏览完成。</p></div><span id="a-share-source-state">等待读取</span></div><div id="a-share-overview" class="summary-grid"></div><div class="table-wrap"><table data-vtable-mode="market" aria-label="A股数据基座复权质量"><thead><tr><th>口径</th><th>数据行</th><th>股票数</th><th>最早</th><th>最晚</th><th>重复</th><th>最新日覆盖</th><th>质量</th></tr></thead><tbody id="a-share-adjustment-body"></tbody></table></div><details class="technical-details"><summary>查看数据源证据</summary><pre id="a-share-overview-output" class="code-block">尚未读取真实数据库总览</pre></details></section>
+        </div>
+                <div id="dc-view-routes" class="dc-view panel-wide"><section class="panel">
+          <div class="panel-header"><div><h3>数据源管理中心</h3><p>数据源回答“谁提供能力”，路由回答“某数据集按什么顺序使用能力”。</p></div></div>
+          <div class="dc-subtabs"><button type="button" class="is-active" data-dc-route-tab="sources">数据源配置</button><button type="button" data-dc-route-tab="routes">源路由配置</button></div>
+          <div id="dc-source-panel" data-dc-route-panel="sources"><div class="dc-route-workspace"><section class="dc-surface"><div class="dc-surface-title"><h4>受控数据源</h4><span>未验证来源默认停用</span></div><div id="dc-source-list" class="dc-source-list"></div></section><section class="dc-surface"><div class="dc-surface-title"><h4>数据源详情</h4><div class="dc-header-actions"><button id="dc-source-test" type="button">只读探测</button><button id="dc-source-save" type="button">保存配置</button></div></div><div id="dc-source-detail" class="dc-route-detail"><div class="empty-cell">请选择受控数据源</div></div><details class="technical-details"><summary>查看探测结果</summary><pre id="dc-source-output" class="code-block">尚未探测</pre></details></section></div></div>
+          <div id="dc-route-panel" data-dc-route-panel="routes" hidden><div class="dc-route-workspace"><aside class="dc-surface dc-route-tree-panel"><div class="dc-surface-title"><h4>七层数据目录</h4><span>选择叶子数据集</span></div><div id="dc-route-dataset-tree" class="dc-dataset-tree"></div></aside><section class="dc-surface dc-route-editor-panel"><div class="dc-surface-title"><h4>路由表与参数</h4><div class="dc-header-actions"><label class="dc-live-toggle"><input id="dc-route-live" type="checkbox">真实只读探测</label><button id="dc-route-test" type="button">测试选中连接</button><button id="dc-routes-save" type="button">应用当前配置</button></div></div><div id="dc-route-list" class="dc-route-table"></div><div id="dc-route-detail" class="dc-route-detail"><div class="empty-cell">请选择路由</div></div><details class="technical-details"><summary>查看连接测试结果</summary><pre id="dc-route-output" class="code-block">尚未测试连接</pre></details></section></div></div>
+        </section></div>
+                <div id="dc-view-sync" class="dc-view panel-wide"><section class="panel">
+          <div class="panel-header"><div><h3>同步执行器</h3><p>一个任务只处理一个数据集；必须先生成零写入预览，再冻结分片和路由。</p></div><span class="dc-safe-badge">人工增量 · 自动任务已停用</span></div>
+          <div class="dc-sync-builder">
+            <aside class="dc-surface dc-sync-catalog"><div class="dc-surface-title"><div><h4>七层数据目录</h4><p>选择本次同步的数据集</p></div><span>单选</span></div><div id="dc-sync-dataset-tree" class="dc-dataset-tree"></div></aside>
+            <div class="dc-sync-create-column">
+              <section class="dc-surface"><div class="dc-surface-title"><div><h4>创建同步任务</h4><p>填写范围后先检查缺口，再确认创建任务</p></div><span>步骤 1</span></div><form id="dc-sync-form" class="dc-sync-controls"><input type="hidden" name="dataset" value="a_share_daily"><label><span>目标交易日</span><input name="target_trade_date" type="date" value="2026-07-28"></label><label data-sync-history hidden><span>历史扫描开始日</span><input name="start_trade_date" type="date" value="2026-01-01"></label><div class="dc-inline-actions"><button id="dc-sync-latest" type="button" class="secondary-button">使用最近交易日</button></div><label data-sync-field="scope"><span>同步范围</span><select name="scope"><option value="symbols">指定股票</option><option value="all_current">全部当前股票</option></select></label><label data-sync-field="symbols"><span>股票代码</span><input name="symbols" value="000001.XSHE" placeholder="多个代码用逗号分隔"></label><label data-sync-field="adjustments"><span>价格口径</span><select name="adjustments"><option value="raw">不复权</option><option value="qfq">前复权</option><option value="hfq">后复权</option></select></label><label><span>任务模式</span><select name="mode"><option value="incremental">快捷追更</option><option value="historical_gap">历史缺口修复</option></select></label><div class="dc-inline-actions dc-sync-submit-actions"><button id="dc-sync-preview" type="submit">检查缺口 / 生成区间预览</button><button id="dc-sync-create" type="button" disabled>确认创建任务</button></div></form></section>
+              <section class="dc-surface dc-sync-preview-surface"><div class="dc-surface-title"><div><h4>执行前预览</h4><p>确认请求量、路由和具体缺失日期</p></div><span>步骤 2 · 零写入 · 15 分钟有效</span></div><div id="dc-sync-preview-output" class="dc-preview-card"><div class="empty-cell">选择数据集并填写参数后生成预览</div></div><div id="dc-sync-shards" class="dc-shard-table"></div></section>
+            </div>
+          </div>
+          <section class="dc-surface dc-task-list-section"><div class="dc-surface-title"><div><h4>任务列表</h4><p>当前任务与历史任务统一展示；运行中每 2 秒刷新</p></div><span>最近 50 条 · 审计留痕</span></div><div id="dc-sync-active" class="dc-sync-list-live" aria-live="polite"></div><div id="dc-sync-task-list" class="dc-task-list"></div></section>
+          <dialog id="dc-sync-task-dialog" class="dc-task-dialog"><div class="dc-dialog-head"><div><span>同步任务详情</span><h4 id="dc-sync-task-dialog-title">任务详情</h4></div><button id="dc-sync-task-dialog-close" type="button" class="secondary-button" aria-label="关闭任务详情">关闭</button></div><div id="dc-sync-task-detail" class="dc-task-detail"><div class="empty-cell">正在加载任务详情</div></div></dialog>
+        </section></div>
+                <div id="dc-view-quality" class="dc-view panel-wide"><section class="panel">
+          <div class="panel-header"><div><h3>质量检查与纠错</h3><p>先主动执行规则检查发现问题，再进入异常台账补救和复查；未执行的规则不得显示为通过。</p></div><button id="dc-quality-export" type="button">导出异常记录 CSV</button></div><div class="dc-quality-flow-guide" aria-label="质量治理流程"><div><strong>1</strong><span>发起检查<small>选择范围与规则</small></span></div><i></i><div><strong>2</strong><span>查看发现<small>定位证券与日期</small></span></div><i></i><div><strong>3</strong><span>受控纠错<small>处置或创建重拉</small></span></div><i></i><div><strong>4</strong><span>复查闭环<small>确认问题已消失</small></span></div></div>
+          <div class="dc-quality-discovery">
+            <section class="dc-surface"><div class="dc-surface-title"><h4>执行质量检查</h4><span>只读扫描 · 结果写入异常台账</span></div>
+              <form id="dc-quality-scan-form" class="dc-quality-scan-form">
+                <label><span>数据集</span><select name="dataset"><option value="a_share_daily">A股日线行情</option></select></label>
+                <label><span>开始日期</span><input name="date_from" type="date" value="2015-01-01" required></label>
+                <label><span>结束日期</span><input name="date_to" type="date" value="2026-07-30" required></label>
+                <label><span>检查范围</span><select name="scope"><option value="all_current">全部当前股票</option><option value="symbols">指定股票</option></select></label>
+                <label data-quality-scan-symbols hidden><span>股票代码</span><input name="symbols" value="000001.XSHE" placeholder="多个代码用逗号分隔"></label>
+                <fieldset><legend>价格口径</legend><label><input type="checkbox" name="adjustments" value="raw" checked>不复权</label><label><input type="checkbox" name="adjustments" value="qfq" checked>前复权</label><label><input type="checkbox" name="adjustments" value="hfq" checked>后复权</label></fieldset>
+                <fieldset class="dc-quality-rule-fieldset"><legend>检查规则</legend><div id="dc-quality-scan-rules"><span class="empty-cell">正在读取规则</span></div></fieldset>
+                <div class="dc-inline-actions"><button type="submit">创建并执行质量检查</button></div>
+                <small>全市场多年检查耗时较长；任务在后台运行，可离开页面后再回来查看。</small>
+              </form>
+            </section>
+            <section class="dc-surface"><div class="dc-surface-title"><h4>当前检查任务</h4><span>运行中每 3 秒刷新</span></div><div id="dc-quality-scan-current" class="dc-live-board"><div class="empty-cell">当前没有质量检查任务</div></div></section>
+          </div>
+          <section class="dc-surface dc-quality-scan-history"><div class="dc-surface-title"><div><h4>检查任务列表</h4><p>查看进度、检查结果和复查关系</p></div><span>运行中每 3 秒刷新</span></div><div id="dc-quality-scan-list"><div class="empty-cell">尚无质量检查记录</div></div></section>
+          <div class="dc-quality-ledger-heading"><div><span class="dc-section-kicker">问题处置区</span><h4>异常记录</h4><p>这里只展示质量检查或同步校验已经发现并登记的问题；先筛选，再查看证据和处置。</p></div></div>
+          <div id="dc-quality-summary" class="dc-quality-summary"></div>
+          <form id="dc-quality-filter" class="dc-filter-bar"><label><span>状态（可多选）</span><select name="status" multiple size="3"><option value="open">待处理</option><option value="quarantined">暂缓处理（已隔离）</option><option value="accepted">已确认可用</option><option value="rejected">已记录不可用</option><option value="corrected">已修正</option><option value="superseded">已被取代</option></select></label><label><span>严重度（可多选）</span><select name="severity" multiple size="2"><option value="error">阻断</option><option value="warning">警告</option></select></label><label><span>数据集</span><select id="dc-quality-dataset" name="dataset"><option value="">全部数据集</option></select></label><label><span>数据源</span><select id="dc-quality-source" name="source"><option value="">全部数据源</option></select></label><label><span>证券代码</span><input name="symbol" placeholder="000001"></label><label><span>开始日期</span><input name="date_from" type="date"></label><label><span>结束日期</span><input name="date_to" type="date"></label><label><span>规则</span><select id="dc-quality-rule" name="rule_id"><option value="">全部规则</option></select></label><label><span>来源任务</span><select id="dc-quality-task" name="source_task_id"><option value="">全部任务</option></select></label><button type="submit">查询异常记录</button><button id="dc-quality-reset" type="reset" class="secondary-button">重置</button></form>
+          <section class="dc-quality-action-guide" aria-label="异常处理说明"><div><strong>1</strong><span>查看证据<small>先确认问题是否真实，暂时不要批量操作</small></span></div><i></i><div><strong>2</strong><span>选择结论<small>每个选项都会显示“会做什么、不会做什么”</small></span></div><i></i><div><strong>3</strong><span>确认影响<small>提交前再次确认，原始行情默认不改写</small></span></div><i></i><div><strong>4</strong><span>完成下一步<small>需修复时去 M2 运行任务，再回 M3 复查</small></span></div></section><section class="dc-quality-operation-manual" aria-label="异常处理方式说明"><article><strong>确认可用并关闭提醒</strong><p>用于误报或已核实可用的数据。只关闭这条提醒，不改行情。</p></article><article><strong>记录为不可用</strong><p>只留下“不可用”结论，不会自动删除或屏蔽行情；通常还要创建修复任务。</p></article><article><strong>暂缓处理</strong><p>证据不足时保留异常，之后仍可继续判断或修复。</p></article><article><strong>生成修复任务</strong><p>只在 M2 创建待执行任务；必须去 M2 运行，完成后回到 M3 复查。</p></article></section>
+          <div class="dc-quality-workspace"><section class="dc-surface"><div class="dc-surface-title"><h4>异常列表</h4><span id="dc-quality-selected">已选 0 条 · VisActor VTable</span></div><div id="dc-quality-list" class="dc-quality-table"></div><div id="dc-quality-bulk" class="dc-quality-bulk"><div class="dc-quality-bulk-intro"><strong>批量处理同类异常</strong><span>所有结论都会保留审计记录；默认不修改原始行情。选择“生成修复任务”后仍需到 M2 运行。</span></div><label><span>统一判断依据（必填）</span><input id="dc-quality-bulk-reason" placeholder="例如：经行情源交叉核对，该批异常为误报"></label><div class="dc-inline-actions"><button type="button" data-quality-bulk="accept" disabled>确认可用并关闭提醒</button><button type="button" data-quality-bulk="reject" class="secondary-button" disabled>记录为不可用（不改数据）</button><button type="button" data-quality-bulk="quarantine" class="secondary-button" disabled>暂缓处理</button><button type="button" data-quality-bulk="refetch" class="secondary-button" disabled>生成修复任务</button></div><small id="dc-quality-bulk-help">先勾选待处理或已隔离的异常。</small></div></section><aside class="dc-surface dc-quality-drawer"><div class="dc-surface-title"><h4>问题处理</h4><span>证据与操作全程留痕</span></div><div id="dc-quality-output" class="dc-quality-detail"><div class="empty-cell">点击“查看证据与处理”，判断是误报、无效数据，还是需要创建修复任务</div></div></aside></div>
+        </section></div>                <div id="dc-view-assets" class="dc-view panel-wide">
+          <section class="panel panel-wide dc-m4-shell" aria-labelledby="dc-m4-page-title">
+            <header class="dc-m4-header">
+              <div>
+                <h3 id="dc-m4-page-title">资产浏览</h3>
+                <p>从统一数据目录定位资产，以真实数据查看目录、K 线和交易日全景。</p>
+              </div>
+              <form id="dc-m4-search-form" class="dc-m4-search" role="search">
+                <input id="dc-m4-search" type="search" placeholder="输入代码或名称，例如 000001 / 沪深300" aria-label="搜索资产">
+                <button type="submit">定位</button>
+                <span id="dc-m4-search-state" class="sr-only">按代码或名称定位</span>
+              </form>
+            </header>
+            <div class="dc-m4-layout">
+              <aside class="dc-m4-catalog" aria-label="资产目录">
+                <div class="dc-m4-catalog-head"><strong>数据目录</strong><span>只读</span></div>
+                <nav class="dc-m4-tree" role="tree">
+                  <details open>
+                    <summary>行情数据</summary>
+                    <div class="dc-m4-tree-group">
+                      <details open>
+                        <summary>股票行情</summary>
+                        <div class="dc-m4-tree-group">
+                          <button type="button" data-m4-node data-m4-title="沪深 A 股" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 股票行情 / 沪深 A 股" data-m4-mode="list" data-m4-market="" data-m4-ready="true"><span>沪深 A 股</span><span class="dc-m4-node-state is-ready">可用</span></button>
+                          <button type="button" data-m4-node data-m4-title="北交所" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 股票行情 / 北交所" data-m4-mode="list" data-m4-market="BSE" data-m4-ready="true"><span>北交所</span><span class="dc-m4-node-state is-ready">可用</span></button>
+                        </div>
+                      </details>
+                      <details open>
+                        <summary>指数行情</summary>
+                        <div class="dc-m4-tree-group">
+                          <details open>
+                            <summary>A 股指数</summary>
+                            <div class="dc-m4-tree-group">
+                              <button type="button" data-m4-node data-m4-title="上证指数" data-m4-symbol="000001.XSHG" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / A 股指数" data-m4-mode="index" data-m4-ready="false"><span>上证指数</span><span class="dc-m4-node-state">检查中</span></button>
+                              <button type="button" data-m4-node data-m4-title="深证成指" data-m4-symbol="399001.XSHE" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / A 股指数" data-m4-mode="index" data-m4-ready="false"><span>深证成指</span><span class="dc-m4-node-state">检查中</span></button>
+                              <button type="button" data-m4-node data-m4-title="北证50" data-m4-symbol="899050.BSE" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / A 股指数" data-m4-mode="index" data-m4-ready="false"><span>北证50</span><span class="dc-m4-node-state">检查中</span></button>
+                              <button type="button" class="is-active" data-m4-node data-m4-title="沪深300" data-m4-symbol="000300.XSHG" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / A 股指数" data-m4-mode="index" data-m4-ready="false"><span>沪深300</span><span class="dc-m4-node-state">检查中</span></button>
+                              <button type="button" data-m4-node data-m4-title="创业板指" data-m4-symbol="399006.XSHE" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / A 股指数" data-m4-mode="index" data-m4-ready="false"><span>创业板指</span><span class="dc-m4-node-state">检查中</span></button>
+                              <button type="button" data-m4-node data-m4-title="科创50" data-m4-symbol="000688.XSHG" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / A 股指数" data-m4-mode="index" data-m4-ready="false"><span>科创50</span><span class="dc-m4-node-state">检查中</span></button>
+                            </div>
+                          </details>
+                          <details>
+                            <summary>港股指数</summary>
+                            <div class="dc-m4-tree-group">
+                              <button type="button" data-m4-node data-m4-title="恒生指数" data-m4-symbol="HSI" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 港股指数" data-m4-mode="index" data-m4-ready="false"><span>恒生指数</span><span class="dc-m4-node-state">待接入</span></button>
+                              <button type="button" data-m4-node data-m4-title="国企指数" data-m4-symbol="HSCEI" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 港股指数" data-m4-mode="index" data-m4-ready="false"><span>国企指数</span><span class="dc-m4-node-state">待接入</span></button>
+                              <button type="button" data-m4-node data-m4-title="恒生科技" data-m4-symbol="HSTECH" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 港股指数" data-m4-mode="index" data-m4-ready="false"><span>恒生科技</span><span class="dc-m4-node-state">待接入</span></button>
+                              <button type="button" data-m4-node data-m4-title="富时A50期指" data-m4-symbol="XIN9" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 港股指数" data-m4-mode="index" data-m4-ready="false"><span>富时A50期指</span><span class="dc-m4-node-state">待接入</span></button>
+                            </div>
+                          </details>
+                          <details>
+                            <summary>全球指数</summary>
+                            <div class="dc-m4-tree-group">
+                              <button type="button" data-m4-node data-m4-title="道琼斯" data-m4-symbol="DJI" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 全球指数" data-m4-mode="index" data-m4-ready="false"><span>道琼斯</span><span class="dc-m4-node-state">待接入</span></button>
+                              <button type="button" data-m4-node data-m4-title="纳斯达克" data-m4-symbol="IXIC" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 全球指数" data-m4-mode="index" data-m4-ready="false"><span>纳斯达克</span><span class="dc-m4-node-state">待接入</span></button>
+                              <button type="button" data-m4-node data-m4-title="标普500" data-m4-symbol="SPX" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 全球指数" data-m4-mode="index" data-m4-ready="false"><span>标普500</span><span class="dc-m4-node-state">待接入</span></button>
+                              <button type="button" data-m4-node data-m4-title="日经225" data-m4-symbol="N225" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 全球指数" data-m4-mode="index" data-m4-ready="false"><span>日经225</span><span class="dc-m4-node-state">待接入</span></button>
+                              <button type="button" data-m4-node data-m4-title="德国DAX" data-m4-symbol="GDAXI" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 全球指数" data-m4-mode="index" data-m4-ready="false"><span>德国DAX</span><span class="dc-m4-node-state">待接入</span></button>
+                              <button type="button" data-m4-node data-m4-title="MSCI全球" data-m4-symbol="MSCI-WORLD" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 全球指数" data-m4-mode="index" data-m4-ready="false"><span>MSCI全球</span><span class="dc-m4-node-state">待接入</span></button>
+                              <button type="button" data-m4-node data-m4-title="MSCI新兴" data-m4-symbol="MSCI-EM" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 指数行情 / 全球指数" data-m4-mode="index" data-m4-ready="false"><span>MSCI新兴</span><span class="dc-m4-node-state">待接入</span></button>
+                            </div>
+                          </details>
+                        </div>
+                      </details>
+                      <button type="button" data-m4-node data-m4-title="分钟行情" data-m4-path="数据中心 / 资产浏览 / 行情数据 / 分钟行情" data-m4-mode="unavailable" data-m4-ready="false"><span>分钟行情</span><span class="dc-m4-node-state">待接入</span></button>
+                    </div>
+                  </details>
+                  <details>
+                    <summary>财务数据</summary>
+                    <div class="dc-m4-tree-group">
+                      <button type="button" data-m4-node data-m4-title="资产负债表" data-m4-path="数据中心 / 资产浏览 / 财务数据" data-m4-mode="unavailable" data-m4-ready="false"><span>资产负债表</span><span class="dc-m4-node-state">待接入</span></button>
+                      <button type="button" data-m4-node data-m4-title="利润表" data-m4-path="数据中心 / 资产浏览 / 财务数据" data-m4-mode="unavailable" data-m4-ready="false"><span>利润表</span><span class="dc-m4-node-state">待接入</span></button>
+                    </div>
+                  </details>
+                  <details>
+                    <summary>元数据</summary>
+                    <div class="dc-m4-tree-group">
+                      <button type="button" data-m4-node data-m4-title="行业分类" data-m4-path="数据中心 / 资产浏览 / 元数据" data-m4-mode="unavailable" data-m4-ready="false"><span>行业分类</span><span class="dc-m4-node-state">待接入</span></button>
+                      <button type="button" data-m4-node data-m4-title="概念板块" data-m4-path="数据中心 / 资产浏览 / 元数据" data-m4-mode="unavailable" data-m4-ready="false"><span>概念板块</span><span class="dc-m4-node-state">待接入</span></button>
+                    </div>
+                  </details>
+                  <details>
+                    <summary>事件与资讯</summary>
+                    <div class="dc-m4-tree-group">
+                      <button type="button" data-m4-node data-m4-title="除权除息" data-m4-path="数据中心 / 资产浏览 / 事件与资讯" data-m4-mode="unavailable" data-m4-ready="false"><span>除权除息</span><span class="dc-m4-node-state">待接入</span></button>
+                      <button type="button" data-m4-node data-m4-title="新闻公告" data-m4-path="数据中心 / 资产浏览 / 事件与资讯" data-m4-mode="unavailable" data-m4-ready="false"><span>新闻公告</span><span class="dc-m4-node-state">待接入</span></button>
+                    </div>
+                  </details>
+                </nav>
+              </aside>
+              <main class="dc-m4-workspace">
+                <div class="dc-m4-workspace-head">
+                  <div>
+                    <p id="dc-m4-breadcrumb" class="dc-m4-breadcrumb">数据中心 / 资产浏览 / 指数行情 / A股指数</p>
+                    <h4 id="dc-m4-title">沪深300</h4>
+                    <span id="dc-m4-availability" class="dc-m4-availability is-pending">数据待接入</span>
+                  </div>
+                  <div class="dc-m4-view-tabs" aria-label="资产视图">
+                    <button type="button" data-m4-view-tab="list">列表</button>
+                    <button type="button" data-m4-view-tab="chart" class="is-active">K 线</button>
+                  </div>
+                </div>
+
+                <section class="dc-m4-section" data-m4-view="unavailable">
+                  <div class="dc-m4-empty">
+                    <div>
+                      <span aria-hidden="true">◇</span>
+                      <h4 id="dc-m4-unavailable-title">沪深300 尚无可用数据</h4>
+                      <p id="dc-m4-unavailable-copy">当前项目没有该资产的可验证接口或已同步数据。为避免产生误导，本页不展示模拟行情。</p>
+                      <button type="button" data-m4-jump-sync>前往 M2 同步任务</button>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="dc-m4-section" data-m4-view="list" hidden>
+                  <form id="a-share-symbol-form" class="dc-m4-toolbar">
+                    <label><span>代码或名称</span><input name="query" placeholder="例如 000001 / 平安银行"></label>
+                    <label><span>市场</span><select name="market"><option value="">全部</option><option value="SSE">沪市</option><option value="SZSE">深市</option><option value="BSE">北交所</option></select></label>
+                    <label><span>每页</span><input name="limit" type="number" min="1" max="500" value="50"></label>
+                    <input name="offset" type="hidden" value="0">
+                    <button type="submit">检索证券</button>
+                  </form>
+                  <div id="a-share-symbol-summary" class="summary-grid"></div>
+                  <p class="dc-m4-chart-hint">双击数据行或点击证券代码，进入个股 K 线。</p>
+                  <div class="table-wrap"><table data-vtable-mode="market" aria-label="A股证券目录"><thead><tr><th>代码</th><th>名称</th><th>市场</th><th>回测代码</th><th>状态</th></tr></thead><tbody id="a-share-symbol-body"></tbody></table></div>
+                </section>
+
+                <section class="dc-m4-section" data-m4-view="chart" hidden>
+                  <form id="a-share-daily-form" class="dc-m4-toolbar">
+                    <label><span>标的代码</span><input name="symbol" value="000300.XSHG"></label>
+                    <label><span>周期</span><select id="dc-m4-frequency" data-m4-frequency><option value="daily">日线</option><option value="weekly">周线</option><option value="monthly">月线</option></select></label>
+                    <label id="dc-m4-adjustment-field"><span>复权</span><select name="adjustment"><option value="raw">不复权</option><option value="qfq">前复权</option><option value="hfq">后复权</option></select></label>
+                    <label><span>开始</span><input name="start_date" type="date" value="2015-01-05"></label>
+                    <label><span>结束</span><input name="end_date" type="date" value="2026-07-17"></label>
+                    <input name="limit" type="hidden" value="120">
+                    <input name="offset" type="hidden" value="0">
+                    <button type="submit">查询日线</button>
+                  </form>
+                  <div id="a-share-daily-summary" class="summary-grid"></div>
+                  <div class="dc-m4-chart-card">
+                    <div class="dc-m4-chart-meta">
+                      <strong>价格与成交量 · <span id="dc-m4-chart-period">日线</span></strong>
+                      <div class="dc-m4-ma-legend"><span><i style="background:#f7ba1e"></i>MA5</span><span><i style="background:#722ed1"></i>MA10</span><span><i style="background:#0fc6c2"></i>MA20</span><span><i style="background:#165dff"></i>MA60</span></div>
+                    </div>
+                    <div id="a-share-daily-chart" class="kline-chart"></div>
+                    <p class="dc-m4-chart-hint">点击任一 K 线交易日，展开该日市场全景。</p>
+                  </div>
+                  <details id="dc-m4-panorama" class="dc-m4-panorama">
+                    <summary><span id="dc-m4-panorama-date">选择 K 线交易日查看市场全景</span><span>默认收起</span></summary>
+                    <div class="dc-m4-panorama-grid">
+                      <article class="dc-m4-panorama-card"><div class="dc-m4-panorama-heading"><h4>行业热力图</h4><span id="dc-m4-industry-heatmap-status">待读取</span></div><div id="dc-m4-industry-heatmap" class="dc-m4-panorama-content"></div></article>
+                      <article class="dc-m4-panorama-card"><div class="dc-m4-panorama-heading"><h4>概念热力图</h4><span id="dc-m4-concept-heatmap-status">待读取</span></div><div id="dc-m4-concept-heatmap" class="dc-m4-panorama-content"></div></article>
+                      <article class="dc-m4-panorama-card"><div class="dc-m4-panorama-heading"><h4>行业资金流排名</h4><span id="dc-m4-industry-flow-status">待读取</span></div><div id="dc-m4-industry-flow" class="dc-m4-panorama-content"></div></article>
+                      <article class="dc-m4-panorama-card"><div class="dc-m4-panorama-heading"><h4>概念资金流排名</h4><span id="dc-m4-concept-flow-status">待读取</span></div><div id="dc-m4-concept-flow" class="dc-m4-panorama-content"></div></article>
+                      <article class="dc-m4-panorama-card is-wide"><div class="dc-m4-panorama-heading"><h4>当日新闻与公告</h4><span id="dc-m4-events-status">待读取</span></div><div id="dc-m4-events" class="dc-m4-panorama-content"></div></article>
+                    </div>
+                  </details>
+                  <details class="dc-m4-technical">
+                    <summary>查看原始日线数据与查询证据</summary>
+                    <div class="table-wrap"><table data-vtable-mode="market" aria-label="A股日线数据"><thead><tr><th>日期</th><th>开</th><th>高</th><th>低</th><th>收</th><th>成交量</th><th>成交额</th><th>涨跌幅</th><th>换手率</th></tr></thead><tbody id="a-share-daily-body"></tbody></table></div>
+                    <pre id="a-share-daily-output" class="code-block">尚未查询真实日线</pre>
+                  </details>
+                </section>
+              </main>
+            </div>
+          </section>
+
+        </div>
+        <div id="dc-view-versions" class="dc-view panel-wide"><section class="panel">
+          <div class="panel-header"><div><h3>快照管理</h3><p>发布不会自动切换默认研究版本；切换默认只修改指针，不影响历史 Run。</p></div><button id="dc-versions-refresh" type="button">刷新版本</button></div>
+          <div id="dc-version-compare" class="dc-version-compare"><div id="dc-version-default" class="dc-active-version"><div class="empty-cell">正在读取默认研究版本</div></div><div id="dc-version-latest" class="dc-active-version"><div class="empty-cell">正在读取最新发布版本</div></div></div><div id="dc-version-notice" class="dc-inline-alert" hidden></div>
+          <section class="dc-surface"><div class="dc-surface-title"><h4>最近 5 个关键版本</h4><span>发布与默认指针分离</span></div><div id="dc-version-timeline" class="dc-timeline"></div></section><section class="dc-surface"><div class="dc-surface-title"><h4>完整历史版本</h4><span>不可删除</span></div><div id="dc-version-list" class="dc-version-table"></div></section><div id="dc-asset-members" class="table-wrap"></div><details class="technical-details"><summary>查看版本清单 JSON</summary><pre id="dc-version-output" class="code-block">尚未读取版本目录</pre></details>
+        </section></div>
+            </div></section>
 
       <section id="page-factor" class="page-section"><div class="section-grid">
         <section class="panel panel-wide"><div class="panel-header"><h3>因子分析</h3><p>展示因子库、股票池、截面摘要与 Top N。</p></div><form id="factor-query-form" class="control-row"><label><span>股票池</span><input name="index_code" value="000300.XSHG"></label><label><span>交易日</span><input name="trade_date" type="date" value="2020-01-02"></label><label><span>因子</span><input name="factor_id" value="close_to_ma2_bias"></label><button type="submit">刷新因子</button></form></section>
@@ -170,7 +401,13 @@
       <section id="page-traceability" class="page-section"><div class="section-grid"><section class="panel panel-wide"><div class="panel-header"><h3>重构溯源</h3><p>展示五仓库按需求拆解、重构和 Web 验收页映射。</p></div></section><section class="panel panel-wide"><div class="table-wrap"><table><thead><tr><th>需求</th><th>主来源</th><th>采纳方式</th><th>新项目落点</th><th>验收页</th></tr></thead><tbody id="traceability-body"></tbody></table></div></section></div></section>
     </main>
   </div>
-  <script src="/app.js?v=769"></script>
+  <script src="/vendor/vtable/vtable.min.js?v=1.23.1"></script>
+  <script src="/vtable-adapter.js?v=2"></script>
+  <script src="/report-ui.js?v=780"></script>
+  <script src="/data_center_stage_c.js?v=880"></script>
+  <script src="/app.js?v=780"></script>
+  <script src="/quant-ui-candidate.js?v=2"></script>
+  <script src="/m4_asset_browser.js?v=1"></script>
 </body>
 </html>
 

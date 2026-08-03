@@ -32,6 +32,10 @@ def main() -> None:
         raise SystemExit("stage74 smoke failed: missing concepts must not use current snapshot")
     if len(independent.get("run_index") or []) != 10:
         raise SystemExit("stage74 smoke failed: selectable run index missing")
+    if independent.get("ic_analysis", {}).get("newey_west_t") != 2.1:
+        raise SystemExit("stage74 smoke failed: strategy exposure IC missing")
+    if independent.get("layered_returns", {}).get("q1_annualized") != 0.2:
+        raise SystemExit("stage74 smoke failed: layered return evidence missing")
     if independent.get("factor_analysis", {}).get("version") != "stage74-factor-registry-v1":
         raise SystemExit("stage74 smoke failed: factor registry missing")
     if not any(item.get("factor") == "board" and item.get("status") == "available" for item in independent.get("factor_analysis", {}).get("factor_registry", [])):
@@ -56,6 +60,9 @@ def main() -> None:
         raise SystemExit("stage74 smoke failed: shared template mismatch")
     if shared["professional_report"]["average_score"] != 77 or not shared["data_quality_gate"]["score_allowed"]:
         raise SystemExit("stage74 smoke failed: shared evidence gate mismatch")
+    sections = shared.get("portfolio_sections", {})
+    if sections.get("trade_count") != 1 or sections.get("position_point_count") != 1:
+        raise SystemExit("stage74 smoke failed: shared raw evidence counts missing")
     if shared.get("semantic_boundary", {}).get("account_scope") != "single_shared_account":
         raise SystemExit("stage74 smoke failed: shared account semantic boundary mismatch")
     print("stage74 backtest mode reports smoke test passed")
@@ -65,6 +72,13 @@ class FakeIndependent:
     def get_task(self, task_id):
         return {"task_id": task_id, "status": "completed", "config": {"date_window": {"start_date": "2020-01-01"}}, "progress": {"total": 12, "processed": 12, "entered": 10, "no_entry": 2, "failed": 0}}
 
+    def build_signal_analysis(self, task_id):
+        return {
+            "status": "ready",
+            "ic_analysis": {"status": "ready", "mean": 0.05, "stddev": 0.1, "icir": 7.937, "newey_west_t": 2.1, "rank_mean": 0.06, "positive_ratio": 0.6, "period_count": 12, "series": [], "monthly": []},
+            "layered_returns": {"status": "ready", "q1_annualized": 0.2, "q5_annualized": -0.1, "long_short_annualized": 0.3, "monotonicity_p_value": 0.05, "series": []},
+            "signal_summary": {"status": "ready", "total_signal_stock_count": 10, "average_per_period": 3.5},
+        }
     def list_items(self, task_id, *, limit, offset, **kwargs):
         items = [{"symbol": f"0000{i:02d}", "name": f"Stock {i}", "market": "SZSE" if i < 5 else "SSE", "status": "completed", "entered": True, "run_id": f"run-{i}", "metrics": {"total_returns": (i - 4) / 20, "annualized_returns": (i - 4) / 10, "max_drawdown": -0.1, "sharpe": 1.0}} for i in range(10)]
         return {"total": len(items), "items": items[offset : offset + limit]}

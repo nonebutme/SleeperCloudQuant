@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import itertools
 import json
+import math
 import os
 import sqlite3
 import statistics
 import threading
+from array import array
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +17,12 @@ from typing import Any
 from uuid import uuid4
 
 from domain.backtest import BacktestRunRequest
+from app.services.cross_section_context import (
+    build_industry_analysis as _build_industry_analysis,
+    build_signal_market_regimes as _build_signal_market_regimes,
+    index_industry_intervals as _index_industry_intervals,
+    industry_cross_section as _industry_cross_section,
+)
 
 
 class IndependentScreeningService:
@@ -26,14 +35,17 @@ class IndependentScreeningService:
         strategy_service: Any,
         runtime_store: Any,
         database_path: str | Path = "var/runtime/independent_screening.sqlite3",
+        classification_store: Any | None = None,
     ) -> None:
         self._backtest_service = backtest_service
         self._market_data_service = market_data_service
         self._strategy_service = strategy_service
         self._runtime_store = runtime_store
+        self._classifications = classification_store
         self._database_path = Path(database_path)
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._threads: dict[str, threading.Thread] = {}
+        self._signal_analysis_cache: dict[str, tuple[str, dict[str, Any]]] = {}
         self._lock = threading.Lock()
         self._ensure_schema()
         self._recover_interrupted_tasks()
@@ -191,6 +203,14 @@ class IndependentScreeningService:
             ).fetchall()
         return [self.get_task(str(row["task_id"])) for row in rows]
 
+    def get_task_version(self, task_id: str) -> str:
+        """Return a lightweight cache version without aggregating task items."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT updated_at FROM screening_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        return str(row["updated_at"] or "") if row is not None else ""
     def get_task(self, task_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute(
@@ -293,6 +313,232 @@ class IndependentScreeningService:
             "items": [self._item_payload(row) for row in rows],
         }
 
+    def build_signal_analysis(self, task_id: str) -> dict[str, Any]:
+        """Build point-in-time strategy-exposure IC evidence from persisted runs."""
+        task = self.get_task(task_id)
+        if task.get("status") == "not_found":
+            return _unavailable_signal_analysis("task_not_found")
+        persisted = dict(task.get("summary") or {}).get("signal_analysis")
+        if isinstance(persisted, dict) and persisted.get("version") == "strategy-exposure-cross-section-v2":
+            return dict(persisted)
+        cache_version = str(task.get("updated_at") or "")
+        cached = self._signal_analysis_cache.get(task_id)
+        if cached is not None and cached[0] == cache_version:
+            return dict(cached[1])
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM screening_items WHERE task_id=? AND status='completed' ORDER BY symbol",
+                (task_id,),
+            ).fetchall()
+        items = [self._item_payload(row) for row in rows]
+        config = dict(task.get("config") or {})
+        date_window = dict(config.get("date_window") or {})
+        adjustment = str(config.get("adjustment") or "raw")
+        cross_sections: dict[str, tuple[array[float], array[float], list[str]]] = {}
+        active_signal_counts: dict[str, int] = {}
+        symbols_with_signal: set[str] = set()
+        price_row_count = 0
+
+        def append_symbol_observations(
+            symbol: str,
+            snapshots: Any,
+        ) -> None:
+            nonlocal price_row_count
+            position_by_date: dict[str, float] = {}
+            account_by_date: dict[str, float] = {}
+            for row in snapshots:
+                date = str(row.get("snapshot_time") or "")[:10]
+                if not date:
+                    continue
+                position_by_date[date] = float(
+                    row.get("position_market_value", row.get("market_value")) or 0.0
+                )
+                account_by_date[date] = float(row.get("total_value") or 0.0)
+            prices = self._read_analysis_prices(
+                symbol=symbol,
+                adjustment=adjustment,
+                start_date=str(date_window.get("start_date") or "") or None,
+                end_date=str(date_window.get("end_date") or "") or None,
+            )
+            price_row_count += len(prices)
+            for index in range(len(prices) - 1):
+                current = prices[index]
+                following = prices[index + 1]
+                date = str(current.get("date") or "")[:10]
+                current_close = _optional_number(current.get("close"))
+                next_close = _optional_number(following.get("close"))
+                capital = account_by_date.get(date)
+                if not date or current_close is None or next_close is None or current_close <= 0 or not capital:
+                    continue
+                exposure = max(0.0, position_by_date.get(date, 0.0) / capital)
+                future_return = next_close / current_close - 1.0
+                signals, outcomes, section_symbols = cross_sections.setdefault(
+                    date,
+                    (array("d"), array("d"), []),
+                )
+                signals.append(exposure)
+                outcomes.append(future_return)
+                section_symbols.append(symbol)
+                if exposure > 1e-12:
+                    symbols_with_signal.add(symbol)
+                    active_signal_counts[date] = active_signal_counts.get(date, 0) + 1
+
+        bulk_reader = getattr(self._runtime_store, "iter_backtest_exposure_snapshots", None)
+        if callable(bulk_reader):
+            symbol_by_run_id = {
+                str(item.get("run_id") or ""): str(item.get("symbol") or "")
+                for item in items
+                if item.get("run_id") and item.get("symbol")
+            }
+            snapshots = bulk_reader(f"{task_id}-")
+            for run_id, run_snapshots in itertools.groupby(
+                snapshots,
+                key=lambda row: str(row.get("run_id") or ""),
+            ):
+                symbol = symbol_by_run_id.get(run_id)
+                if symbol:
+                    append_symbol_observations(symbol, run_snapshots)
+        else:
+            for item in items:
+                run_id = str(item.get("run_id") or "")
+                symbol = str(item.get("symbol") or "")
+                if not run_id or not symbol:
+                    continue
+                positions = list(self._runtime_store.fetch_backtest_positions(run_id))
+                accounts = list(self._runtime_store.fetch_backtest_accounts(run_id))
+                position_by_date = {
+                    str(row.get("snapshot_time") or "")[:10]: float(row.get("market_value") or 0.0)
+                    for row in positions
+                    if str(row.get("snapshot_time") or "")[:10]
+                }
+                append_symbol_observations(
+                    symbol,
+                    (
+                        {
+                            **row,
+                            "position_market_value": position_by_date.get(
+                                str(row.get("snapshot_time") or "")[:10],
+                                0.0,
+                            ),
+                        }
+                        for row in accounts
+                    ),
+                )
+        interval_reader = getattr(self._classifications, "fetch_intervals", None)
+        industry_intervals = (
+            _index_industry_intervals(interval_reader([item.get("symbol") for item in items], dimension="industry"))
+            if callable(interval_reader)
+            else {}
+        )
+        ic_rows: list[dict[str, Any]] = []
+        layered_daily: list[dict[str, Any]] = []
+        industry_daily: dict[str, list[float]] = {}
+        industry_neutral_rows: list[dict[str, Any]] = []
+        for date in sorted(cross_sections):
+            signals, outcomes, section_symbols = cross_sections[date]
+            section_size = len(signals)
+            if section_size >= 3 and _has_variation(signals) and _has_variation(outcomes):
+                ic = _pearson(signals, outcomes)
+                rank_ic = _spearman_values(signals, outcomes)
+                if ic is not None and rank_ic is not None:
+                    ic_rows.append({
+                        "date": date,
+                        "ic": ic,
+                        "rank_ic": rank_ic,
+                        "sample_size": section_size,
+                        "market_return": statistics.mean(outcomes),
+                    })
+            industry_result = _industry_cross_section(
+                date=date,
+                signals=signals,
+                outcomes=outcomes,
+                symbols=section_symbols,
+                interval_index=industry_intervals,
+            )
+            for industry, value in industry_result["industry_ic"].items():
+                industry_daily.setdefault(industry, []).append(value)
+            if industry_result.get("neutral_ic") is not None:
+                industry_neutral_rows.append({
+                    "date": date,
+                    "ic": industry_result["neutral_ic"],
+                    "sample_size": industry_result["neutral_sample_size"],
+                })
+            if section_size >= 5 and _has_variation(signals):
+                ordered_indices = sorted(
+                    range(section_size),
+                    key=lambda index: (-signals[index], index),
+                )
+                groups: list[list[float]] = [[] for _ in range(5)]
+                for rank, source_index in enumerate(ordered_indices):
+                    group_index = min(4, rank * 5 // section_size)
+                    groups[group_index].append(outcomes[source_index])
+                if all(groups):
+                    group_returns = [statistics.mean(group) for group in groups]
+                    layered_daily.append({
+                        "date": date,
+                        **{f"q{index + 1}": value for index, value in enumerate(group_returns)},
+                        "long_short": group_returns[0] - group_returns[4],
+                        "sample_size": section_size,
+                    })
+        analysis = _build_signal_analysis_payload(
+            task_id=task_id,
+            universe_count=len(items),
+            price_row_count=price_row_count,
+            ic_rows=ic_rows,
+            layered_daily=layered_daily,
+            active_signal_counts=active_signal_counts,
+            symbols_with_signal=symbols_with_signal,
+            observation_period_count=len(cross_sections),
+            industry_daily=industry_daily,
+            industry_neutral_rows=industry_neutral_rows,
+        )
+        self._signal_analysis_cache[task_id] = (cache_version, dict(analysis))
+        return analysis
+
+    def persist_signal_analysis(self, task_id: str) -> dict[str, Any]:
+        """Build and persist report evidence for a completed historical task."""
+        task = self.get_task(task_id)
+        if task.get("status") == "not_found":
+            return _unavailable_signal_analysis("task_not_found")
+        if task.get("status") not in {"completed", "partial_failed"}:
+            return _unavailable_signal_analysis("task_not_finished")
+        analysis = self.build_signal_analysis(task_id)
+        summary = dict(task.get("summary") or {})
+        summary["signal_analysis"] = analysis
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE screening_tasks SET summary_json=? WHERE task_id=?",
+                (_dump(summary), task_id),
+            )
+        cache_version = str(task.get("updated_at") or "")
+        self._signal_analysis_cache[task_id] = (cache_version, dict(analysis))
+        return analysis
+
+    def _read_analysis_prices(
+        self,
+        *,
+        symbol: str,
+        adjustment: str,
+        start_date: str | None,
+        end_date: str | None,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = self._market_data_service.get_a_share_daily_prices(
+                symbol=symbol,
+                adjustment=adjustment,
+                start_date=start_date,
+                end_date=end_date,
+                limit=2000,
+                offset=offset,
+            )
+            batch = list(page.get("rows") or [])
+            rows.extend(dict(row) for row in batch)
+            offset += len(batch)
+            if not batch or offset >= int(page.get("total") or 0):
+                break
+        return sorted(rows, key=lambda row: str(row.get("date") or ""))
     def _execute_task(self, task_id: str) -> None:
         task = self.get_task(task_id)
         config = dict(task.get("config") or {})
@@ -494,6 +740,17 @@ class IndependentScreeningService:
                 "UPDATE screening_tasks SET status=?, summary_json=?, updated_at=?, finished_at=? WHERE task_id=?",
                 (status, _dump(summary), now, now, task_id),
             )
+        try:
+            summary["signal_analysis"] = self.build_signal_analysis(task_id)
+        except Exception as exc:
+            summary["signal_analysis"] = _unavailable_signal_analysis(
+                f"{type(exc).__name__}: {exc}"
+            )
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE screening_tasks SET summary_json=? WHERE task_id=?",
+                (_dump(summary), task_id),
+            )
 
     def _freeze_universe(self, *, symbols: list[str], market: str, limit: int) -> list[dict[str, Any]]:
         requested = {_symbol_code(item) for item in symbols if str(item).strip()}
@@ -620,6 +877,238 @@ class IndependentScreeningService:
         connection.execute("PRAGMA journal_mode=WAL")
         return connection
 
+
+def _unavailable_signal_analysis(reason: str) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "signal_definition": "end_of_day_position_market_value_divided_by_total_account_value",
+        "outcome_definition": "next_trading_day_adjusted_close_return",
+        "ic_analysis": {"status": "unavailable", "reason": reason, "series": [], "monthly": []},
+        "layered_returns": {"status": "unavailable", "reason": reason, "series": []},
+        "signal_summary": {"status": "unavailable", "reason": reason},
+    }
+
+
+def _build_signal_analysis_payload(
+    *,
+    task_id: str,
+    universe_count: int,
+    price_row_count: int,
+    ic_rows: list[dict[str, Any]],
+    layered_daily: list[dict[str, Any]],
+    active_signal_counts: dict[str, int],
+    symbols_with_signal: set[str],
+    observation_period_count: int,
+    industry_daily: dict[str, list[float]],
+    industry_neutral_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    ic_values = [float(row["ic"]) for row in ic_rows]
+    rank_values = [float(row["rank_ic"]) for row in ic_rows]
+    cumulative_ic = 0.0
+    cumulative_rank_ic = 0.0
+    series = []
+    for row in ic_rows:
+        cumulative_ic += float(row["ic"])
+        cumulative_rank_ic += float(row["rank_ic"])
+        series.append({**row, "cumulative_ic": cumulative_ic, "cumulative_rank_ic": cumulative_rank_ic})
+    monthly_buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in ic_rows:
+        monthly_buckets.setdefault(str(row["date"])[:7], []).append(row)
+    monthly = [
+        {
+            "month": month,
+            "ic": statistics.mean(float(row["ic"]) for row in rows),
+            "rank_ic": statistics.mean(float(row["rank_ic"]) for row in rows),
+            "period_count": len(rows),
+        }
+        for month, rows in sorted(monthly_buckets.items())
+    ]
+    ic_mean = statistics.mean(ic_values) if ic_values else None
+    ic_std = statistics.stdev(ic_values) if len(ic_values) > 1 else None
+    ic_analysis = {
+        "status": "ready" if ic_values else "insufficient_cross_section",
+        "signal_name": "策略收盘持仓权重",
+        "signal_definition": "当日收盘后持仓市值/账户总资产",
+        "outcome_definition": "下一交易日复权收盘收益率",
+        "periodicity": "daily",
+        "mean": ic_mean,
+        "stddev": ic_std,
+        "icir": ic_mean / ic_std * math.sqrt(252) if ic_mean is not None and ic_std else None,
+        "newey_west_t": _newey_west_t(ic_values),
+        "rank_mean": statistics.mean(rank_values) if rank_values else None,
+        "rank_stddev": statistics.stdev(rank_values) if len(rank_values) > 1 else None,
+        "positive_ratio": sum(value > 0 for value in ic_values) / len(ic_values) if ic_values else None,
+        "period_count": len(ic_values),
+        "minimum_cross_section_size": min((int(row["sample_size"]) for row in ic_rows), default=0),
+        "maximum_cross_section_size": max((int(row["sample_size"]) for row in ic_rows), default=0),
+        "series": series,
+        "monthly": monthly,
+        "methodology": "Pearson IC and Spearman Rank IC; Newey-West HAC t-statistic; daily ICIR annualized by sqrt(252)",
+    }
+    layered_returns = _build_layered_returns(layered_daily)
+    active_counts = [
+        int(active_signal_counts[date])
+        for date in sorted(active_signal_counts)
+    ]
+    industry_analysis = _build_industry_analysis(industry_daily, industry_neutral_rows)
+    market_regimes = _build_signal_market_regimes(ic_rows, layered_daily)
+    signal_summary = {
+        "status": "ready" if observation_period_count else "unavailable",
+        "total_signal_stock_count": len(symbols_with_signal),
+        "average_per_period": sum(active_counts) / observation_period_count if observation_period_count else None,
+        "active_period_count": len(active_counts),
+        "observation_period_count": observation_period_count,
+        "universe_count": universe_count,
+        "definition": "signal means end-of-day position weight greater than zero",
+    }
+    return {
+        "status": "ready" if ic_values or layered_daily else "limited",
+        "task_id": task_id,
+        "version": "strategy-exposure-cross-section-v2",
+        "signal_definition": "end_of_day_position_market_value_divided_by_total_account_value",
+        "outcome_definition": "next_trading_day_adjusted_close_return",
+        "look_ahead_control": "signal observed after close on t; outcome uses adjusted close return from t to next trading day",
+        "universe_scope": "all_completed_independent_accounts",
+        "price_row_count": price_row_count,
+        "ic_analysis": ic_analysis,
+        "layered_returns": layered_returns,
+        "signal_summary": signal_summary,
+        "industry_analysis": industry_analysis,
+        "market_regimes": market_regimes,
+    }
+
+
+def _build_layered_returns(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {
+            "status": "insufficient_universe",
+            "reason": "at_least_five_valid_symbols_per_period_required",
+            "minimum_cross_section_size": 5,
+            "series": [],
+        }
+    keys = [f"q{index}" for index in range(1, 6)]
+    daily = {key: [float(row[key]) for row in rows] for key in keys}
+    daily["long_short"] = [float(row["long_short"]) for row in rows]
+    nav = {key: 1.0 for key in (*keys, "long_short")}
+    series = []
+    for row in rows:
+        point = {"date": row["date"], "sample_size": row["sample_size"]}
+        for key in (*keys, "long_short"):
+            nav[key] *= 1.0 + float(row[key])
+            point[key] = nav[key]
+        series.append(point)
+    annualized = {key: _annualize_daily(daily[key]) for key in (*keys, "long_short")}
+    group_values = [annualized[key] for key in keys]
+    monotonicity = _spearman_values([1.0, 2.0, 3.0, 4.0, 5.0], group_values)
+    return {
+        "status": "ready",
+        "period_count": len(rows),
+        "q1_annualized": annualized["q1"],
+        "q5_annualized": annualized["q5"],
+        "long_short_annualized": annualized["long_short"],
+        "group_annualized": [{"group": key.upper(), "annualized_return": annualized[key]} for key in keys],
+        "monotonicity": monotonicity,
+        "monotonicity_p_value": _exact_spearman_p(group_values),
+        "long_short_max_drawdown": _max_drawdown([float(row["long_short"]) for row in series]),
+        "series": series,
+        "methodology": "equal-count Q1-Q5 by descending strategy exposure; Q1 minus Q5; exact two-sided Spearman permutation p-value",
+    }
+
+
+def _optional_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _has_variation(values: list[float]) -> bool:
+    return len(values) > 1 and max(values) - min(values) > 1e-12
+
+
+def _pearson(left: list[float], right: list[float]) -> float | None:
+    if len(left) != len(right) or len(left) < 3 or not _has_variation(left) or not _has_variation(right):
+        return None
+    left_mean = statistics.mean(left)
+    right_mean = statistics.mean(right)
+    numerator = sum((a - left_mean) * (b - right_mean) for a, b in zip(left, right))
+    denominator = math.sqrt(sum((a - left_mean) ** 2 for a in left) * sum((b - right_mean) ** 2 for b in right))
+    return numerator / denominator if denominator else None
+
+
+def _average_ranks(values: list[float]) -> list[float]:
+    order = sorted(range(len(values)), key=lambda index: values[index])
+    ranks = [0.0] * len(values)
+    cursor = 0
+    while cursor < len(order):
+        end = cursor
+        while end + 1 < len(order) and values[order[end + 1]] == values[order[cursor]]:
+            end += 1
+        rank = (cursor + end) / 2.0 + 1.0
+        for position in range(cursor, end + 1):
+            ranks[order[position]] = rank
+        cursor = end + 1
+    return ranks
+
+
+def _spearman_values(left: list[float], right: list[float]) -> float | None:
+    if len(left) != len(right) or len(left) < 3:
+        return None
+    return _pearson(_average_ranks(left), _average_ranks(right))
+
+
+def _newey_west_t(values: list[float]) -> float | None:
+    count = len(values)
+    if count < 3:
+        return None
+    mean = statistics.mean(values)
+    centered = [value - mean for value in values]
+    lag = min(count - 1, max(0, int(4 * (count / 100) ** (2 / 9))))
+    long_run_variance = sum(value * value for value in centered) / count
+    for offset in range(1, lag + 1):
+        covariance = sum(centered[index] * centered[index - offset] for index in range(offset, count)) / count
+        long_run_variance += 2.0 * (1.0 - offset / (lag + 1.0)) * covariance
+    if long_run_variance <= 0:
+        return None
+    standard_error = math.sqrt(long_run_variance / count)
+    return mean / standard_error if standard_error else None
+
+
+def _annualize_daily(values: list[float]) -> float:
+    nav = 1.0
+    for value in values:
+        nav *= 1.0 + value
+    return nav ** (252 / len(values)) - 1.0 if values and nav > 0 else -1.0
+
+
+def _exact_spearman_p(group_returns: list[float]) -> float | None:
+    observed = _spearman_values([1.0, 2.0, 3.0, 4.0, 5.0], group_returns)
+    if observed is None:
+        return None
+    absolute = abs(observed)
+    extreme = 0
+    total = 0
+    for permutation in itertools.permutations(group_returns):
+        candidate = _spearman_values([1.0, 2.0, 3.0, 4.0, 5.0], list(permutation))
+        if candidate is not None:
+            total += 1
+            if abs(candidate) >= absolute - 1e-12:
+                extreme += 1
+    return extreme / total if total else None
+
+
+def _max_drawdown(nav_values: list[float]) -> float | None:
+    if not nav_values:
+        return None
+    peak = nav_values[0]
+    maximum = 0.0
+    for value in nav_values:
+        peak = max(peak, value)
+        drawdown = value / peak - 1.0 if peak else 0.0
+        maximum = min(maximum, drawdown)
+    return maximum
 
 def _normalize_id(value: str) -> str:
     normalized = "".join(character if character.isalnum() or character in "-_" else "-" for character in value.strip())

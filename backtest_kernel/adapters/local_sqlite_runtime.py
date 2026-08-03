@@ -6,7 +6,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from backtest_kernel.strategy_execution import execute_target_weights
+from backtest_kernel.strategy_execution import execute_strategy_evidence
 from data_platform.repository.contracts import MarketDataRepository
 
 
@@ -53,15 +53,20 @@ class LocalSQLiteBacktestRuntime:
 
         strategy_snapshot: Mapping[str, Any] | None = None
         target_weights: list[float] | None = None
+        raw_scores: list[float | None] | None = None
+        score_contract = "unavailable_legacy_strategy"
         strategy_id = str(extra_config.get("strategy_id") or "")
         strategy_version = str(extra_config.get("strategy_version") or "") or None
         if self._strategy_resolver is not None and strategy_id:
             strategy_snapshot = self._strategy_resolver(strategy_id, strategy_version)
-            target_weights = execute_target_weights(
+            strategy_evidence = execute_strategy_evidence(
                 str(strategy_snapshot.get("source_code") or ""),
                 rows,
                 parameters,
             )
+            target_weights = list(strategy_evidence["weights"])
+            raw_scores = strategy_evidence.get("raw_scores")
+            score_contract = str(strategy_evidence.get("score_contract") or "")
 
         close_values = [float(row.get("close") or 0.0) for row in rows]
         cash = initial_cash
@@ -106,7 +111,14 @@ class LocalSQLiteBacktestRuntime:
                         "amount": round(amount, 6),
                         "commission": round(commission, 6),
                         "tax": round(tax, 6),
-                        "notes": {"runtime": "local_sqlite_backtest", "target_weight": target_weight, "rqalpha_local": rqalpha_config},
+                        "notes": {
+                            "runtime": "local_sqlite_backtest",
+                            "target_weight": target_weight,
+                            "raw_signal_score": raw_scores[index] if raw_scores is not None else None,
+                            "market_vwap": _market_vwap(row, close),
+                            "market_volume": _positive_float(row.get("volume")),
+                            "rqalpha_local": rqalpha_config,
+                        },
                     }
                 )
             market_value = quantity * close
@@ -167,6 +179,38 @@ class LocalSQLiteBacktestRuntime:
                     "source_sha256": strategy_snapshot.get("source_sha256") if strategy_snapshot else None,
                     "execution_contract": strategy_snapshot.get("execution_contract") if strategy_snapshot else "legacy-ma-fallback",
                 },
+                "signal_evidence": {
+                    "version": "stage80-point-in-time-signal-v1",
+                    "status": "ready" if raw_scores is not None else "unavailable",
+                    "reason": None if raw_scores is not None else score_contract,
+                    "signal_name": f"{strategy_id or strategy_name}:raw_score",
+                    "signal_version": strategy_snapshot.get("latest_version") if strategy_snapshot else strategy_version,
+                    "source_sha256": strategy_snapshot.get("source_sha256") if strategy_snapshot else None,
+                    "observed_at": "bar_close",
+                    "normalization": "cross_section_required_not_applied_in_single_run",
+                    "fields": ["date", "raw_score", "target_weight"],
+                    "rows": [
+                        [
+                            str(row.get("date") or "")[:10],
+                            raw_scores[index] if raw_scores is not None else None,
+                            target_weights[index] if target_weights is not None else None,
+                        ]
+                        for index, row in enumerate(rows)
+                    ] if raw_scores is not None else [],
+                },
+                "price_bars": [
+                    {
+                        "date": str(row.get("date") or "")[:10],
+                        "symbol": symbol,
+                        "open": row.get("open"),
+                        "high": row.get("high"),
+                        "low": row.get("low"),
+                        "close": row.get("close"),
+                        "volume": row.get("volume"),
+                        "amount": row.get("amount"),
+                    }
+                    for row in rows
+                ] if str(extra_config.get("mode") or "") == "single" else [],
                 "benchmark_alignment": {"mode": rqalpha_config["benchmark_alignment"], "rows": len(benchmark_curve)},
                 "logs": logs,
                 "trades": trades,
@@ -293,6 +337,28 @@ def _positive_int(value: Any, *, default: int) -> int:
 
 def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _market_vwap(row: Mapping[str, Any], close: float) -> float | None:
+    """Infer provider volume units only when amount/volume reconciles to the bar price."""
+
+    amount = _positive_float(row.get("amount"))
+    volume = _positive_float(row.get("volume"))
+    if amount is None or volume is None or close <= 0:
+        return None
+    for divisor in (1.0, 100.0):
+        candidate = amount / volume / divisor
+        if close * 0.2 <= candidate <= close * 5.0:
+            return round(candidate, 6)
+    return None
 
 
 def _sharpe(returns: Sequence[float]) -> float:

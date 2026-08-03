@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from _project_bootstrap import ensure_project_root_on_sys_path
@@ -43,6 +43,17 @@ def main() -> None:
             f"raw_missing_volume={raw_missing_volume} raw_invalid_ohlc={raw_invalid_ohlc}"
         )
 
+    latest_dates = {
+        str(overview["adjustments"][mode].get("max_date") or "")
+        for mode in ("raw", "qfq", "hfq")
+    }
+    if len(latest_dates) != 1 or "" in latest_dates:
+        raise SystemExit(
+            "full-market A-share quality failed: adjustment latest dates are inconsistent"
+        )
+    latest_date = latest_dates.pop()
+    sample_start_date = (date.fromisoformat(latest_date) - timedelta(days=14)).isoformat()
+
     for mode in ("raw", "qfq", "hfq"):
         item = overview["adjustments"][mode]
         if int(item.get("row_count") or 0) < 11_000_000:
@@ -61,12 +72,12 @@ def main() -> None:
             daily = store.fetch_daily_prices(
                 symbol=symbol,
                 adjustment=mode,
-                start_date="2026-07-13",
-                end_date="2026-07-17",
+                start_date=sample_start_date,
+                end_date=latest_date,
                 limit=10,
             )
             rows = daily["rows"]
-            if not rows or rows[0]["date"] != "2026-07-17":
+            if not rows or rows[0]["date"] != latest_date:
                 raise SystemExit(
                     f"full-market A-share quality failed: {symbol}/{mode} latest row is missing"
                 )
@@ -80,7 +91,7 @@ def main() -> None:
                 )
 
     for mode in ("raw", "qfq", "hfq"):
-        targets = store.list_sync_targets(adjustment=mode, end_date="2026-07-17")
+        targets = store.list_sync_targets(adjustment=mode, end_date=latest_date)
         if len(targets) > 10:
             raise SystemExit(f"full-market A-share quality failed: {mode} has too many late symbols")
 
@@ -88,7 +99,7 @@ def main() -> None:
         "full-market A-share quality passed:",
         f"current={overview['current_symbol_count']}",
         f"catalog={overview['catalog_symbol_count']}",
-        "latest=2026-07-17",
+        f"latest={latest_date}",
         "coverage=" + ",".join(
             f"{mode}:{overview['adjustments'][mode]['fresh_coverage_pct']}%"
             for mode in ("raw", "qfq", "hfq")

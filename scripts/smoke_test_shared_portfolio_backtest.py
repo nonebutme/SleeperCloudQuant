@@ -79,6 +79,11 @@ def main() -> None:
     accounts = list(runtime_store.fetch_backtest_accounts(run_id))
     trades = list(runtime_store.fetch_backtest_trades(run_id))
     positions = list(runtime_store.fetch_backtest_positions(run_id))
+    yearly_returns = list(runtime_store.fetch_backtest_yearly_returns(run_id))
+    metrics = {
+        row["metric_name"]: row.get("metric_value") if row.get("metric_value") is not None else row.get("metric_text")
+        for row in runtime_store.fetch_backtest_metrics(run_id)
+    }
     if run is None or run["status"] != "completed":
         raise SystemExit("shared portfolio smoke failed: standard run was not persisted")
     if len(accounts) != 4 or not trades or not any(str(row["side"]).upper() == "SELL" for row in trades):
@@ -94,6 +99,19 @@ def main() -> None:
         raise SystemExit("shared portfolio smoke failed: max_positions exceeded")
     if completed["summary"].get("statistics_scope") != "single_shared_account":
         raise SystemExit("shared portfolio smoke failed: aggregation scope mismatch")
+    sell_count = sum(1 for row in trades if str(row.get("side") or "").upper() == "SELL")
+    if int(metrics.get("trade_count") or 0) != sell_count or int(metrics.get("trade_fill_count") or 0) != len(trades):
+        raise SystemExit("shared portfolio smoke failed: realized trade/fill counts are inconsistent")
+    if metrics.get("benchmark_return") is None or metrics.get("excess_return") is None:
+        raise SystemExit("shared portfolio smoke failed: aligned benchmark metrics missing")
+    if not yearly_returns or yearly_returns[0].get("benchmark_return") in (None, 0.0):
+        raise SystemExit("shared portfolio smoke failed: yearly benchmark return is not real")
+    raw_result = dict(run.get("raw_result") or {})
+    if len(raw_result.get("benchmark_curve") or []) != len(accounts) or len(raw_result.get("excess_curve") or []) != len(accounts):
+        raise SystemExit("shared portfolio smoke failed: benchmark/excess curves are not aligned")
+    raw_positions = raw_result.get("positions") or []
+    if raw_positions and not all(row.get("avg_price") is not None and row.get("weight") is not None for row in raw_positions):
+        raise SystemExit("shared portfolio smoke failed: position cost/weight evidence missing")
     print("shared portfolio backtest smoke test passed")
 
 

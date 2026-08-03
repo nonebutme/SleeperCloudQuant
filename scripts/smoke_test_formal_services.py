@@ -230,8 +230,11 @@ def main() -> None:
     if raw_detail is None or not raw_detail.trades or not raw_detail.accounts or not raw_detail.yearly_returns:
         raise SystemExit("formal services smoke test failed: persisted runtime rows missing")
     reporting_service = ReportingService(reader, BatchComparisonService(runtime_store))
-    if not reporting_service.get_run_detail("services-smoke-run-001").metrics:
+    report_detail = reporting_service.get_run_detail("services-smoke-run-001")
+    if not report_detail.metrics:
         raise SystemExit("formal services smoke test failed: reporting detail missing")
+    if not report_detail.trades or not report_detail.positions or not report_detail.accounts:
+        raise SystemExit("formal services smoke test failed: reporting raw evidence missing")
     if not reporting_service.get_batch_summary("services-batch-001").rows:
         raise SystemExit("formal services smoke test failed: reporting summary missing")
     failure_summary = reporting_service.get_batch_summary("services-batch-failure-001")

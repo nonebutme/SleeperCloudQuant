@@ -10,6 +10,16 @@ from data_platform import MarketDataRepository
 from domain.market.models import Bar, MarketCacheStatus, MarketSyncStatus, MarketSyncSummary
 
 
+CORE_A_SHARE_INDICES = (
+    {"index_symbol": "000001", "qualified_symbol": "000001.XSHG", "name": "上证指数", "market": "SSE"},
+    {"index_symbol": "399001", "qualified_symbol": "399001.XSHE", "name": "深证成指", "market": "SZSE"},
+    {"index_symbol": "899050", "qualified_symbol": "899050.BSE", "name": "北证50", "market": "BSE"},
+    {"index_symbol": "000300", "qualified_symbol": "000300.XSHG", "name": "沪深300", "market": "SSE"},
+    {"index_symbol": "399006", "qualified_symbol": "399006.XSHE", "name": "创业板指", "market": "SZSE"},
+    {"index_symbol": "000688", "qualified_symbol": "000688.XSHG", "name": "科创50", "market": "SSE"},
+)
+
+
 @runtime_checkable
 class MarketDataSyncProtocol(Protocol):
     """Optional sync capability implemented by cache-aware repositories."""
@@ -63,9 +73,39 @@ class MarketDataSyncProtocol(Protocol):
 class MarketDataService:
     """Expose market-data reads through service-facing domain objects."""
 
-    def __init__(self, repository: MarketDataRepository, a_share_repository: Any | None = None) -> None:
+    def __init__(
+        self,
+        repository: MarketDataRepository,
+        a_share_repository: Any | None = None,
+        governance_repository: Any | None = None,
+        panorama_service: Any | None = None,
+    ) -> None:
         self._repository = repository
         self._a_share_repository = a_share_repository
+        self._governance_repository = governance_repository
+        self._panorama_service = panorama_service
+
+    def get_market_panorama(
+        self,
+        *,
+        trade_date: str,
+        symbol: str = "",
+        asset_type: str = "stock",
+    ) -> dict[str, Any]:
+        if self._panorama_service is None:
+            return {
+                "status": "unavailable",
+                "requested_trade_date": trade_date,
+                "reason": "market_panorama_service_not_configured",
+                "datasets": {},
+            }
+        return dict(
+            self._panorama_service.get_panorama(
+                trade_date=trade_date,
+                symbol=symbol,
+                asset_type=asset_type,
+            )
+        )
 
     def get_price_history(
         self,
@@ -128,6 +168,70 @@ class MarketDataService:
             )
         )
 
+    def list_index_symbols(self) -> dict[str, Any]:
+        stored_rows = (
+            self._governance_repository.list_index_price_assets()
+            if self._governance_repository is not None
+            and hasattr(self._governance_repository, "list_index_price_assets")
+            else []
+        )
+        stored = {str(row.get("index_symbol")): dict(row) for row in stored_rows}
+        items = []
+        for definition in CORE_A_SHARE_INDICES:
+            coverage = stored.get(definition["index_symbol"], {})
+            row_count = int(coverage.get("row_count") or 0)
+            items.append({
+                **definition,
+                **coverage,
+                "row_count": row_count,
+                "status": "ready" if row_count > 0 else "pending",
+            })
+        known = {item["index_symbol"] for item in items}
+        items.extend(
+            {
+                **row,
+                "qualified_symbol": str(row["index_symbol"]),
+                "name": str(row["index_symbol"]),
+                "market": "UNKNOWN",
+                "status": "ready",
+            }
+            for row in stored_rows
+            if str(row.get("index_symbol")) not in known
+        )
+        return {
+            "status": "ready",
+            "source": "canonical_a_share_sqlite",
+            "dataset": "market_index_daily_prices",
+            "items": items,
+        }
+
+    def get_index_daily_prices(
+        self,
+        *,
+        index_symbol: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        if self._governance_repository is None or not hasattr(
+            self._governance_repository, "fetch_index_daily_prices"
+        ):
+            return {
+                "status": "unavailable",
+                "index_symbol": index_symbol,
+                "total": 0,
+                "rows": [],
+                "read_only": True,
+            }
+        return dict(self._governance_repository.fetch_index_daily_prices(
+            index_symbol=index_symbol,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        ))
+
     def get_a_share_price_history(
         self,
         *,
@@ -138,6 +242,16 @@ class MarketDataService:
     ) -> list[dict[str, Any]]:
         """Return ascending canonical A-share bars for portfolio backtests."""
 
+        if self._governance_repository is not None and hasattr(
+            self._governance_repository, "fetch_index_price_history"
+        ):
+            index_rows = self._governance_repository.fetch_index_price_history(
+                symbol,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if index_rows:
+                return [dict(row) for row in index_rows]
         if self._a_share_repository is None or not hasattr(self._a_share_repository, "fetch_price_history"):
             return []
         return [
@@ -149,6 +263,29 @@ class MarketDataService:
                 adjustment=adjustment,
             )
         ]
+    def get_published_data_version(
+        self,
+        *,
+        symbol: str,
+        adjustment: str,
+        start_date: str,
+        end_date: str,
+        benchmark: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the immutable canonical release before a backtest starts."""
+
+        if self._governance_repository is None:
+            return {"status": "unsupported", "reason": "governance_repository_not_configured"}
+        return dict(
+            self._governance_repository.resolve_published_data_version(
+                symbol=symbol,
+                adjustment=adjustment,
+                start_date=start_date,
+                end_date=end_date,
+                benchmark=benchmark,
+            )
+        )
+
     def get_index_components(
         self,
         *,
@@ -358,9 +495,3 @@ def _optional_str(value: object) -> str | None:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-
-
-
-

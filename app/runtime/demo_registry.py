@@ -17,10 +17,12 @@ from app.services import (
     BacktestModeReportService,
     BatchResearchService,
     ConfigCenterService,
+    DataCenterService,
     FactorResearchService,
     IndependentScreeningService,
     LLMProviderGateway,
     MarketDataService,
+    MarketPanoramaService,
     PersistentBacktestService,
     ReportingService,
     SharedPortfolioService,
@@ -30,7 +32,8 @@ from app.services import (
 from backtest_kernel import LocalSQLiteBacktestRuntime, RqalphaPackageRuntime, RqalphaRicequantGateway, RunSingleBacktest
 from config_center import UnifiedConfigManager
 from config_center.providers.ricequant_config import RicequantConfig
-from data_platform import ClassificationHistoryStore, AShareMarketStore, AShareSQLiteRepository, CachedMarketDataRepository, ExternalMarketProviderRepository, LegacySQLiteMarketDataRepository, SqliteMetadataStore
+from data_platform import AShareGovernanceStore, AShareSyncScheduler, ClassificationHistoryStore, DataCenterStore, MarketPanoramaStore, AShareMarketStore, AShareSQLiteRepository, CachedMarketDataRepository, ExternalMarketProviderRepository, LegacySQLiteMarketDataRepository, SqliteMetadataStore
+from data_platform.providers.akshare_governance_provider import AkshareGovernanceProvider
 from factor_lab import FactorDefinition, FactorValue, SqliteFactorStore
 from reporting import BatchComparisonService, RunResultsReader
 
@@ -39,15 +42,47 @@ def build_demo_service_registry() -> AppServiceRegistry:
     database_path = Path("tmp") / "formal_http_demo.sqlite3"
     upstream_market_repository = _build_market_repository()
     canonical_a_share_repository = AShareMarketStore(_resolve_a_share_canonical_database_path())
+    governance_repository = AShareGovernanceStore(_resolve_a_share_canonical_database_path())
+    governance_repository.ensure_schema()
+    a_share_scheduler = AShareSyncScheduler(
+        _resolve_a_share_canonical_database_path(),
+        market_store=canonical_a_share_repository,
+        governance_store=governance_repository,
+        provider=AkshareGovernanceProvider(
+            proxy_url=os.environ.get("SCQ_AKSHARE_PROXY"),
+            retry_count=int(os.environ.get("SCQ_A_SHARE_SCHEDULER_PROVIDER_RETRIES", "2")),
+        ),
+        requests_per_minute=int(os.environ.get("SCQ_A_SHARE_SCHEDULER_RPM", "60")),
+        max_workers=int(os.environ.get("SCQ_A_SHARE_SCHEDULER_WORKERS", "4")),
+        retry_count=int(os.environ.get("SCQ_A_SHARE_SCHEDULER_RETRIES", "3")),
+    )
+    a_share_scheduler.ensure_schema()
+    # Stage B freezes business sync as manual-only. Recovery remains enabled,
+    # but the web runtime never creates a daily task or changes the default version.
+    current_schedule = a_share_scheduler.get_status()
+    a_share_scheduler.configure(
+        enabled=False,
+        run_time=str(current_schedule.get("run_time") or "18:15"),
+        timezone_name="Asia/Shanghai",
+        adjustments=("raw", "qfq", "hfq"),
+    )
+    a_share_scheduler.recover_interrupted_jobs()
     a_share_repository = (
         canonical_a_share_repository
         if canonical_a_share_repository.has_daily_data()
         else AShareSQLiteRepository(_resolve_a_share_database_path())
     )
     backtest_market_repository = canonical_a_share_repository if canonical_a_share_repository.has_daily_data() else upstream_market_repository
-    market_service = MarketDataService(
-        CachedMarketDataRepository(upstream_market_repository, SqliteMetadataStore(database_path)),
+    panorama_service = MarketPanoramaService(
+        MarketPanoramaStore(Path("var/runtime/market_panorama.sqlite3")),
+        market_database=_resolve_a_share_canonical_database_path(),
+        classification_database=Path("var/runtime/a_share_classification_history.sqlite3"),
+        max_workers=int(os.environ.get("SCQ_PANORAMA_WORKERS", "4")),
+    )
+    market_service = MarketDataService(        CachedMarketDataRepository(upstream_market_repository, SqliteMetadataStore(database_path)),
         a_share_repository=a_share_repository,
+        governance_repository=governance_repository,
+        panorama_service=panorama_service,
     )
     factor_store = SqliteFactorStore(database_path)
     factor_service = FactorResearchService(
@@ -87,11 +122,13 @@ def build_demo_service_registry() -> AppServiceRegistry:
     )
     backtest_service = PersistentBacktestService(base_backtest_service, runtime_store, market_service)
     batch_research_service = BatchResearchService(backtest_service, runtime_store)
+    classification_store = ClassificationHistoryStore()
     independent_screening_service = IndependentScreeningService(
         backtest_service,
         market_service,
         strategy_service,
         runtime_store,
+        classification_store=classification_store,
     )
     single_backtest_task_service = SingleBacktestTaskService(backtest_service)
     shared_portfolio_service = SharedPortfolioService(
@@ -104,7 +141,6 @@ def build_demo_service_registry() -> AppServiceRegistry:
         BatchComparisonService(runtime_store),
         snapshot_store=runtime_store,
     )
-    classification_store = ClassificationHistoryStore()
     backtest_mode_report_service = BacktestModeReportService(
         reporting_service,
         independent_screening_service,
@@ -113,7 +149,16 @@ def build_demo_service_registry() -> AppServiceRegistry:
         classification_store,
     )
     ai_analysis_service = AIAnalysisService(market_service, factor_service, workflow_store=runtime_store, llm_provider=LLMProviderGateway())
-    config_center_service = ConfigCenterService(UnifiedConfigManager())
+    config_center_service = ConfigCenterService(
+        UnifiedConfigManager(),
+        a_share_scheduler=a_share_scheduler,
+    )
+    data_center_service = DataCenterService(
+        DataCenterStore(_resolve_a_share_canonical_database_path()),
+        a_share_scheduler,
+        governance_repository,
+        panorama_service=panorama_service,
+    )
     return AppServiceRegistry(
         market_data_service=market_service,
         factor_research_service=factor_service,
@@ -127,6 +172,7 @@ def build_demo_service_registry() -> AppServiceRegistry:
         backtest_mode_report_service=backtest_mode_report_service,
         ai_analysis_service=ai_analysis_service,
         config_center_service=config_center_service,
+        data_center_service=data_center_service,
     )
 
 
@@ -169,6 +215,9 @@ def _load_market_provider_config() -> dict[str, object]:
         "timeout_seconds": market_provider.get("timeout_seconds", 8),
         "endpoint_spec": market_provider.get("endpoint_spec", {}),
     }
+
+def _env_truthy(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 def _resolve_legacy_market_database_path() -> Path | None:
     configured = os.environ.get("SCQ_LEGACY_MARKET_DB_PATH")
     if configured:
@@ -575,25 +624,3 @@ def _seed_demo_reporting_data(runtime_store: SqliteRuntimeStore) -> None:
             "failures": [],
         },
     )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

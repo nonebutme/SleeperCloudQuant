@@ -428,9 +428,31 @@ def _builtin_strategies() -> list[dict[str, Any]]:
         if index == len(bars) - 1:
             weights[index] = 0.0
     return weights
+
+def generate_signal_scores(bars, parameters):
+    short_window = max(1, int(parameters.get("short_window", 5)))
+    long_window = max(short_window + 1, int(parameters.get("long_window", 20)))
+    atr_window = max(1, int(parameters.get("atr_window", 14)))
+    closes = [float(bar.get("close") or 0.0) for bar in bars]
+    highs = [float(bar.get("high") or 0.0) for bar in bars]
+    lows = [float(bar.get("low") or 0.0) for bar in bars]
+    true_ranges = []
+    scores = []
+    for index in range(len(bars)):
+        previous_close = closes[index - 1] if index > 0 else closes[index]
+        true_ranges.append(max(highs[index] - lows[index], abs(highs[index] - previous_close), abs(lows[index] - previous_close)))
+        if index + 1 < long_window:
+            scores.append(None)
+            continue
+        short_ma = sum(closes[index - short_window + 1:index + 1]) / short_window
+        long_ma = sum(closes[index - long_window + 1:index + 1]) / long_window
+        atr_start = max(0, index - atr_window + 1)
+        atr_values = true_ranges[atr_start:index + 1]
+        atr = sum(atr_values) / len(atr_values) if atr_values else 0.0
+        scores.append(max(-10.0, min(10.0, (short_ma - long_ma) / atr)) if atr > 0 else 0.0)
+    return scores
 '''
-    return [
-        {"strategy_id": "moving_average_strategy", "name": "双均线趋势策略", "source_code": moving_average, "parameters": {"short_window": 5, "long_window": 20, "position_size": 1.0}, "category": "趋势跟随", "description": "短长均线交叉的本地可执行策略。"},
+    return [        {"strategy_id": "moving_average_strategy", "name": "双均线趋势策略", "source_code": moving_average, "parameters": {"short_window": 5, "long_window": 20, "position_size": 1.0}, "category": "趋势跟随", "description": "短长均线交叉的本地可执行策略。"},
         {"strategy_id": "risk_controlled_breakout", "name": "突破策略", "source_code": breakout, "parameters": {"breakout_window": 20, "max_position": 0.5}, "category": "趋势突破", "description": "突破前期高点时建立目标仓位。"},
         {"strategy_id": "buy_and_hold", "name": "买入持有基线", "source_code": buy_hold, "parameters": {"position_size": 1.0}, "category": "基线", "description": "用于验证策略执行差异的买入持有基线。"},
         {"strategy_id": "dual_ma_atr_dynamic_stop", "name": "双均线 + ATR动态止损", "source_code": dual_ma_atr, "parameters": {"short_window": 5, "long_window": 20, "atr_window": 14, "atr_multiplier": 2.0, "position_size": 1.0, "commission": 0.0003}, "category": "趋势跟随 / 风险控制", "description": "MA5/MA20 金叉全仓买入、死叉清仓，持仓期间以开仓价减去 ATR14 的 2 倍作为动态止损线。"},

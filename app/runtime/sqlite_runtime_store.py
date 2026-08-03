@@ -1241,6 +1241,58 @@ class SqliteRuntimeStore(ReportingStore):
             for row in rows
         ]
 
+    def iter_backtest_exposure_snapshots(self, run_id_prefix: str) -> Any:
+        """Stream only fields needed by cross-sectional exposure analysis."""
+        self.ensure_schema()
+        escaped_prefix = (
+            str(run_id_prefix)
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                SELECT accounts.run_id, accounts.snapshot_time,
+                       accounts.total_value,
+                       COALESCE(positions.market_value, 0.0)
+                           AS position_market_value
+                FROM backtest_accounts AS accounts
+                LEFT JOIN backtest_positions AS positions
+                  ON positions.run_id = accounts.run_id
+                 AND positions.snapshot_time = accounts.snapshot_time
+                WHERE accounts.run_id LIKE ? ESCAPE '\\'
+                ORDER BY accounts.run_id, accounts.id
+                """,
+                (f"{escaped_prefix}%",),
+            )
+            for row in cursor:
+                yield dict(row)
+
+    def fetch_first_buy_dates(self, run_id_prefix: str) -> Mapping[str, str]:
+        """Read the first effective BUY date for all runs sharing one prefix."""
+        escaped_prefix = (
+            str(run_id_prefix)
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        rows = self._fetch_rows(
+            """
+            SELECT run_id, MIN(SUBSTR(trade_time, 1, 10)) AS entry_date
+            FROM backtest_trades
+            WHERE run_id LIKE ? ESCAPE '\\'
+              AND UPPER(side) = 'BUY'
+              AND quantity > 0
+            GROUP BY run_id
+            """,
+            (f"{escaped_prefix}%",),
+        )
+        return {
+            str(row["run_id"]): str(row["entry_date"])
+            for row in rows
+            if row.get("run_id") and row.get("entry_date")
+        }
     def fetch_backtest_yearly_returns(
         self,
         run_id: str,

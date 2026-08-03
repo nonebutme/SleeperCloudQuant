@@ -59,8 +59,12 @@ def main() -> None:
         for key in ("trade_attribution", "risk_metrics", "exposure_summary"):
             if key not in panel or not isinstance(panel[key], dict):
                 raise SystemExit(f"stage38 smoke failed: {key} missing")
-        if panel["trade_attribution"].get("trade_count") != panel.get("summary", {}).get("trade_count"):
-            raise SystemExit("stage38 smoke failed: trade attribution count mismatch")
+        attribution = panel["trade_attribution"]
+        summary = panel.get("summary", {})
+        if attribution.get("trade_count") != summary.get("trade_fill_count"):
+            raise SystemExit("stage38 smoke failed: trade fill count mismatch")
+        if attribution.get("roundtrip_count") != summary.get("trade_count"):
+            raise SystemExit("stage38 smoke failed: realized trade count mismatch")
         if "max_drawdown" not in panel["risk_metrics"] or "holding_count" not in panel["exposure_summary"]:
             raise SystemExit("stage38 smoke failed: risk/exposure fields missing")
 

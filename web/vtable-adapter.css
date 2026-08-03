@@ -1,0 +1,67 @@
+.table-wrap {
+  position: relative;
+}
+
+.app-vtable-source {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.app-vtable-host {
+  width: 100%;
+  min-width: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.app-vtable-load-failed::before {
+  content: "VisActor VTable 加载失败，已保留可访问数据表。";
+  display: block;
+  padding: 10px 12px;
+  color: #9d2f2f;
+  background: #fff1f1;
+  border: 1px solid #efcaca;
+  border-radius: 8px;
+}
+
+.app-vtable-action-menu {
+  position: fixed;
+  z-index: 10000;
+  display: grid;
+  min-width: 120px;
+  padding: 6px;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid #ccdbe2;
+  border-radius: 9px;
+  box-shadow: 0 12px 34px rgba(18, 43, 57, 0.2);
+}
+
+.app-vtable-action-menu button {
+  width: 100%;
+  padding: 8px 10px;
+  color: #173f55;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.app-vtable-action-menu button:hover {
+  background: #eaf3f7;
+}
+
+@media (max-width: 700px) {
+  .app-vtable-host {
+    min-width: 640px;
+  }
+}

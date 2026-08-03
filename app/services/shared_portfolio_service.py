@@ -70,6 +70,19 @@ class SharedPortfolioService:
         universe = self._freeze_universe(symbols=symbols or [], market=market, limit=symbol_limit)
         if not universe:
             raise ValueError("selected A-share universe is empty")
+        data_version_binding = {"status": "unsupported"}
+        if hasattr(self._market_data_service, "get_published_data_version"):
+            data_version_binding = dict(self._market_data_service.get_published_data_version(
+                symbol=str(universe[0]["symbol"]),
+                adjustment=adjustment,
+                start_date=start_date,
+                end_date=end_date,
+                benchmark=benchmark,
+            ))
+            if data_version_binding.get("status") == "data_not_ready":
+                raise ValueError(
+                    f"data_not_ready:{data_version_binding.get('reason') or 'published_version_unavailable'}"
+                )
         normalized_task_id = _normalize_id(task_id or f"portfolio-{uuid4().hex[:12]}")
         now = _utc_now()
         config = {
@@ -96,6 +109,7 @@ class SharedPortfolioService:
             "settlement": "A-share T+1",
             "rebalance": "daily_close_sell_then_buy",
             "universe_source": "canonical_a_share_sqlite",
+            "data_version_binding": data_version_binding,
         }
         with self._connect() as connection:
             connection.execute(
@@ -235,7 +249,44 @@ class SharedPortfolioService:
                 prepared=len(prepared),
                 excluded=len(excluded),
             )
-            raw_result, metrics = _run_shared_account(prepared, config, strategy, excluded)
+            benchmark_rows: list[dict[str, Any]] = []
+            if config.get("benchmark"):
+                try:
+                    benchmark_rows = self._market_data_service.get_a_share_price_history(
+                        symbol=str(config.get("benchmark") or ""),
+                        adjustment=str(config.get("adjustment") or "raw"),
+                        start_date=str(config["date_window"]["start_date"]),
+                        end_date=str(config["date_window"]["end_date"]),
+                    )
+                except Exception:
+                    benchmark_rows = []
+            raw_result, metrics = _run_shared_account(
+                prepared,
+                config,
+                strategy,
+                excluded,
+                benchmark_rows=benchmark_rows,
+            )
+            binding = dict(config.get("data_version_binding") or {})
+            if binding.get("status") == "bound":
+                raw_result["data_asset_trace"] = {
+                    "status": "bound",
+                    "source": "canonical_a_share_sqlite",
+                    "symbol": f"shared:{len(prepared)} A-shares",
+                    "start_date": config["date_window"]["start_date"],
+                    "end_date": config["date_window"]["end_date"],
+                    "bound_at": started_at,
+                    "asset": {
+                        **binding,
+                        "symbol": f"shared:{len(prepared)} A-shares",
+                        "symbol_count": len(prepared),
+                    },
+                    "manifest": {
+                        "scope": "published_canonical_a_share_release",
+                        "members": binding.get("members") or [],
+                        "quality_report_id": binding.get("quality_report_id"),
+                    },
+                }
             finished_at = _utc_now()
             self._persist_result(run_id, config, raw_result, metrics, started_at, finished_at)
             status = "completed" if not excluded else "partial_completed"
@@ -247,7 +298,8 @@ class SharedPortfolioService:
                 "excluded_symbol_count": len(excluded),
                 "excluded_symbols": excluded[:100],
                 "metrics": metrics,
-                "trade_count": len(raw_result["trades"]),
+                "trade_count": int(metrics.get("trade_count") or 0),
+                "trade_fill_count": len(raw_result["trades"]),
                 "account_points": len(raw_result["accounts"]),
                 "final_holdings": raw_result.get("final_holdings", []),
             }
@@ -380,6 +432,11 @@ class SharedPortfolioService:
         self._runtime_store.replace_backtest_positions(run_id=run_id, rows=raw_result["positions"])
         self._runtime_store.replace_backtest_accounts(run_id=run_id, rows=raw_result["accounts"])
         self._runtime_store.replace_backtest_yearly_returns(run_id=run_id, rows=raw_result["yearly_returns"])
+        if hasattr(self._runtime_store, "save_backtest_input_snapshot"):
+            self._runtime_store.save_backtest_input_snapshot(
+                run_id=run_id,
+                data_asset_trace=raw_result.get("data_asset_trace") or {},
+            )
 
     def _freeze_universe(self, *, symbols: list[str], market: str, limit: int) -> list[dict[str, Any]]:
         requested = {_symbol_code(item) for item in symbols if str(item).strip()}
@@ -497,6 +554,7 @@ def _run_shared_account(
     config: dict[str, Any],
     strategy: dict[str, Any],
     excluded: list[dict[str, str]],
+    benchmark_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     by_symbol: dict[str, dict[str, dict[str, Any]]] = {}
     weight_by_symbol: dict[str, dict[str, float]] = {}
@@ -518,6 +576,7 @@ def _run_shared_account(
     cash = initial_cash
     quantities = {symbol: 0 for symbol in prepared}
     available = {symbol: 0 for symbol in prepared}
+    average_costs = {symbol: 0.0 for symbol in prepared}
     last_prices: dict[str, float] = {}
     previous_closes: dict[str, float] = {}
     trades: list[dict[str, Any]] = []
@@ -567,10 +626,13 @@ def _run_shared_account(
             amount = sell_quantity * execution_price
             commission = max(amount * float(config["commission_rate"]), float(config["min_commission"]))
             tax = amount * float(config["tax_rate"])
+            realized_pnl = amount - commission - tax - sell_quantity * average_costs[symbol]
             cash += amount - commission - tax
             quantities[symbol] -= sell_quantity
             available[symbol] -= sell_quantity
-            trades.append(_trade(date, symbol, "SELL", execution_price, sell_quantity, amount, commission, tax, target_weights.get(symbol, 0.0)))
+            trades.append(_trade(date, symbol, "SELL", execution_price, sell_quantity, amount, commission, tax, target_weights.get(symbol, 0.0), realized_pnl=realized_pnl, market_vwap=_market_vwap(row, close), market_volume=_positive_float(row.get("volume"))))
+            if quantities[symbol] == 0:
+                average_costs[symbol] = 0.0
 
         for symbol in selected:
             buy_quantity = max(targets[symbol] - quantities[symbol], 0)
@@ -589,9 +651,11 @@ def _run_shared_account(
                 continue
             amount = buy_quantity * execution_price
             commission = max(amount * float(config["commission_rate"]), float(config["min_commission"]))
+            previous_quantity = quantities[symbol]
+            average_costs[symbol] = (previous_quantity * average_costs[symbol] + amount + commission) / (previous_quantity + buy_quantity)
             cash -= amount + commission
             quantities[symbol] += buy_quantity
-            trades.append(_trade(date, symbol, "BUY", execution_price, buy_quantity, amount, commission, 0.0, target_weights.get(symbol, 0.0)))
+            trades.append(_trade(date, symbol, "BUY", execution_price, buy_quantity, amount, commission, 0.0, target_weights.get(symbol, 0.0), market_vwap=_market_vwap(row, close), market_volume=_positive_float(row.get("volume"))))
 
         market_value = sum(quantities[s] * last_prices.get(s, 0.0) for s in prepared)
         total_value = cash + market_value
@@ -606,6 +670,10 @@ def _run_shared_account(
                 "order_book_id": str(prepared[symbol]["meta"].get("rqalpha_symbol") or symbol),
                 "quantity": quantity,
                 "market_value": round(value, 6),
+                "avg_price": round(average_costs[symbol], 6),
+                "price": round(last_prices.get(symbol, 0.0), 6),
+                "unrealized_pnl": round(value - quantity * average_costs[symbol], 6),
+                "weight": value / total_value if total_value else 0.0,
                 "notes": {"symbol": symbol, "weight": value / total_value if total_value else 0.0, "settlement": "T+1"},
             })
         accounts.append({
@@ -614,15 +682,23 @@ def _run_shared_account(
             "market_value": round(market_value, 6),
             "cash": round(cash, 6),
             "unit_net_value": round(total_value / initial_cash, 8),
+            "daily_return": round(total_value / (curve[-1][1] if curve else initial_cash) - 1.0, 8),
             "notes": {"holding_count": sum(quantity > 0 for quantity in quantities.values()), "mode": "shared_cash_portfolio"},
         })
         curve.append((date, total_value))
         for symbol, row in rows_today.items():
             previous_closes[symbol] = float(row["close"])
 
-    metrics = _build_metrics(curve, initial_cash)
+    benchmark_curve = _align_benchmark_curve(dates, benchmark_rows or [])
+    metrics = _build_metrics(curve, initial_cash, benchmark_curve=benchmark_curve)
+    realized = [float(row["pnl"]) for row in trades if row.get("pnl") is not None]
+    wins = [value for value in realized if value > 0]
+    losses = [value for value in realized if value < 0]
     metrics.update({
-        "trade_count": len(trades),
+        "trade_count": len(realized),
+        "trade_fill_count": len(trades),
+        "win_rate": len(wins) / len(realized) if realized else None,
+        "profit_loss_ratio": statistics.mean(wins) / abs(statistics.mean(losses)) if wins and losses else None,
         "executed_symbol_count": len(prepared),
         "excluded_symbol_count": len(excluded),
         "rejected_order_count": rejected_orders,
@@ -669,13 +745,16 @@ def _run_shared_account(
         "trades": trades,
         "positions": positions,
         "accounts": accounts,
-        "yearly_returns": _yearly_returns(curve),
+        "yearly_returns": _yearly_returns(curve, initial_cash, benchmark_curve),
+        "benchmark_curve": _normalized_curve(benchmark_curve),
+        "excess_curve": _excess_curve(curve, initial_cash, benchmark_curve),
+        "benchmark_status": "ready" if benchmark_curve else "unavailable",
         "final_holdings": final_holdings,
     }
     return raw_result, metrics
 
 
-def _trade(date: str, symbol: str, side: str, price: float, quantity: int, amount: float, commission: float, tax: float, target_weight: float) -> dict[str, Any]:
+def _trade(date: str, symbol: str, side: str, price: float, quantity: int, amount: float, commission: float, tax: float, target_weight: float, *, realized_pnl: float | None = None, market_vwap: float | None = None, market_volume: float | None = None) -> dict[str, Any]:
     return {
         "trade_time": f"{date}T15:00:00+08:00",
         "order_book_id": symbol,
@@ -685,8 +764,34 @@ def _trade(date: str, symbol: str, side: str, price: float, quantity: int, amoun
         "amount": round(amount, 6),
         "commission": round(commission, 6),
         "tax": round(tax, 6),
-        "notes": {"target_weight": target_weight, "mode": "shared_cash_portfolio"},
+        "pnl": round(realized_pnl, 6) if realized_pnl is not None else None,
+        "notes": {
+            "target_weight": target_weight,
+            "mode": "shared_cash_portfolio",
+            "market_vwap": market_vwap,
+            "market_volume": market_volume,
+        },
     }
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _market_vwap(row: dict[str, Any], close: float) -> float | None:
+    amount = _positive_float(row.get("amount"))
+    volume = _positive_float(row.get("volume"))
+    if amount is None or volume is None or close <= 0:
+        return None
+    for divisor in (1.0, 100.0):
+        candidate = amount / volume / divisor
+        if close * 0.2 <= candidate <= close * 5.0:
+            return round(candidate, 6)
+    return None
 
 
 def _affordable_quantity(requested: int, cash: float, price: float, rate: float, minimum: float) -> int:
@@ -715,37 +820,136 @@ def _at_price_limit(symbol: str, name: str, close: float, previous: float | None
     return close >= threshold - 0.001 if up else close <= threshold + 0.001
 
 
-def _build_metrics(curve: list[tuple[str, float]], initial_cash: float) -> dict[str, float]:
-    final_value = curve[-1][1]
-    total_return = final_value / initial_cash - 1.0
-    returns = [current / previous - 1.0 for (_, previous), (_, current) in zip(curve, curve[1:]) if previous]
-    peak = curve[0][1]
+def _build_metrics(
+    curve: list[tuple[str, float]],
+    initial_cash: float,
+    *,
+    benchmark_curve: list[tuple[str, float]],
+    risk_free_rate: float = 0.0,
+) -> dict[str, float | None]:
+    portfolio = _performance_metrics([initial_cash, *[value for _, value in curve]], risk_free_rate=risk_free_rate)
+    metrics: dict[str, float | None] = {
+        "total_returns": portfolio["total_return"],
+        "annualized_returns": portfolio["annualized_return"],
+        "max_drawdown": portfolio["max_drawdown"],
+        "sharpe": portfolio["sharpe"],
+        "volatility": portfolio["volatility"],
+        "calmar": portfolio["calmar"],
+        "final_value": round(curve[-1][1], 4),
+        "risk_free_rate": risk_free_rate,
+    }
+    excess_points = _excess_curve(curve, initial_cash, benchmark_curve)
+    if benchmark_curve and excess_points:
+        benchmark = _performance_metrics([value for _, value in benchmark_curve], risk_free_rate=risk_free_rate)
+        excess = _performance_metrics([point["value"] for point in excess_points], risk_free_rate=0.0)
+        portfolio_returns = _period_returns([value for _, value in curve])
+        benchmark_returns = _period_returns([value for _, value in benchmark_curve])
+        paired = min(len(portfolio_returns), len(benchmark_returns))
+        active_returns = [portfolio_returns[index] - benchmark_returns[index] for index in range(paired)]
+        tracking_error = statistics.pstdev(active_returns) * math.sqrt(252) if active_returns else None
+        information_ratio = (
+            statistics.mean(active_returns) / statistics.pstdev(active_returns) * math.sqrt(252)
+            if len(active_returns) > 1 and statistics.pstdev(active_returns) else None
+        )
+        metrics.update({
+            "benchmark_return": benchmark["total_return"],
+            "benchmark_annualized_return": benchmark["annualized_return"],
+            "excess_return": excess["total_return"],
+            "excess_annualized_return": excess["annualized_return"],
+            "excess_max_drawdown": excess["max_drawdown"],
+            "tracking_error": round(tracking_error, 6) if tracking_error is not None else None,
+            "information_ratio": round(information_ratio, 6) if information_ratio is not None else None,
+        })
+    return metrics
+
+
+def _performance_metrics(values: list[float], *, risk_free_rate: float) -> dict[str, float]:
+    returns = _period_returns(values)
+    total_return = values[-1] / values[0] - 1.0 if values and values[0] else 0.0
+    periods = max(len(values) - 1, 1)
+    annualized = (1.0 + total_return) ** (252.0 / periods) - 1.0 if total_return > -1 else -1.0
+    peak = values[0]
     max_drawdown = 0.0
-    for _, value in curve:
+    for value in values:
         peak = max(peak, value)
         max_drawdown = min(max_drawdown, value / peak - 1.0 if peak else 0.0)
-    volatility = statistics.pstdev(returns) if returns else 0.0
-    sharpe = statistics.mean(returns) / volatility * math.sqrt(252) if volatility else 0.0
-    annualized = (1.0 + total_return) ** (252.0 / max(len(curve), 1)) - 1.0 if total_return > -1 else -1.0
+    volatility = statistics.pstdev(returns) * math.sqrt(252) if returns else 0.0
+    daily_risk_free = (1.0 + risk_free_rate) ** (1.0 / 252.0) - 1.0
+    daily_volatility = statistics.pstdev(returns) if returns else 0.0
+    sharpe = (statistics.mean(returns) - daily_risk_free) / daily_volatility * math.sqrt(252) if daily_volatility else 0.0
+    calmar = annualized / abs(max_drawdown) if max_drawdown else None
     return {
-        "total_returns": round(total_return, 6),
-        "annualized_returns": round(annualized, 6),
+        "total_return": round(total_return, 6),
+        "annualized_return": round(annualized, 6),
         "max_drawdown": round(max_drawdown, 6),
         "sharpe": round(sharpe, 6),
-        "final_value": round(final_value, 4),
+        "volatility": round(volatility, 6),
+        "calmar": round(calmar, 6) if calmar is not None else None,
     }
 
 
-def _yearly_returns(curve: list[tuple[str, float]]) -> list[dict[str, Any]]:
-    grouped: dict[str, list[float]] = {}
-    for date, value in curve:
-        grouped.setdefault(date[:4], []).append(value)
+def _period_returns(values: list[float]) -> list[float]:
+    return [current / previous - 1.0 for previous, current in zip(values, values[1:]) if previous]
+
+
+def _align_benchmark_curve(dates: list[str], rows: list[dict[str, Any]]) -> list[tuple[str, float]]:
+    prices = {str(row.get("date") or row.get("trade_date") or "")[:10]: float(row.get("close") or 0.0) for row in rows if float(row.get("close") or 0.0) > 0}
+    aligned: list[tuple[str, float]] = []
+    last_price: float | None = None
+    for date in dates:
+        if date in prices:
+            last_price = prices[date]
+        if last_price is not None:
+            aligned.append((date, last_price))
+    return aligned if len(aligned) == len(dates) and len(aligned) >= 2 else []
+
+
+def _normalized_curve(curve: list[tuple[str, float]]) -> list[dict[str, Any]]:
+    if not curve or not curve[0][1]:
+        return []
+    base = curve[0][1]
+    return [{"date": date, "value": round(value / base, 8)} for date, value in curve]
+
+
+def _excess_curve(curve: list[tuple[str, float]], initial_cash: float, benchmark_curve: list[tuple[str, float]]) -> list[dict[str, Any]]:
+    if not benchmark_curve or len(benchmark_curve) != len(curve) or not benchmark_curve[0][1]:
+        return []
+    benchmark_base = benchmark_curve[0][1]
+    portfolio_base = curve[0][1]
     return [{
+        "date": date,
+        "value": round((portfolio_value / portfolio_base) / (benchmark_value / benchmark_base), 8),
+    } for (date, portfolio_value), (_, benchmark_value) in zip(curve, benchmark_curve)]
+
+
+def _yearly_returns(
+    curve: list[tuple[str, float]],
+    initial_cash: float,
+    benchmark_curve: list[tuple[str, float]],
+) -> list[dict[str, Any]]:
+    benchmark_by_date = dict(benchmark_curve)
+    rows: list[dict[str, Any]] = []
+    previous_portfolio = curve[0][1] if benchmark_curve else initial_cash
+    previous_benchmark = benchmark_curve[0][1] if benchmark_curve else None
+    grouped: dict[str, list[tuple[str, float]]] = {}
+    for date, value in curve:
+        grouped.setdefault(date[:4], []).append((date, value))
+    for year, values in sorted(grouped.items()):
+        portfolio_return = values[-1][1] / previous_portfolio - 1.0 if previous_portfolio else None
+        benchmark_return = None
+        if previous_benchmark is not None:
+            year_benchmark = [benchmark_by_date[date] for date, _ in values if date in benchmark_by_date]
+            if year_benchmark:
+                benchmark_return = year_benchmark[-1] / previous_benchmark - 1.0
+                previous_benchmark = year_benchmark[-1]
+        rows.append({
         "year": year,
-        "portfolio_return": round(values[-1] / values[0] - 1.0, 6) if values[0] else 0.0,
-        "benchmark_return": 0.0,
-        "excess_return": round(values[-1] / values[0] - 1.0, 6) if values[0] else 0.0,
-    } for year, values in sorted(grouped.items())]
+            "portfolio_return": round(portfolio_return, 6) if portfolio_return is not None else None,
+            "benchmark_return": round(benchmark_return, 6) if benchmark_return is not None else None,
+            "excess_return": round(portfolio_return - benchmark_return, 6) if portfolio_return is not None and benchmark_return is not None else None,
+        })
+        previous_portfolio = values[-1][1]
+    return rows
 
 
 def _normalize_id(value: str) -> str:

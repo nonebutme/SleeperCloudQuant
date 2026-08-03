@@ -1,4 +1,4 @@
-﻿"""Market request and response payloads."""
+"""Market request and response payloads."""
 
 from __future__ import annotations
 
@@ -6,6 +6,22 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from domain.market.models import Bar, MarketSyncStatus, MarketSyncSummary
+
+
+@dataclass(frozen=True, slots=True)
+class MarketPanoramaQuery:
+    """Read the point-in-time market panorama for one K-line trade date."""
+
+    trade_date: str
+    symbol: str = ""
+    asset_type: str = "stock"
+
+
+@dataclass(frozen=True, slots=True)
+class MarketPanoramaResponse:
+    """Market panorama response with per-dataset availability metadata."""
+
+    panorama: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,5 +232,37 @@ class AShareDailyPricesQuery:
 @dataclass(frozen=True, slots=True)
 class AShareDailyPricesResponse:
     """Paginated A-share daily price response."""
+
+    daily: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class IndexSymbolsQuery:
+    """Read the governed local index catalog."""
+
+    market: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class IndexSymbolsResponse:
+    """Governed local index catalog response."""
+
+    catalog: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class IndexDailyPricesQuery:
+    """Read one governed index daily-price window."""
+
+    index_symbol: str
+    start_date: str | None = None
+    end_date: str | None = None
+    limit: int = 200
+    offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class IndexDailyPricesResponse:
+    """Paginated governed index daily-price response."""
 
     daily: dict[str, Any] = field(default_factory=dict)

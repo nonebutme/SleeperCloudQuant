@@ -26,6 +26,7 @@ class BacktestModeReportService:
         self._shared = shared_portfolio_service
         self._runtime_store = runtime_store
         self._classifications = classification_store
+        self._independent_report_cache: dict[str, tuple[str, dict[str, Any]]] = {}
 
     def get_shared_portfolio_report(self, task_id: str) -> dict[str, Any]:
         task = self._shared.get_task(task_id)
@@ -36,6 +37,12 @@ class BacktestModeReportService:
         detail = self._reporting_service.get_run_detail(run_id) if run_id else None
         professional_report = _plain(evaluation)
         run_detail = _plain(detail)
+        if isinstance(run_detail, dict):
+            execution = dict(run_detail.get("execution_quality") or {})
+            metrics = dict(run_detail.get("metrics") or {})
+            if execution.get("simulated_vwap_deviation") is not None:
+                metrics["simulated_vwap_deviation"] = execution["simulated_vwap_deviation"]
+            run_detail["metrics"] = metrics
         return {
             "report_mode": "shared_portfolio",
             "report_version": "stage74-shared-portfolio-seven-dimension-v2",
@@ -62,12 +69,41 @@ class BacktestModeReportService:
         }
 
     def get_independent_screening_report(self, task_id: str) -> dict[str, Any]:
+        cached = self._independent_report_cache.get(task_id)
+        version_reader = getattr(self._independent, "get_task_version", None)
+        if cached is not None and callable(version_reader):
+            if cached[0] == str(version_reader(task_id) or ""):
+                return dict(cached[1])
         task = self._independent.get_task(task_id)
         if task.get("status") == "not_found":
             return {"report_mode": "independent_screening", "status": "not_found", "task_id": task_id}
+        cache_version = str(task.get("updated_at") or "")
+        if cached is not None and cached[0] == cache_version:
+            return dict(cached[1])
         all_items = self._read_all_items(task_id)
         entered = [item for item in all_items if item.get("entered") and item.get("status") == "completed"]
-        observations = [self._observation(item, task) for item in entered]
+        entry_reader = getattr(self._runtime_store, "fetch_first_buy_dates", None)
+        entry_dates = entry_reader(f"{task_id}-") if callable(entry_reader) else None
+        classification_map = None
+        resolve_many = getattr(self._classifications, "resolve_many", None)
+        if entry_dates is not None and callable(resolve_many):
+            fallback_date = str((task.get("config") or {}).get("date_window", {}).get("start_date") or "")
+            classification_map = resolve_many({
+                str(item.get("symbol") or ""): entry_dates.get(
+                    str(item.get("run_id") or ""),
+                    fallback_date,
+                )
+                for item in entered
+            })
+        observations = [
+            self._observation(
+                item,
+                task,
+                entry_dates=entry_dates,
+                classification_map=classification_map,
+            )
+            for item in entered
+        ]
         returns = [float(row["total_returns"]) for row in observations if row.get("total_returns") is not None]
         distribution = _distribution_analysis(returns, seed=task_id)
         groups = {
@@ -83,7 +119,27 @@ class BacktestModeReportService:
             "entry_period": _classification_coverage(observations, "entry_period"),
         }
         run_index = [_independent_run_index_entry(item) for item in entered]
-        return {
+        signal_analysis_builder = getattr(self._independent, "build_signal_analysis", None)
+        if callable(signal_analysis_builder):
+            try:
+                signal_analysis = dict(signal_analysis_builder(task_id) or {})
+            except Exception as exc:
+                signal_analysis = {
+                    "status": "unavailable",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "ic_analysis": {"status": "unavailable", "series": [], "monthly": []},
+                    "layered_returns": {"status": "unavailable", "series": []},
+                    "signal_summary": {"status": "unavailable"},
+                }
+        else:
+            signal_analysis = {
+                "status": "unavailable",
+                "reason": "signal_analysis_builder_unavailable",
+                "ic_analysis": {"status": "unavailable", "series": [], "monthly": []},
+                "layered_returns": {"status": "unavailable", "series": []},
+                "signal_summary": {"status": "unavailable"},
+            }
+        report = {
             "report_mode": "independent_screening",
             "report_version": "stage74-independent-dual-layer-report-v2",
             "status": task.get("status"),
@@ -112,6 +168,17 @@ class BacktestModeReportService:
             "observations": observations,
             "run_index": run_index,
             "factor_analysis": _independent_factor_analysis(observations, groups, coverage),
+            "signal_analysis": signal_analysis,
+            "ic_analysis": dict(signal_analysis.get("ic_analysis") or {}),
+            "layered_returns": dict(signal_analysis.get("layered_returns") or {}),
+            "signal_summary": dict(signal_analysis.get("signal_summary") or {}),
+            "industry_analysis": dict(signal_analysis.get("industry_analysis") or {}),
+            "market_regimes": dict(signal_analysis.get("market_regimes") or {}),
+            "raw_factor_analysis": dict(signal_analysis.get("raw_factor_analysis") or {
+                "status": "unavailable",
+                "reason": "historical_task_did_not_persist_point_in_time_raw_scores",
+                "exposure_comparison_available": False,
+            }),
             "robustness_analysis": _robustness_analysis(returns),
             "report_contract": {
                 "scope": "independent_capital_runs",
@@ -129,9 +196,13 @@ class BacktestModeReportService:
                 "classification_as_of": "first effective BUY trade date",
                 "look_ahead_control": "only effective-dated historical classifications are accepted",
                 "correlation": "Spearman rank correlation; descriptive relationship, not causality",
+                "strategy_exposure_ic": "end-of-day position weight at t versus next-trading-day adjusted close return; Pearson IC, Spearman Rank IC, Newey-West HAC t-statistic",
             },
             "data_quality_notes": _data_quality_notes(returns, coverage),
         }
+        self._independent_report_cache[task_id] = (cache_version, report)
+        return dict(report)
+
 
     def get_independent_run_report(self, task_id: str, run_id: str) -> dict[str, Any]:
         task = self._independent.get_task(task_id)
@@ -181,15 +252,32 @@ class BacktestModeReportService:
             if not items or offset >= int(page.get("total") or 0):
                 return rows
 
-    def _observation(self, item: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    def _observation(
+        self,
+        item: dict[str, Any],
+        task: dict[str, Any],
+        *,
+        entry_dates: dict[str, str] | None = None,
+        classification_map: dict[str, dict[str, list[str]]] | None = None,
+    ) -> dict[str, Any]:
         metrics = dict(item.get("metrics") or {})
-        trades = list(self._runtime_store.fetch_backtest_trades(str(item.get("run_id") or "")))
-        buys = [row for row in trades if str(row.get("side") or "").upper() == "BUY" and float(row.get("quantity") or 0) > 0]
-        entry_date = min((str(row.get("trade_time") or "")[:10] for row in buys), default="")
+        run_id = str(item.get("run_id") or "")
+        if entry_dates is None:
+            trades = list(self._runtime_store.fetch_backtest_trades(run_id))
+            buys = [row for row in trades if str(row.get("side") or "").upper() == "BUY" and float(row.get("quantity") or 0) > 0]
+            entry_date = min((str(row.get("trade_time") or "")[:10] for row in buys), default="")
+        else:
+            entry_date = str(entry_dates.get(run_id) or "")
         fallback_date = str((task.get("config") or {}).get("date_window", {}).get("start_date") or "")
         as_of = entry_date or fallback_date
-        industries = [row["category"] for row in self._classifications.resolve(item.get("symbol"), "industry", as_of)] if as_of else []
-        concepts = [row["category"] for row in self._classifications.resolve(item.get("symbol"), "concept", as_of)] if as_of else []
+        symbol = str(item.get("symbol") or "").split(".", 1)[0].zfill(6)
+        if classification_map is None:
+            industries = [row["category"] for row in self._classifications.resolve(symbol, "industry", as_of)] if as_of else []
+            concepts = [row["category"] for row in self._classifications.resolve(symbol, "concept", as_of)] if as_of else []
+        else:
+            classifications = classification_map.get(symbol, {})
+            industries = list(classifications.get("industry") or [])
+            concepts = list(classifications.get("concept") or [])
         return {
             "symbol": item.get("symbol"),
             "name": item.get("name"),
@@ -394,6 +482,13 @@ def _shared_portfolio_sections(detail: Any) -> dict[str, Any]:
         "yearly_return_count": len(detail.get("yearly_returns") or detail.get("yearly_return_chart") or []),
         "metrics": detail.get("metrics") or {},
         "sections": ["net_value_and_drawdown", "seven_dimensions", "attribution", "positions", "cost_capacity", "data_quality"],
+        "monthly_return_heatmap": detail.get("monthly_return_heatmap") or {},
+        "market_regimes": (detail.get("market_regimes") or {}).get("rows") or [],
+        "execution_quality": detail.get("execution_quality") or {},
+        "cost_capacity_stress": detail.get("cost_capacity_stress") or {},
+        "robustness": detail.get("robustness") or {},
+        "parameter_sensitivity": detail.get("parameter_sensitivity") or {},
+        "report_governance": detail.get("report_governance") or {},
     }
 
 

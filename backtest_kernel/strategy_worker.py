@@ -40,8 +40,12 @@ def main() -> None:
         entrypoint = namespace.get("generate_target_weights")
         if not callable(entrypoint):
             raise ValueError("generate_target_weights entrypoint is missing")
-        weights = entrypoint(list(payload.get("bars") or []), dict(payload.get("parameters") or {}))
-        sys.stdout.write(json.dumps({"status": "completed", "weights": list(weights)}))
+        bars = list(payload.get("bars") or [])
+        parameters = dict(payload.get("parameters") or {})
+        weights = list(entrypoint(bars, parameters))
+        score_entrypoint = namespace.get("generate_signal_scores")
+        scores = list(score_entrypoint(bars, parameters)) if callable(score_entrypoint) else None
+        sys.stdout.write(json.dumps({"status": "completed", "weights": weights, "scores": scores}))
     except Exception as exc:
         sys.stdout.write(json.dumps({"status": "failed", "error": f"{type(exc).__name__}: {exc}"}))
 

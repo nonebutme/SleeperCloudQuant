@@ -1,4 +1,4 @@
-﻿"""Smoke test for stage 49 data asset directory filters and snapshot migration diagnostics."""
+"""Smoke test for stage 49 data asset directory filters and snapshot migration diagnostics."""
 
 from __future__ import annotations
 
@@ -55,8 +55,8 @@ def main() -> None:
     summary = payload.get("summary", {})
     if status != 200 or not assets or summary.get("filters", {}).get("dataset") != "price_history":
         raise SystemExit("stage49 smoke failed: filtered asset directory did not return expected assets")
-    if data_version not in {item.get("data_version") for item in assets}:
-        raise SystemExit("stage49 smoke failed: filtered asset directory missing run data_version")
+    if any(item.get("quality_status") != "needs_attention" for item in assets):
+        raise SystemExit("stage49 smoke failed: quality_status filter returned mismatched assets")
 
     status, payload = _dispatch(app, "GET", "/api/backtest/data-assets", query_string=f"data_version={data_version}&limit=5")
     if status != 200 or payload.get("summary", {}).get("asset_count", 0) < 1:
@@ -81,4 +81,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

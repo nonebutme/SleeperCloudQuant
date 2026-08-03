@@ -39,6 +39,15 @@ def main() -> None:
                 return
             self.send_error(501, "Unsupported method")
 
+        def do_PUT(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/"):
+                content_length = int(self.headers.get("Content-Length") or "0")
+                body = self.rfile.read(content_length) if content_length > 0 else b""
+                self._handle_api_request(method="PUT", path=parsed.path, query=parsed.query, body=body)
+                return
+            self.send_error(501, "Unsupported method")
+
         def do_DELETE(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path.startswith("/api/"):

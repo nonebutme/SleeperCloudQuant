@@ -57,8 +57,11 @@ def main() -> None:
     snapshot = panel.get("parameter_snapshot", {})
     if snapshot.get("parameters", {}).get("short_window") != 2 or snapshot.get("extra_config", {}).get("stage") != "36":
         raise SystemExit("stage36 smoke failed: parameter snapshot missing")
-    if summary.get("trade_count") != len(panel.get("trades", [])):
-        raise SystemExit("stage36 smoke failed: trade count mismatch")
+    if summary.get("trade_fill_count") != len(panel.get("trades", [])):
+        raise SystemExit("stage36 smoke failed: trade fill count mismatch")
+    realized_count = panel.get("trade_attribution", {}).get("roundtrip_count") or 0
+    if summary.get("trade_count") != realized_count or metrics.get("trade_count") != realized_count:
+        raise SystemExit("stage36 smoke failed: realized trade count mismatch")
     print("stage36 backtest result panel smoke test passed")
 
 

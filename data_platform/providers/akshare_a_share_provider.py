@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlencode
 
 from data_platform.providers.a_share_sqlite_repository import (
@@ -43,10 +43,12 @@ class AkshareAShareProvider:
         proxy_url: str | None = None,
         retry_count: int = 4,
         retry_delay_seconds: float = 2.0,
+        request_gate: Callable[[], None] | None = None,
     ) -> None:
         self.proxy_url = proxy_url or discover_proxy_url()
         self.retry_count = max(1, int(retry_count))
         self.retry_delay_seconds = max(0.0, float(retry_delay_seconds))
+        self.request_gate = request_gate
 
     def list_symbols(self) -> list[dict[str, Any]]:
         frame = self._retry(lambda ak: ak.stock_info_a_code_name())
@@ -73,6 +75,14 @@ class AkshareAShareProvider:
         adjust = "" if mode == "raw" else mode
         finish = str(end_date or date.today().isoformat()).replace("-", "")
         begin = str(start_date).replace("-", "")
+        if not _env_truthy(os.environ.get("SCQ_AKSHARE_INPROCESS_ENABLED", "")):
+            self._acquire_request_slot()
+            return _fetch_eastmoney_with_curl(
+                symbol=code,
+                adjustment=mode,
+                start_date=begin,
+                end_date=finish,
+            )
         if code == "689009":
             return self._fetch_cdr_daily(
                 adjustment=mode,
@@ -101,6 +111,7 @@ class AkshareAShareProvider:
             return _normalize_frame_rows(frame, code)
         except RuntimeError as akshare_error:
             try:
+                self._acquire_request_slot()
                 return _fetch_eastmoney_with_curl(
                     symbol=code,
                     adjustment=mode,
@@ -186,6 +197,7 @@ class AkshareAShareProvider:
         last_error: Exception | None = None
         for attempt in range(1, self.retry_count + 1):
             try:
+                self._acquire_request_slot()
                 with direct_network_environment():
                     import akshare as ak
 
@@ -208,36 +220,88 @@ class AkshareAShareProvider:
         start_date: str,
         end_date: str | None = None,
     ) -> dict[str, Any]:
+        mode = _normalize_adjustment(adjustment)
         rows = self.fetch_daily_prices(
-            symbol=symbol,
-            adjustment=adjustment,
-            start_date=start_date,
-            end_date=end_date,
+            symbol=symbol, adjustment=mode,
+            start_date=start_date, end_date=end_date,
         )
+        fallback_rows: list[dict[str, Any]] = []
+        fallback_error = ""
+        requested_start = date.fromisoformat(str(start_date)).isoformat()
+        returned_dates = {
+            str(row.get("date") or row.get("trade_date") or "") for row in rows
+        }
+        if requested_start not in returned_dates:
+            reference_modes = ("qfq", "hfq") if mode == "raw" else ("raw",)
+            has_reference = any(
+                int(store.fetch_daily_prices(
+                    symbol=symbol, adjustment=reference_mode,
+                    start_date=requested_start, end_date=requested_start, limit=1,
+                ).get("total") or 0) > 0
+                for reference_mode in reference_modes
+            )
+            if has_reference:
+                begin = requested_start.replace("-", "")
+                finish = str(end_date or date.today().isoformat()).replace("-", "")
+                try:
+                    frame = self._retry(
+                        lambda ak: ak.stock_zh_a_hist(
+                            symbol=_normalize_symbol(symbol), period="daily",
+                            start_date=begin, end_date=finish, adjust=mode,
+                        )
+                    )
+                    fallback = _normalize_frame_rows(frame, _normalize_symbol(symbol))
+                except RuntimeError as akshare_error:
+                    try:
+                        self._acquire_request_slot()
+                        fallback = _fetch_eastmoney_with_curl(
+                            symbol=_normalize_symbol(symbol), adjustment=mode,
+                            start_date=begin, end_date=finish,
+                        )
+                    except Exception as curl_error:
+                        fallback = []
+                        fallback_error = (
+                            f"akshare={akshare_error}; "
+                            f"curl={type(curl_error).__name__}: {curl_error}"
+                        )
+                fallback_rows = [
+                    row for row in fallback
+                    if str(row.get("date") or row.get("trade_date") or "") not in returned_dates
+                ]
         written = store.upsert_daily_prices(
-            rows,
-            adjustment=adjustment,
-            source="akshare",
+            rows, adjustment=mode, source="akshare",
         )
+        if fallback_rows:
+            written += store.upsert_daily_prices(
+                fallback_rows, adjustment=mode,
+                source="akshare_eastmoney_boundary_fallback",
+            )
         return {
             "status": "completed",
             "provider": "akshare",
             "symbol": _normalize_symbol(symbol),
-            "adjustment": _normalize_adjustment(adjustment),
+            "adjustment": mode,
             "start_date": start_date,
             "end_date": end_date or date.today().isoformat(),
-            "rows_received": len(rows),
+            "rows_received": len(rows) + len(fallback_rows),
             "rows_written": written,
+            "boundary_fallback_rows": len(fallback_rows),
+            "boundary_fallback_error": fallback_error,
             "history_transport_policy": (
-                "akshare_sina_or_cdr_then_eastmoney_fallback"
+                "eastmoney_curl_default_akshare_inprocess_opt_in"
             ),
             "catalog_proxy": self.proxy_url or "",
         }
+
+    def _acquire_request_slot(self) -> None:
+        if self.request_gate is not None:
+            self.request_gate()
 
     def _retry(self, operation: Any) -> Any:
         last_error: Exception | None = None
         for attempt in range(1, self.retry_count + 1):
             try:
+                self._acquire_request_slot()
                 with proxy_environment(self.proxy_url):
                     import akshare as ak
 
@@ -329,6 +393,10 @@ def _optional_float(value: Any) -> float | None:
         return None
     number = float(value)
     return None if number != number else number
+
+
+def _env_truthy(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 def _fetch_eastmoney_with_curl(
     *,

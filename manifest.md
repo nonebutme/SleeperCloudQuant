@@ -4,8 +4,8 @@
 
 - `project_name`: `SleeperCloudQuant`
 - `project_type`: `local-quant-web-system`
-- `current_stage`: `stage-77-governance-and-results-analysis`
-- `priority_goal`: `在阶段 76.9 统一策略回测工作台基础上，先完成治理、角色与记忆闭环修复，再由用户重点确认“查看结果 / 查看分析”的业务口径和交互方案。`
+- `current_stage`: `stage-86-data-center-upgrade-stage-c-completed`
+- `priority_goal`: `维护阶段 C 质量闭环候选基线；阶段 D M4 可视化增强或阶段 87 独立因子研究均须再次人工批准。`
 
 ## 业务属性
 
@@ -23,6 +23,8 @@
 - `HTML`
 - `CSS`
 - `framework`: `自定义轻量路由与服务层；前端为原生 Web 技术`
+- `frontend_table`: `VisActor VTable 1.23.1（本地固定版本，全局统一使用）`
+- `frontend_design_system`: `SleeperCloudQuant Quant UI Standard（2026-07-30 人工批准，全局生效）`
 - `runtime`: `Python 标准库 ThreadingHTTPServer，本地单机运行`
 - `database`: `SQLite 为主，JSON 用于少量任务索引与运行草稿`
 
@@ -50,7 +52,7 @@
 ## 启动属性
 
 - `startup_bootstrap_script`: `python memory_system/project_bootstrap.py --write --input-file <payload.json>`
-- `startup_query`: `阶段 77 治理与策略回测结果/分析体验`
+- `startup_query`: `数据中心升级阶段 C 已完成；下一步等待阶段 D 或阶段 87 的人工批准`
 - `project_profile_path`: `projects/SleeperCloudQuant/docs/decision-log/project-profile.md`
 - `verification_baseline_path`: `projects/SleeperCloudQuant/docs/verification/verification-baseline.md`
 - `verification_report_template_path`: `projects/SleeperCloudQuant/docs/verification/verification-report-template.md`
@@ -65,11 +67,13 @@
 
 ## 当前交付状态
 
-- `latest_completed_stage`: `stage-76.9`
-- `current_release_judgment`: `可继续迭代；全系统发布受 A 股行情新鲜度门禁阻断`
-- `current_data_boundary`: `规范 A 股库最新交易日为 2026-07-17，需恢复新鲜度后重跑完整正式验证`
-- `next_manual_approval`: `查看结果 / 查看分析的业务定义、信息层级与三模式差异`
-- `next_stage_entry`: `docs/decision-log/stage-77-0-governance-baseline.md`
+- `latest_completed_stage`: `stage-86-data-center-upgrade-stage-c`
+- `latest_ui_iteration`: `quant-ui-global-standard-2026-07-30`
+- `current_release_judgment`: `86.3.6 配置治理已闭环：20 个数据集、22 条路由，必需路由缺失与孤儿路由均为 0；本轮未执行同步，历史 queued 任务保持原状；同步任务统一操作口径待人工确认`
+- `current_data_boundary`: `正式版本截止 2026-07-24；覆盖 5,528 个截止日当前标的的生命周期、日交易状态和复权因子，并包含公司行动、三复权日线、交易日历与沪深300；2026-07-27 局部增量仅为未发布观察`
+- `usage_boundary`: `非商用、本地研究；优先使用免费且可实现适配的数据接口，不把免费访问表述为授权或 SLA`
+- `next_manual_approval`: `同步任务体系的统一方式与操作口径、数据中心升级阶段 D、阶段 87 独立因子实现、新增依赖、破坏性全量重建或商用边界变更需单独确认`
+- `next_stage_entry`: `docs/architecture/data-center-upgrade-stage-c-implementation.md`
 ## 关键关注点
 
 - `core_terms`:
@@ -92,5 +96,7 @@
 - `projects/SleeperCloudQuant/docs/verification/verification-baseline.md`
 - `projects/SleeperCloudQuant/docs/code-archaeology/repository-map.md`
 - `projects/SleeperCloudQuant/docs/architecture/reuse-integration-plan.md`
+- `projects/SleeperCloudQuant/docs/architecture/stage-86-0-governance-product-freeze.md`
+- `projects/SleeperCloudQuant/docs/interaction/stage-86-data-center-factor-mvp.md`
 - `agents/orchestrator.md`
 - `agents/domains/software-dev.md`
