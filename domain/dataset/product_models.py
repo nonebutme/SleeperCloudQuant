@@ -10,6 +10,8 @@ PRODUCT_STATUSES = {"connected", "unavailable", "disabled"}
 RELEASE_STATUSES = {"draft", "validated", "published", "retired"}
 POINT_IN_TIME_POLICIES = {"point_in_time", "as_of_trade_date", "not_applicable"}
 MISSING_DATA_POLICIES = {"unavailable", "skip", "forward_fill", "fail"}
+DATASET_EXAMPLE_KINDS = {"getting_started", "research", "strategy"}
+DATASET_RUNTIME_STATUSES = {"executable", "template_only"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +35,7 @@ class DatasetProduct:
     dataset_id: str
     name: str
     layer_id: str
+    category_name: str = ""
     description: str = ""
     producer_type: str = "external_source"
     producer_id: str = ""
@@ -45,6 +48,8 @@ class DatasetProduct:
     supported_adjustments: tuple[str, ...] = ()
     point_in_time_policy: str = "not_applicable"
     fields: tuple[DatasetSchemaField, ...] = ()
+    consumer_scopes: tuple[str, ...] = ("data_browser",)
+    strategy_access: str = "not_available"
     status: str = "unavailable"
     license_scope: str = "local_noncommercial_research"
     schema_version: str = "v1"
@@ -57,6 +62,35 @@ class DatasetProduct:
         if self.point_in_time_policy not in POINT_IN_TIME_POLICIES:
             raise ValueError(f"unsupported point-in-time policy: {self.point_in_time_policy}")
 
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetExample:
+    """Versioned code or strategy example attached to one Dataset Product."""
+
+    example_id: str
+    dataset_id: str
+    kind: str
+    title: str
+    description: str
+    source_code: str
+    dataset_ids: tuple[str, ...]
+    required_fields: tuple[str, ...] = ()
+    parameters: dict[str, Any] = field(default_factory=dict)
+    assets: dict[str, Any] = field(default_factory=dict)
+    execution_contract: str = "target-weights-v1"
+    runtime_status: str = "template_only"
+    example_version: str = "v1"
+
+    def __post_init__(self) -> None:
+        if not self.example_id.strip() or not self.dataset_id.strip() or not self.title.strip():
+            raise ValueError("dataset example identity fields must not be empty")
+        if self.kind not in DATASET_EXAMPLE_KINDS:
+            raise ValueError(f"unsupported dataset example kind: {self.kind}")
+        if self.runtime_status not in DATASET_RUNTIME_STATUSES:
+            raise ValueError(f"unsupported dataset example runtime status: {self.runtime_status}")
+        if self.dataset_id not in self.dataset_ids:
+            raise ValueError("dataset example must include its owning dataset")
 
 @dataclass(frozen=True, slots=True)
 class DatasetRelease:

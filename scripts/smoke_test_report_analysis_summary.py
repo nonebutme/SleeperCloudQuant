@@ -19,6 +19,32 @@ def _dispatch(app, method: str, path: str, payload: dict[str, object] | None = N
 def main() -> None:
     ensure_project_root_on_sys_path()
     from app.runtime import build_demo_app
+    from app.services.reporting_service import _build_strategy_analysis_summary, _build_strategy_evaluation_diagnostics
+    from domain.report.models import BacktestRunDetailModel
+
+    semantic_detail = BacktestRunDetailModel(
+        run_id="win-rate-semantics",
+        strategy_name="win-rate-semantics",
+        status="completed",
+        benchmark=None,
+        start_date=None,
+        end_date=None,
+        metrics={"win_rate": 0.25},
+        trade_activity_chart=[{"sell_count": 1, "sell_amount": 100.0, "buy_amount": 0.0}],
+    )
+    semantic_diagnostics = _build_strategy_evaluation_diagnostics(semantic_detail)
+    semantic_trade = semantic_diagnostics.get("trade_quality", {})
+    if semantic_trade.get("win_rate_source") != "engine_closed_trades" or semantic_trade.get("win_rate") != 0.25:
+        raise SystemExit("stage50 smoke failed: report did not prefer engine closed-trade win rate")
+    semantic_summary = _build_strategy_analysis_summary(
+        detail=semantic_detail,
+        average=50,
+        diagnostics=semantic_diagnostics,
+        decision_flags=[],
+    )
+    semantic_trade_card = next((card for card in semantic_summary.get("cards", []) if card.get("key") == "trade"), {})
+    if "已平仓胜率 25.00%" not in str(semantic_trade_card.get("detail") or ""):
+        raise SystemExit("stage50 smoke failed: trade card did not disclose win-rate semantics")
 
     app = build_demo_app()
     run_id = "stage50-report-analysis-summary"

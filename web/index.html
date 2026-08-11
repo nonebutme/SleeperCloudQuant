@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SleeperCloudQuant Web MVP</title>
-  <link rel="stylesheet" href="/styles.css?v=769">
+  <link rel="stylesheet" href="/styles.css?v=770">
   <link rel="stylesheet" href="/vtable-adapter.css?v=1">
   <link rel="stylesheet" href="/report-ui.css?v=780">
-  <link rel="stylesheet" href="/data_center.css?v=879">
+  <link rel="stylesheet" href="/data_center.css?v=881">
   <link rel="stylesheet" href="/quant-ui-candidate.css?v=2">
   <link rel="stylesheet" href="/m4_asset_browser.css?v=1">
 </head>
@@ -74,7 +74,8 @@
             </div>
           </div>
           <section class="dc-surface dc-task-list-section"><div class="dc-surface-title"><div><h4>任务列表</h4><p>当前任务与历史任务统一展示；运行中每 2 秒刷新</p></div><span>最近 50 条 · 审计留痕</span></div><div id="dc-sync-active" class="dc-sync-list-live" aria-live="polite"></div><div id="dc-sync-task-list" class="dc-task-list"></div></section>
-          <dialog id="dc-sync-task-dialog" class="dc-task-dialog"><div class="dc-dialog-head"><div><span>同步任务详情</span><h4 id="dc-sync-task-dialog-title">任务详情</h4></div><button id="dc-sync-task-dialog-close" type="button" class="secondary-button" aria-label="关闭任务详情">关闭</button></div><div id="dc-sync-task-detail" class="dc-task-detail"><div class="empty-cell">正在加载任务详情</div></div></dialog>
+          <dialog id="dc-sync-task-dialog" class="dc-task-dialog" aria-modal="true" aria-labelledby="dc-sync-task-dialog-title"><div class="dc-dialog-head"><div><span>同步任务详情</span><h4 id="dc-sync-task-dialog-title">任务详情</h4></div><button id="dc-sync-task-dialog-close" type="button" class="secondary-button" aria-label="关闭任务详情">关闭</button></div><div id="dc-sync-task-detail" class="dc-task-detail" aria-live="polite"><div class="empty-cell">正在加载任务详情</div></div></dialog>
+          <dialog id="dc-action-confirm-dialog" class="dc-action-confirm-dialog" aria-modal="true" aria-labelledby="dc-action-confirm-title" aria-describedby="dc-action-confirm-message"><div class="dc-action-confirm-icon" aria-hidden="true">!</div><div class="dc-action-confirm-copy"><span id="dc-action-confirm-eyebrow">请确认操作</span><h4 id="dc-action-confirm-title">确认操作</h4><p id="dc-action-confirm-message"></p><code id="dc-action-confirm-context" hidden></code></div><div class="dc-action-confirm-actions"><button id="dc-action-confirm-cancel" type="button" class="secondary-button">取消</button><button id="dc-action-confirm-submit" type="button">确认</button></div></dialog>
         </section></div>
                 <div id="dc-view-quality" class="dc-view panel-wide"><section class="panel">
           <div class="panel-header"><div><h3>质量检查与纠错</h3><p>先主动执行规则检查发现问题，再进入异常台账补救和复查；未执行的规则不得显示为通过。</p></div><button id="dc-quality-export" type="button">导出异常记录 CSV</button></div><div class="dc-quality-flow-guide" aria-label="质量治理流程"><div><strong>1</strong><span>发起检查<small>选择范围与规则</small></span></div><i></i><div><strong>2</strong><span>查看发现<small>定位证券与日期</small></span></div><i></i><div><strong>3</strong><span>受控纠错<small>处置或创建重拉</small></span></div><i></i><div><strong>4</strong><span>复查闭环<small>确认问题已消失</small></span></div></div>
@@ -404,10 +405,12 @@
   <script src="/vendor/vtable/vtable.min.js?v=1.23.1"></script>
   <script src="/vtable-adapter.js?v=2"></script>
   <script src="/report-ui.js?v=780"></script>
-  <script src="/data_center_stage_c.js?v=880"></script>
+  <script src="/data_center_stage_c.js?v=882"></script>
   <script src="/app.js?v=780"></script>
   <script src="/quant-ui-candidate.js?v=2"></script>
   <script src="/m4_asset_browser.js?v=1"></script>
+  <script src="/strategy-datasets.js?v=4"></script>
+  <script src="/strategy-explorer.js?v=1"></script>
 </body>
 </html>
 

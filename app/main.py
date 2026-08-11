@@ -14,6 +14,8 @@ from app.api import (
     build_market_routes,
     build_reporting_routes,
 )
+from app.api.strategy_datasets import build_strategy_dataset_routes
+from app.services.strategy_dataset_service import StrategyDatasetService
 from app.services import (
     AIAnalysisService,
     BacktestService,
@@ -49,6 +51,7 @@ class AppServiceRegistry:
     ai_analysis_service: AIAnalysisService | None = None
     config_center_service: ConfigCenterService | None = None
     data_center_service: DataCenterService | None = None
+    strategy_dataset_service: StrategyDatasetService | None = None
 
 
 @dataclass
@@ -81,4 +84,6 @@ def create_app(services: AppServiceRegistry) -> SimpleApiApp:
         routes.extend(build_data_center_routes(services.data_center_service))
     if services.config_center_service is not None:
         routes.extend(build_config_routes(services.config_center_service))
+    if services.strategy_dataset_service is not None:
+        routes.extend(build_strategy_dataset_routes(services.strategy_dataset_service))
     return SimpleApiApp(title="SleeperCloudQuant Formal API", routes=routes)

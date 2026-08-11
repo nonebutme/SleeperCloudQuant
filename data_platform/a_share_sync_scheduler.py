@@ -469,7 +469,7 @@ class AShareSyncScheduler:
                 UPDATE market_incremental_sync_items
                 SET status='pending', attempt_count=0, next_attempt_at=NULL,
                     last_error=NULL, updated_at=?
-                WHERE job_id=? AND status='quarantined'
+                WHERE job_id=? AND status IN ('quarantined','stopped')
                 """,
                 (now, job_id),
             )
@@ -477,7 +477,7 @@ class AShareSyncScheduler:
                 """
                 UPDATE market_incremental_sync_jobs
                 SET status='queued', last_error=NULL, finished_at=NULL, updated_at=?
-                WHERE job_id=? AND status IN ('partial_failure','failed','interrupted')
+                WHERE job_id=? AND status IN ('partial_failure','failed','interrupted','stopped')
                 """,
                 (now, job_id),
             )
@@ -515,10 +515,28 @@ class AShareSyncScheduler:
         return self.get_job(job_id, include_items=True)
 
     def recover_interrupted_jobs(self) -> dict[str, Any]:
-        """Return abandoned running work to the durable queue without calling the provider."""
+        """Recover abandoned work and finalize jobs that were already stopping."""
 
         self.ensure_schema()
         now = _utc_now()
+        with closing(self._connect(read_only=True)) as connection:
+            stopping_job_ids = [
+                str(row["job_id"]) for row in connection.execute(
+                    """
+                    SELECT job_id FROM market_incremental_sync_jobs
+                    WHERE status IN ('stopping','stopped')
+                      AND EXISTS (
+                          SELECT 1 FROM market_incremental_sync_items items
+                          WHERE items.job_id=market_incremental_sync_jobs.job_id
+                            AND items.status IN ('pending','running','retry_wait')
+                      )
+                    """
+                ).fetchall()
+            ]
+        finalized_items = 0
+        for job_id in stopping_job_ids:
+            result = self._finalize_stopped_job(job_id, error="startup_stop_recovery")
+            finalized_items += int(result.get("finalized_items") or 0)
         with closing(self._connect()) as connection, connection:
             recovered_items = connection.execute(
                 """
@@ -527,6 +545,10 @@ class AShareSyncScheduler:
                     last_error=COALESCE(last_error, 'startup_recovery'),
                     updated_at=?
                 WHERE status IN ('running','retry_wait')
+                  AND job_id IN (
+                      SELECT job_id FROM market_incremental_sync_jobs
+                      WHERE status IN ('running','validating','interrupted')
+                  )
                 """,
                 (now,),
             ).rowcount
@@ -543,13 +565,46 @@ class AShareSyncScheduler:
             "status": "completed",
             "recovered_jobs": recovered_jobs,
             "recovered_items": recovered_items,
+            "finalized_stopping_jobs": len(stopping_job_ids),
+            "finalized_stopping_items": finalized_items,
             "recovered_at": now,
+        }
+
+    def _finalize_stopped_job(self, job_id: str, *, error: str) -> dict[str, Any]:
+        now = _utc_now()
+        with closing(self._connect()) as connection, connection:
+            finalized_items = connection.execute(
+                """
+                UPDATE market_incremental_sync_items
+                SET status='stopped', next_attempt_at=NULL,
+                    last_error=COALESCE(last_error, ?), updated_at=?
+                WHERE job_id=?
+                  AND status NOT IN ('completed','quarantined','stopped')
+                """,
+                (str(error), now, job_id),
+            ).rowcount
+            connection.execute(
+                """
+                UPDATE market_incremental_sync_jobs
+                SET status='stopped', last_error=?, finished_at=COALESCE(finished_at, ?),
+                    updated_at=?
+                WHERE job_id=? AND status IN ('stopping','stopped')
+                """,
+                (str(error), now, now, job_id),
+            )
+        self._refresh_job_summary(job_id)
+        return {
+            **self.get_job(job_id, include_items=True),
+            "finalized_items": finalized_items,
         }
 
     def mark_job_interrupted(self, job_id: str, *, error: str) -> dict[str, Any]:
         """Recover one abnormally terminated worker without touching other jobs."""
 
         self.ensure_schema()
+        job = self.get_job(job_id)
+        if str(job.get("status") or "") in {"stopping", "stopped"}:
+            return self._finalize_stopped_job(job_id, error="stop_requested")
         now = _utc_now()
         with closing(self._connect()) as connection, connection:
             connection.execute(

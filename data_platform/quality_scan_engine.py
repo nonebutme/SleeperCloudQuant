@@ -182,6 +182,38 @@ class QualityScanEngine:
             raise KeyError(f"quality scan not found: {scan_id}")
         return self._scan_payload(row)
 
+    def delete_scan(self, scan_id: str) -> dict[str, Any]:
+        """Delete inactive scan metadata while preserving discovered issues."""
+
+        scan = self.get_scan(scan_id)
+        if scan["status"] == "running":
+            raise ValueError("running quality scan cannot be deleted; stop it first")
+        with closing(self._connect()) as connection, connection:
+            issue_count = int(connection.execute(
+                "SELECT COUNT(*) FROM data_quality_issues WHERE source_task_id=?",
+                (scan_id,),
+            ).fetchone()[0])
+            child_count = int(connection.execute(
+                "SELECT COUNT(*) FROM data_quality_scan_jobs WHERE parent_scan_id=?",
+                (scan_id,),
+            ).fetchone()[0])
+            connection.execute(
+                "DELETE FROM data_quality_scan_controls WHERE scan_id=?",
+                (scan_id,),
+            )
+            deleted = connection.execute(
+                "DELETE FROM data_quality_scan_jobs WHERE scan_id=?",
+                (scan_id,),
+            ).rowcount
+        if not deleted:
+            raise KeyError(f"quality scan not found: {scan_id}")
+        return {
+            "scan_id": scan_id,
+            "status": "deleted",
+            "preserved_issue_count": issue_count,
+            "preserved_child_scan_count": child_count,
+        }
+
     def run_scan(self, scan_id: str) -> dict[str, Any]:
         scan = self.get_scan(scan_id)
         if scan["status"] not in {"queued", "failed"}:

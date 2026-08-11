@@ -136,3 +136,29 @@
 .dc-quality-action-help span,.dc-quality-action-help small{line-height:1.5;color:var(--q-text-secondary,#646a73)}
 @media(max-width:1024px){.dc-quality-operation-manual{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:480px){.dc-quality-operation-manual{grid-template-columns:1fr}}
+/* Balance the quality-check editor with the live task board on desktop. */
+@media(min-width:1025px){#dc-view-quality .dc-quality-discovery{grid-template-columns:minmax(440px,.9fr) minmax(0,1.1fr);align-items:stretch}#dc-view-quality .dc-quality-discovery>.dc-surface{min-width:0}#dc-view-quality .dc-quality-discovery>.dc-surface:last-child{background:linear-gradient(180deg,var(--color-surface),var(--color-surface-subtle))}#dc-view-quality .dc-live-board{height:100%}}
+/* Task detail is an explicit light modal surface in both application themes. */
+.dc-task-dialog{color-scheme:light;--color-surface:#fff;--color-surface-subtle:#f6f8fa;--color-border:#d8dee4;--color-border-strong:#b8c2cc;--color-text-primary:#17212b;--color-text-secondary:#52606d;--color-text-tertiary:#7b8794;--q-bg-card:#fff;--q-bg-subtle:#f6f8fa;--q-text:#17212b;--q-text-secondary:#52606d;isolation:isolate;background:#fff!important;color:#17212b!important;border:1px solid #b8c2cc!important;opacity:1!important;box-shadow:0 28px 80px rgba(8,15,26,.34),0 0 0 1px rgba(255,255,255,.7)!important}
+.dc-task-dialog::backdrop{background:rgba(17,24,39,.68)!important}
+.dc-task-dialog .dc-dialog-head,.dc-task-dialog .dc-task-detail{background:#fff!important;color:#17212b}
+.dc-task-dialog .dc-dialog-head{box-shadow:0 1px 0 #e3e8ee}
+.dc-task-dialog .dc-task-time-grid,.dc-task-dialog .dc-live-stats>div,.dc-task-dialog .table-wrap{background:#f7f9fb}
+.dc-task-dialog .dc-task-item-table{border:1px solid #d8dee4;border-radius:var(--radius-md);background:#fff}
+.dc-task-dialog .dc-task-item-table table{background:#fff;color:#17212b}
+.dc-task-dialog .secondary-button{background:#fff!important;color:#344054!important;border-color:#b8c2cc!important}
+.dc-task-dialog-loading{display:grid;place-items:center;min-height:320px;background:#fff}
+.dc-task-dialog-loading .empty-cell{display:grid;justify-items:center;gap:12px;color:#52606d}
+.dc-task-dialog-loading .empty-cell::before{content:"";width:26px;height:26px;border:3px solid #d8dee4;border-top-color:var(--color-primary,#1456f0);border-radius:50%;animation:dc-modal-spin .8s linear infinite}
+.dc-task-dialog-error{min-height:220px;padding:24px;background:#fff;color:#b42318}
+@keyframes dc-modal-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.dc-task-dialog-loading .empty-cell::before{animation:none}}
+.dc-action-confirm-dialog{box-sizing:border-box;width:min(480px,calc(100vw - 32px));max-width:none;margin:auto;padding:0;border:1px solid #c9d2dc;border-radius:12px;background:#fff!important;color:#17212b!important;box-shadow:0 30px 90px rgba(8,15,26,.42),0 0 0 1px rgba(255,255,255,.8);overflow:hidden;opacity:1;transform-origin:center}
+.dc-action-confirm-dialog[open]{display:grid;grid-template-columns:48px minmax(0,1fr);gap:16px;padding:24px;animation:dc-confirm-enter .16s ease-out}
+.dc-action-confirm-dialog::backdrop{background:rgba(17,24,39,.72)!important;backdrop-filter:blur(3px) saturate(.7)}
+.dc-action-confirm-icon{display:grid;place-items:center;width:48px;height:48px;border-radius:50%;background:#fff4e5;color:#b54708;font-size:24px;font-weight:800;border:1px solid #fedf89}
+.dc-action-confirm-copy{min-width:0}.dc-action-confirm-copy>span{display:block;margin-bottom:4px;color:#667085;font-size:12px;font-weight:700;letter-spacing:.08em}.dc-action-confirm-copy h4{margin:0;color:#17212b;font-size:20px;line-height:1.35}.dc-action-confirm-copy p{margin:10px 0 0;color:#475467;font-size:14px;line-height:1.65}.dc-action-confirm-copy code{display:block;margin-top:12px;padding:8px 10px;border:1px solid #e4e7ec;border-radius:6px;background:#f7f9fb;color:#344054;overflow-wrap:anywhere}
+.dc-action-confirm-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:10px;margin-top:8px;padding-top:18px;border-top:1px solid #eaecf0}.dc-action-confirm-actions button{min-width:96px}.dc-action-confirm-actions .secondary-button{background:#fff!important;color:#344054!important;border-color:#b8c2cc!important}
+@keyframes dc-confirm-enter{from{opacity:0;transform:translateY(-12px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(max-width:480px){.dc-action-confirm-dialog[open]{grid-template-columns:40px minmax(0,1fr);gap:12px;padding:20px}.dc-action-confirm-icon{width:40px;height:40px}.dc-action-confirm-actions{display:grid;grid-template-columns:1fr 1fr}.dc-action-confirm-actions button{min-width:0}}
+@media(prefers-reduced-motion:reduce){.dc-action-confirm-dialog[open]{animation:none}}

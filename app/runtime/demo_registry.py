@@ -28,6 +28,8 @@ from app.services import (
     SharedPortfolioService,
     SingleBacktestTaskService,
     StrategyService,
+    StrategyDatasetService,
+    StrategyDatasetResolver,
 )
 from backtest_kernel import LocalSQLiteBacktestRuntime, RqalphaPackageRuntime, RqalphaRicequantGateway, RunSingleBacktest
 from config_center import UnifiedConfigManager
@@ -106,6 +108,7 @@ def build_demo_service_registry() -> AppServiceRegistry:
     runtime_store.ensure_schema()
     _seed_demo_reporting_data(runtime_store)
     strategy_service = StrategyService()
+    strategy_dataset_resolver = StrategyDatasetResolver(governance_repository, canonical_a_share_repository)
 
     base_backtest_service = BacktestService(
         RunSingleBacktest(
@@ -115,6 +118,7 @@ def build_demo_service_registry() -> AppServiceRegistry:
                     LocalSQLiteBacktestRuntime(
                         backtest_market_repository,
                         strategy_resolver=strategy_service.resolve_version,
+                        dataset_resolver=strategy_dataset_resolver.resolve,
                     )
                 ),
             )
@@ -129,12 +133,14 @@ def build_demo_service_registry() -> AppServiceRegistry:
         strategy_service,
         runtime_store,
         classification_store=classification_store,
+        dataset_resolver=strategy_dataset_resolver.resolve,
     )
     single_backtest_task_service = SingleBacktestTaskService(backtest_service)
     shared_portfolio_service = SharedPortfolioService(
         market_service,
         strategy_service,
         runtime_store,
+        dataset_resolver=strategy_dataset_resolver.resolve,
     )
     reporting_service = ReportingService(
         RunResultsReader(runtime_store),
@@ -153,12 +159,14 @@ def build_demo_service_registry() -> AppServiceRegistry:
         UnifiedConfigManager(),
         a_share_scheduler=a_share_scheduler,
     )
+    data_center_store = DataCenterStore(_resolve_a_share_canonical_database_path())
     data_center_service = DataCenterService(
         DataCenterStore(_resolve_a_share_canonical_database_path()),
         a_share_scheduler,
         governance_repository,
         panorama_service=panorama_service,
     )
+    strategy_dataset_service = StrategyDatasetService(data_center_store, strategy_dataset_resolver)
     return AppServiceRegistry(
         market_data_service=market_service,
         factor_research_service=factor_service,
@@ -173,6 +181,7 @@ def build_demo_service_registry() -> AppServiceRegistry:
         ai_analysis_service=ai_analysis_service,
         config_center_service=config_center_service,
         data_center_service=data_center_service,
+        strategy_dataset_service=strategy_dataset_service,
     )
 
 

@@ -557,10 +557,17 @@
     const icSeries = ic.series || [];
     const layerSeries = layers.series || [];
     const layerReason = `${layerUnavailableReason}，Q1—Q5 保持不可用`;
+    const failures = (report.failure_summary || {}).items || [];
+    const coverage = finite(scope.coverage_ratio);
 
     target.innerHTML = `<div class="report-analysis-shell">
-      ${section("独立账户批量回测报告", `股票池 ${scope.universe_count ?? "-"} · 处理 ${scope.processed_count ?? "-"} · 实际建仓 ${scope.entered_count ?? "-"} · 失败 ${scope.failed_count ?? 0}`, `<div class="report-metric-grid report-metric-grid-four">${cards}</div>`)}
+      ${section("独立账户批量回测报告", `股票池 ${scope.universe_count ?? "-"} · 成功 ${scope.successful_count ?? "-"} · 实际建仓 ${scope.entered_count ?? "-"} · 失败 ${scope.failed_count ?? 0} · 覆盖率 ${coverage === null ? "-" : formatPercent(coverage)}`, `<div class="report-metric-grid report-metric-grid-four">${cards}</div>`)}
       ${independentWarning()}
+      ${failures.length ? section("失败股票与诊断", report.selection_bias_warning || "失败股票不按零收益计入绩效。", dataTable(failures, [
+        { key: "symbol", label: "股票" }, { key: "name", label: "名称" },
+        { key: "error_stage", label: "失败阶段" }, { key: "error_code", label: "错误码" },
+        { key: "error_message", label: "错误信息" }, { key: "retryable", label: "可重试" },
+      ], { empty: "无失败股票" })) : ""}
       ${section("横截面诊断", "IC 使用收盘后真实持仓权重与下一交易日复权收益，严格按 t→t+1 对齐；绝不提供总汇总净值曲线。", `<div class="report-panorama">
         ${chart("Q1—Q5 分层累计收益", layerSeries.length ? svgMultiLine([1, 2, 3, 4, 5].map((index) => ({ label: `Q${index}`, color: [COLORS.rise, "#f39c12", COLORS.neutral, "#3498db", COLORS.fall][index - 1], series: normalizeSeries(layerSeries, [`q${index}`]) })), { empty: layerReason }) : emptyState(layerReason))}
         ${chart("日度 IC 与累计 IC", svgMultiLine([{ label: "日度 IC", color: COLORS.neutral, series: normalizeSeries(icSeries, ["ic"]) }, { label: "累计 IC", color: COLORS.rise, series: normalizeSeries(icSeries, ["cumulative_ic"]) }], { empty: "有效横截面少于 3 个或信号无差异，IC 不可计算" }), ic.status === "ready" ? `${ic.period_count || 0} 期 · 横截面 ${ic.minimum_cross_section_size || 0}—${ic.maximum_cross_section_size || 0} 个标的` : "")}

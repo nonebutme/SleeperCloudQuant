@@ -37,6 +37,7 @@ from app.schemas.backtest import (
     IndependentScreeningTaskListQueryPayload,
     IndependentScreeningTaskListResponsePayload,
     IndependentScreeningTaskResponsePayload,
+    IndependentScreeningRetryRequestPayload,
     IndependentScreeningTaskRunRequestPayload,
     SharedPortfolioTaskCreateRequestPayload,
     SharedPortfolioTaskListQueryPayload,
@@ -756,6 +757,16 @@ def run_independent_screening_task(
     return IndependentScreeningTaskResponsePayload(task=service.start_task(task_id, wait=wait))
 
 
+def retry_independent_screening_items(
+    service: IndependentScreeningService,
+    payload: IndependentScreeningRetryRequestPayload,
+    task_id: str,
+) -> IndependentScreeningTaskResponsePayload:
+    wait = payload.wait is True or str(payload.wait).lower() in {"1", "true", "yes"}
+    return IndependentScreeningTaskResponsePayload(
+        task=service.retry_failed_items(task_id, symbols=list(payload.symbols), wait=wait)
+    )
+
 
 
 def control_independent_screening_task(
@@ -1057,6 +1068,13 @@ def build_backtest_routes(
             name="backtest_independent_screening_task_run",
             handler=lambda payload, task_id: run_independent_screening_task(independent_screening_service, payload, task_id),
             request_model=IndependentScreeningTaskRunRequestPayload,
+        ),
+        RouteDefinition(
+            method="POST",
+            path="/api/backtest/independent-screening-tasks/{task_id}/retry-failures",
+            name="backtest_independent_screening_retry_failures",
+            handler=lambda payload, task_id: retry_independent_screening_items(independent_screening_service, payload, task_id),
+            request_model=IndependentScreeningRetryRequestPayload,
         ),
         RouteDefinition(
             method="POST",

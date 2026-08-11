@@ -31,9 +31,19 @@ _SAFE_BUILTINS = {
 }
 
 
+def _write_payload(payload: dict[str, Any]) -> None:
+    """Write worker JSON with an explicit UTF-8 binary boundary."""
+
+    encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    sys.stdout.buffer.write(encoded)
+
+
 def main() -> None:
     try:
-        payload = json.loads(sys.stdin.read())
+        # Windows redirected stdin can inherit a locale encoding such as GBK.
+        # The parent always sends UTF-8, so decode the byte stream explicitly;
+        # otherwise Chinese strategy comments can become surrogate characters.
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         namespace: dict[str, Any] = {"__builtins__": _SAFE_BUILTINS}
         source_code = str(payload.get("source_code") or "")
         exec(compile(source_code, "<strategy>", "exec"), namespace, namespace)
@@ -45,9 +55,9 @@ def main() -> None:
         weights = list(entrypoint(bars, parameters))
         score_entrypoint = namespace.get("generate_signal_scores")
         scores = list(score_entrypoint(bars, parameters)) if callable(score_entrypoint) else None
-        sys.stdout.write(json.dumps({"status": "completed", "weights": weights, "scores": scores}))
+        _write_payload({"status": "completed", "weights": weights, "scores": scores})
     except Exception as exc:
-        sys.stdout.write(json.dumps({"status": "failed", "error": f"{type(exc).__name__}: {exc}"}))
+        _write_payload({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
 
 
 if __name__ == "__main__":

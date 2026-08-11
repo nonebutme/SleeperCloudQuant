@@ -36,12 +36,14 @@ class IndependentScreeningService:
         runtime_store: Any,
         database_path: str | Path = "var/runtime/independent_screening.sqlite3",
         classification_store: Any | None = None,
+        dataset_resolver: Any | None = None,
     ) -> None:
         self._backtest_service = backtest_service
         self._market_data_service = market_data_service
         self._strategy_service = strategy_service
         self._runtime_store = runtime_store
         self._classifications = classification_store
+        self._dataset_resolver = dataset_resolver
         self._database_path = Path(database_path)
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._threads: dict[str, threading.Thread] = {}
@@ -136,6 +138,12 @@ class IndependentScreeningService:
             return task
         if task.get("status") in {"completed", "canceled"}:
             return task
+        preflight_available = self._dataset_resolver is not None or hasattr(self._market_data_service, "get_published_data_version")
+        if int(task.get("progress", {}).get("remaining") or 0) > 0 and preflight_available:
+            diagnostic = self._preflight_task(task)
+            if diagnostic:
+                self._record_preflight_failure(task_id, diagnostic)
+                return self.get_task(task_id)
         with self._lock:
             active = self._threads.get(task_id)
             if active is None or not active.is_alive():
@@ -151,6 +159,92 @@ class IndependentScreeningService:
         if wait:
             active.join()
         return self.get_task(task_id)
+    def _preflight_task(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        """Validate the common market/version/dataset contract before fan-out."""
+
+        config = dict(task.get("config") or {})
+        with self._connect() as connection:
+            item = connection.execute(
+                "SELECT symbol, rqalpha_symbol, name FROM screening_items WHERE task_id=? AND status IN ('pending','interrupted') ORDER BY symbol LIMIT 1",
+                (task["task_id"],),
+            ).fetchone()
+        if item is None:
+            return None
+        symbol = str(item["symbol"])
+        try:
+            strategy = self._strategy_service.resolve_version(
+                str(config.get("strategy_id") or ""),
+                str(config.get("strategy_version") or "") or None,
+            )
+            if hasattr(self._market_data_service, "get_published_data_version"):
+                version = self._market_data_service.get_published_data_version(
+                    symbol=symbol,
+                    adjustment=str(config.get("adjustment") or "raw"),
+                    start_date=str(config.get("date_window", {}).get("start_date") or ""),
+                    end_date=str(config.get("date_window", {}).get("end_date") or ""),
+                    benchmark=str(config.get("benchmark") or "000300.XSHG"),
+                )
+                if str(version.get("status") or "") != "bound":
+                    reason = str(version.get("reason") or version.get("status") or "published_data_version_unavailable")
+                    raise RuntimeError(f"data_not_ready:{reason}")
+            rows = self._market_data_service.get_a_share_price_history(
+                symbol=symbol,
+                adjustment=str(config.get("adjustment") or "raw"),
+                start_date=str(config.get("date_window", {}).get("start_date") or ""),
+                end_date=str(config.get("date_window", {}).get("end_date") or ""),
+            )
+            normalized = [dict(row) for row in rows]
+            for row in normalized:
+                row.setdefault("symbol", symbol)
+                row.setdefault("name", str(item["name"] or ""))
+                row.setdefault("trade_date", str(row.get("date") or "")[:10])
+            if len(normalized) < 2:
+                raise RuntimeError("not enough local bars")
+            if self._dataset_resolver is not None:
+                self._dataset_resolver(
+                    str(strategy.get("source_code") or ""),
+                    normalized,
+                    dict(config.get("parameters") or {}),
+                )
+            return None
+        except Exception as exc:
+            return _classify_screening_error(exc, symbol=symbol, config=config)
+
+    def _record_preflight_failure(self, task_id: str, diagnostic: dict[str, Any]) -> None:
+        """Fail only pending items and preserve completed symbols from earlier runs."""
+
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE screening_items SET status='failed', entered=0,
+                       error_message=?, error_code=?, error_stage=?, error_type=?,
+                       error_details_json=?, retryable=?, finished_at=?
+                   WHERE task_id=? AND status IN ('pending','interrupted')""",
+                (
+                    diagnostic.get("message"),
+                    diagnostic.get("code"),
+                    diagnostic.get("stage"),
+                    diagnostic.get("type"),
+                    _dump(diagnostic),
+                    1 if diagnostic.get("retryable") else 0,
+                    now,
+                    task_id,
+                ),
+            )
+            connection.execute(
+                "UPDATE screening_tasks SET started_at=COALESCE(started_at, ?), updated_at=? WHERE task_id=?",
+                (now, now, task_id),
+            )
+        self._finalize_task(task_id)
+        task = self.get_task(task_id)
+        summary = dict(task.get("summary") or {})
+        summary["preflight_failure"] = dict(diagnostic)
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE screening_tasks SET summary_json=? WHERE task_id=?",
+                (_dump(summary), task_id),
+            )
+
 
     def control_task(self, task_id: str, action: str) -> dict[str, Any]:
         normalized = str(action or "").strip().lower()
@@ -299,19 +393,63 @@ class IndependentScreeningService:
         page_limit = max(1, min(int(limit), 500))
         page_offset = max(0, int(offset))
         with self._connect() as connection:
+            task_row = connection.execute(
+                "SELECT config_json FROM screening_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
             total = int(connection.execute(f"SELECT COUNT(*) FROM screening_items WHERE {where}", values).fetchone()[0])
             rows = connection.execute(
                 f"""SELECT * FROM screening_items WHERE {where}
                     ORDER BY entered DESC, symbol LIMIT ? OFFSET ?""",
                 (*values, page_limit, page_offset),
             ).fetchall()
+        config = _load(task_row["config_json"]) if task_row is not None else {}
         return {
             "task_id": task_id,
             "total": total,
             "limit": page_limit,
             "offset": page_offset,
-            "items": [self._item_payload(row) for row in rows],
+            "items": [self._item_payload(row, config=config) for row in rows],
         }
+
+    def retry_failed_items(self, task_id: str, *, symbols: list[str] | None = None, wait: bool = False) -> dict[str, Any]:
+        """Reset selected retryable failures and resume only those symbols."""
+
+        task = self.get_task(task_id)
+        if task.get("status") == "not_found":
+            return task
+        if task.get("status") in {"running", "pause_requested", "cancel_requested"}:
+            raise ValueError("running task cannot retry failed items")
+        requested = {_symbol_code(symbol) for symbol in symbols or []}
+        config = dict(task.get("config") or {})
+        now = _utc_now()
+        with self._connect() as connection:
+            failed_rows = connection.execute(
+                "SELECT * FROM screening_items WHERE task_id=? AND status='failed' ORDER BY symbol",
+                (task_id,),
+            ).fetchall()
+            retry_symbols = [
+                str(row["symbol"])
+                for row in failed_rows
+                if (not requested or str(row["symbol"]) in requested)
+                and self._item_payload(row, config=config)["retryable"]
+            ]
+            if not retry_symbols:
+                raise ValueError("没有可重试的失败股票")
+            placeholders = ",".join("?" for _ in retry_symbols)
+            connection.execute(
+                f"""UPDATE screening_items SET status='pending', entered=0,
+                       metrics_json='{{}}', error_message=NULL, error_code=NULL,
+                       error_stage=NULL, error_type=NULL, error_details_json='{{}}',
+                       retryable=0, started_at=NULL, finished_at=NULL
+                    WHERE task_id=? AND status='failed' AND symbol IN ({placeholders})""",
+                (task_id, *retry_symbols),
+            )
+            connection.execute(
+                "UPDATE screening_tasks SET status='ready', summary_json='{}', updated_at=?, finished_at=NULL WHERE task_id=?",
+                (now, task_id),
+            )
+        return self.start_task(task_id, wait=wait)
 
     def build_signal_analysis(self, task_id: str) -> dict[str, Any]:
         """Build point-in-time strategy-exposure IC evidence from persisted runs."""
@@ -582,7 +720,7 @@ class IndependentScreeningService:
         symbol = str(item["rqalpha_symbol"] or item["symbol"])
         run_id = f"{task_id}-{item['symbol']}"
         retry_count = int(config.get("retry_count") or 0)
-        last_error = ""
+        last_error: dict[str, Any] = {}
         for attempt in range(1, retry_count + 2):
             try:
                 request = BacktestRunRequest(
@@ -615,21 +753,31 @@ class IndependentScreeningService:
                     "symbol": item["symbol"],
                     "status": "completed",
                     "entered": entered,
-                    "attempt_count": attempt,
+                    "attempt_count": int(item.get("attempt_count") or 0) + attempt,
                     "run_id": run_id,
                     "metrics": dict(result.metrics),
                     "error_message": None,
+                    "error_code": None,
+                    "error_stage": None,
+                    "error_type": None,
+                    "error_details": {},
+                    "retryable": False,
                 }
             except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
+                last_error = _classify_screening_error(exc, symbol=symbol, config=config)
         return {
             "symbol": item["symbol"],
             "status": "failed",
             "entered": False,
-            "attempt_count": retry_count + 1,
+            "attempt_count": int(item.get("attempt_count") or 0) + retry_count + 1,
             "run_id": run_id,
             "metrics": {},
-            "error_message": last_error,
+            "error_message": last_error["message"],
+            "error_code": last_error["code"],
+            "error_stage": last_error["stage"],
+            "error_type": last_error["type"],
+            "error_details": last_error,
+            "retryable": last_error["retryable"],
         }
 
     def _save_item_results(self, task_id: str, results: list[dict[str, Any]]) -> None:
@@ -638,7 +786,9 @@ class IndependentScreeningService:
             connection.executemany(
                 """
                 UPDATE screening_items SET status=?, entered=?, attempt_count=?,
-                    run_id=?, metrics_json=?, error_message=?, finished_at=?
+                    run_id=?, metrics_json=?, error_message=?, error_code=?,
+                    error_stage=?, error_type=?, error_details_json=?, retryable=?,
+                    finished_at=?
                 WHERE task_id=? AND symbol=?
                 """,
                 [
@@ -649,6 +799,11 @@ class IndependentScreeningService:
                         result["run_id"],
                         _dump(result["metrics"]),
                         result["error_message"],
+                        result.get("error_code"),
+                        result.get("error_stage"),
+                        result.get("error_type"),
+                        _dump(result.get("error_details") or {}),
+                        1 if result.get("retryable") else 0,
                         now,
                         task_id,
                         result["symbol"],
@@ -733,7 +888,14 @@ class IndependentScreeningService:
             "top_entered": ranked[:20],
             "no_entry_excluded_from_performance": True,
         }
-        status = "completed" if progress["failed"] == 0 else ("partial_failed" if progress["completed"] else "failed")
+        if progress["failed"] == 0:
+            status = "completed"
+        elif progress["entered"] > 0:
+            status = "partial_completed"
+        elif progress["completed"] > 0:
+            status = "partial_failed"
+        else:
+            status = "failed"
         now = _utc_now()
         with self._connect() as connection:
             connection.execute(
@@ -784,7 +946,17 @@ class IndependentScreeningService:
                 break
         return collected
 
-    def _item_payload(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _item_payload(self, row: sqlite3.Row, *, config: dict[str, Any] | None = None) -> dict[str, Any]:
+        diagnostic = _screening_error_diagnostic(
+            message=row["error_message"],
+            code=row["error_code"],
+            stage=row["error_stage"],
+            error_type=row["error_type"],
+            details=_load(row["error_details_json"]),
+            retryable=bool(row["retryable"]),
+            symbol=str(row["rqalpha_symbol"] or row["symbol"]),
+            config=config or {},
+        )
         return {
             "symbol": row["symbol"],
             "rqalpha_symbol": row["rqalpha_symbol"],
@@ -795,7 +967,12 @@ class IndependentScreeningService:
             "attempt_count": row["attempt_count"],
             "run_id": row["run_id"],
             "metrics": _load(row["metrics_json"]),
-            "error_message": row["error_message"],
+            "error_message": diagnostic.get("message"),
+            "error_code": diagnostic.get("code"),
+            "error_stage": diagnostic.get("stage"),
+            "error_type": diagnostic.get("type"),
+            "error_details": diagnostic,
+            "retryable": bool(diagnostic.get("retryable")),
             "finished_at": row["finished_at"],
         }
 
@@ -828,6 +1005,11 @@ class IndependentScreeningService:
                     run_id TEXT,
                     metrics_json TEXT NOT NULL,
                     error_message TEXT,
+                    error_code TEXT,
+                    error_stage TEXT,
+                    error_type TEXT,
+                    error_details_json TEXT NOT NULL DEFAULT '{}',
+                    retryable INTEGER NOT NULL DEFAULT 0,
                     started_at TEXT,
                     finished_at TEXT,
                     PRIMARY KEY (task_id, symbol)
@@ -842,6 +1024,18 @@ class IndependentScreeningService:
                 connection.execute("ALTER TABLE screening_tasks ADD COLUMN deleted_at TEXT")
             if "deleted_reason" not in columns:
                 connection.execute("ALTER TABLE screening_tasks ADD COLUMN deleted_reason TEXT")
+
+            item_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(screening_items)").fetchall()}
+            additions = {
+                "error_code": "TEXT",
+                "error_stage": "TEXT",
+                "error_type": "TEXT",
+                "error_details_json": "TEXT NOT NULL DEFAULT '{}'",
+                "retryable": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for name, definition in additions.items():
+                if name not in item_columns:
+                    connection.execute(f"ALTER TABLE screening_items ADD COLUMN {name} {definition}")
 
     def _recover_interrupted_tasks(self) -> None:
         now = _utc_now()
@@ -1109,6 +1303,90 @@ def _max_drawdown(nav_values: list[float]) -> float | None:
         drawdown = value / peak - 1.0 if peak else 0.0
         maximum = min(maximum, drawdown)
     return maximum
+
+
+def _classify_screening_error(exc: Exception, *, symbol: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Convert internal exceptions into stable, user-actionable diagnostics."""
+
+    raw = str(exc)
+    lowered = raw.lower()
+    error_type = type(exc).__name__
+    stage = "backtest_runtime"
+    code = "BACKTEST_RUNTIME_ERROR"
+    retryable = False
+    suggested_action = "检查策略代码和回测配置后重试；若仍失败，请复制诊断信息。"
+    if "published_version_does_not_cover_requested_window" in lowered:
+        stage, code, retryable = "data_version", "DATA_VERSION_WINDOW_NOT_COVERED", True
+        suggested_action = "请求日期超出当前已发布数据版本。请在数据中心补齐并发布所需日期，或把回测结束日期缩短到所有策略依赖数据集的共同覆盖日后重试。"
+    elif "dataset runtime adapter is unavailable" in lowered:
+        stage, code = "dataset_resolve", "DATASET_ADAPTER_UNAVAILABLE"
+        suggested_action = "在策略数据集页面确认该数据集已标记为可直接回测。"
+    elif "coverage is incomplete" in lowered or ("dataset" in lowered and ("no rows" in lowered or "unavailable" in lowered)):
+        stage, code, retryable = "dataset_resolve", "DATASET_DATA_MISSING", True
+        suggested_action = "前往数据中心补齐对应数据集和日期范围，再重试该股票。"
+    elif "not enough market rows" in lowered or "not enough local bars" in lowered:
+        stage, code, retryable = "market_data", "MARKET_DATA_INSUFFICIENT", True
+        suggested_action = "前往数据中心检查该股票日线覆盖并修复缺口，再重试。"
+    elif "strategy dataset requirements are invalid" in lowered:
+        stage, code = "dataset_contract", "DATASET_REQUIREMENT_INVALID"
+        suggested_action = "修正策略源码中的 DATASET_REQUIREMENTS 后保存新版本。"
+    elif "timeout" in lowered:
+        stage, code, retryable = "strategy_execution", "STRATEGY_TIMEOUT", True
+        suggested_action = "降低策略计算量或缩小回测范围后重试。"
+    elif "strategy" in lowered:
+        stage, code = "strategy_execution", "STRATEGY_RUNTIME_ERROR"
+        suggested_action = "在策略工作台校验代码和参数后保存新版本。"
+    return {
+        "code": code,
+        "stage": stage,
+        "type": error_type,
+        "message": f"{error_type}: {raw}"[:2000],
+        "retryable": retryable,
+        "suggested_action": suggested_action,
+        "symbol": symbol,
+        "date_window": dict(config.get("date_window") or {}),
+    }
+
+
+def _screening_error_diagnostic(
+    *,
+    message: Any,
+    code: Any,
+    stage: Any,
+    error_type: Any,
+    details: dict[str, Any],
+    retryable: bool,
+    symbol: str,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize new and legacy item errors into one user-facing contract."""
+
+    raw_message = str(message or "").strip()
+    if not raw_message:
+        return {}
+    if code and stage:
+        return {
+            **dict(details or {}),
+            "code": str(code),
+            "stage": str(stage),
+            "type": str(error_type or details.get("type") or "RuntimeError"),
+            "message": raw_message,
+            "retryable": bool(retryable),
+            "symbol": symbol,
+            "date_window": dict(config.get("date_window") or details.get("date_window") or {}),
+        }
+    legacy_type, separator, legacy_raw = raw_message.partition(": ")
+    inferred = _classify_screening_error(
+        RuntimeError(legacy_raw if separator else raw_message),
+        symbol=symbol,
+        config=config,
+    )
+    inferred["message"] = raw_message
+    if separator:
+        inferred["type"] = legacy_type
+    inferred["legacy_inferred"] = True
+    return inferred
+
 
 def _normalize_id(value: str) -> str:
     normalized = "".join(character if character.isalnum() or character in "-_" else "-" for character in value.strip())

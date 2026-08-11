@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -77,12 +78,29 @@ class AkshareAShareProvider:
         begin = str(start_date).replace("-", "")
         if not _env_truthy(os.environ.get("SCQ_AKSHARE_INPROCESS_ENABLED", "")):
             self._acquire_request_slot()
-            return _fetch_eastmoney_with_curl(
-                symbol=code,
-                adjustment=mode,
-                start_date=begin,
-                end_date=finish,
-            )
+            try:
+                return _fetch_eastmoney_with_curl(
+                    symbol=code,
+                    adjustment=mode,
+                    start_date=begin,
+                    end_date=finish,
+                    proxy_url=self.proxy_url,
+                )
+            except RuntimeError as eastmoney_error:
+                try:
+                    return _fetch_inprocess_isolated(
+                        symbol=code,
+                        adjustment=mode,
+                        start_date=begin,
+                        end_date=finish,
+                        proxy_url=self.proxy_url,
+                        timeout_seconds=60,
+                    )
+                except RuntimeError as fallback_error:
+                    raise RuntimeError(
+                        f"{eastmoney_error}; isolated_fallback_failed: "
+                        f"{fallback_error}"
+                    ) from fallback_error
         if code == "689009":
             return self._fetch_cdr_daily(
                 adjustment=mode,
@@ -117,6 +135,7 @@ class AkshareAShareProvider:
                     adjustment=mode,
                     start_date=begin,
                     end_date=finish,
+                    proxy_url=self.proxy_url,
                 )
             except Exception as fallback_error:
                 raise RuntimeError(
@@ -257,6 +276,7 @@ class AkshareAShareProvider:
                         fallback = _fetch_eastmoney_with_curl(
                             symbol=_normalize_symbol(symbol), adjustment=mode,
                             start_date=begin, end_date=finish,
+                            proxy_url=self.proxy_url,
                         )
                     except Exception as curl_error:
                         fallback = []
@@ -398,12 +418,83 @@ def _optional_float(value: Any) -> float | None:
 def _env_truthy(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
+
+def _fetch_inprocess_isolated(
+    *,
+    symbol: str,
+    adjustment: str,
+    start_date: str,
+    end_date: str,
+    proxy_url: str | None,
+    timeout_seconds: float,
+) -> list[dict[str, Any]]:
+    request = {
+        "symbol": symbol,
+        "adjustment": adjustment,
+        "start_date": start_date,
+        "end_date": end_date,
+        "proxy_url": proxy_url,
+    }
+    child_code = (
+        "import json,sys;"
+        "from data_platform.providers.akshare_a_share_provider import AkshareAShareProvider;"
+        "request=json.loads(sys.argv[1]);"
+        "provider=AkshareAShareProvider(proxy_url=request.get('proxy_url'),retry_count=1);"
+        "rows=provider.fetch_daily_prices(symbol=request['symbol'],"
+        "adjustment=request['adjustment'],start_date=request['start_date'],"
+        "end_date=request['end_date']);"
+        "print('SCQ_RESULT='+json.dumps(rows,ensure_ascii=False,separators=(',',':')))"
+    )
+    environment = os.environ.copy()
+    environment["SCQ_AKSHARE_INPROCESS_ENABLED"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", child_code, json.dumps(request, ensure_ascii=False)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=max(5.0, float(timeout_seconds)),
+            env=environment,
+            creationflags=(
+                getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                if sys.platform == "win32" else 0
+            ),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"inprocess_fallback_timeout: exceeded {float(timeout_seconds):g}s"
+        ) from error
+    if completed.returncode != 0:
+        detail = str(completed.stderr or completed.stdout or "").strip()[-800:]
+        raise RuntimeError(
+            f"inprocess_fallback_failed: exit={completed.returncode}; detail={detail or 'no output'}"
+        )
+    marker = "SCQ_RESULT="
+    payload_text = next(
+        (line[len(marker):] for line in reversed(completed.stdout.splitlines())
+         if line.startswith(marker)),
+        "",
+    )
+    if not payload_text:
+        raise RuntimeError("inprocess_fallback_failed: result marker missing")
+    try:
+        rows = json.loads(payload_text)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("inprocess_fallback_failed: invalid JSON result") from error
+    if not isinstance(rows, list):
+        raise RuntimeError("inprocess_fallback_failed: result is not a row list")
+    return rows
+
+
 def _fetch_eastmoney_with_curl(
     *,
     symbol: str,
     adjustment: str,
     start_date: str,
     end_date: str,
+    proxy_url: str | None = None,
 ) -> list[dict[str, Any]]:
     market_id = "1" if symbol.startswith("6") else "0"
     params = {
@@ -417,14 +508,28 @@ def _fetch_eastmoney_with_curl(
         "end": end_date,
     }
     url = "https://push2his.eastmoney.com/api/qt/stock/kline/get?" + urlencode(params)
-    completed = subprocess.run(
-        ["curl.exe", "-sS", "-L", "--noproxy", "*", "--max-time", "30", url],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=35,
-    )
+    command = ["curl.exe", "-sS", "-L", "--max-time", "30"]
+    if proxy_url:
+        command.extend(["--proxy", proxy_url])
+    else:
+        command.extend(["--noproxy", "*"])
+    command.append(url)
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=35,
+        )
+    except subprocess.CalledProcessError as error:
+        detail = str(error.stderr or "").strip() or "no stderr"
+        route = "configured_proxy" if proxy_url else "direct"
+        raise RuntimeError(
+            f"eastmoney_transport_failed: curl_exit={error.returncode}; "
+            f"route={route}; detail={detail}"
+        ) from error
     payload = json.loads(completed.stdout)
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, dict):

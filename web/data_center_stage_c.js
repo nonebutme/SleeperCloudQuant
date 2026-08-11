@@ -78,5 +78,68 @@ function viewError(v,e){const m=`${viewNames[v]||v} 加载失败：${e.message||
 async function loadView(v){try{if(v==="overview"){const jobs=[loadOverview(),loadTasks()];if(typeof loadAShareOverview==="function")jobs.push(loadAShareOverview());await Promise.all(jobs)}else if(v==="routes")await Promise.all([loadDatasets(),loadSources(),loadRoutes()]);else if(v==="sync"){await loadDatasets();renderSyncFields();await loadTasks()}else if(v==="quality"){await Promise.all([loadQualityRules(),loadQualityOptions()]);await Promise.all([loadQualityScans(),loadQuality()])}else if(v==="versions")await loadVersions()}catch(e){viewError(v,e)}}
 function openView(v){if(typeof activatePage==="function")activatePage("market");else $('.nav-tab[data-page="market"]')?.click();activateView(v);const u=new URL(location.href);u.searchParams.set("page","market");u.searchParams.set("dc_view",v);history.replaceState({},"",u);loadView(v)}
 function bind(){bindJumps();bindSubtabs();$$('[data-dc-view]').forEach(b=>b.onclick=()=>openView(b.dataset.dcView));$('#dc-overview-refresh')?.addEventListener("click",()=>loadView("overview"));$('#dc-source-save')?.addEventListener("click",()=>saveSource().catch(e=>viewError("routes",e)));$('#dc-source-test')?.addEventListener("click",()=>testSource().catch(e=>viewError("routes",e)));$('#dc-routes-save')?.addEventListener("click",()=>saveRoute().catch(e=>viewError("routes",e)));$('#dc-route-test')?.addEventListener("click",()=>testRoute().catch(e=>viewError("routes",e)));$('#dc-sync-form')?.addEventListener("submit",e=>previewSync(e).catch(x=>viewError("sync",x)));$('#dc-sync-form')?.addEventListener("input",e=>{if(e.target.type!=="submit"){invalidatePreview();renderSyncFields()}});$('#dc-sync-create')?.addEventListener("click",()=>createSync().catch(e=>viewError("sync",e)));$('#dc-sync-latest')?.addEventListener("click",()=>useLatestTarget().catch(e=>viewError("sync",e)));$('#dc-sync-task-dialog-close')?.addEventListener("click",()=>$('#dc-sync-task-dialog')?.close());$('#dc-sync-task-dialog')?.addEventListener("click",e=>{if(e.target===e.currentTarget)e.currentTarget.close()});$('#dc-quality-scan-form')?.addEventListener("submit",e=>createQualityScan(e).catch(x=>viewError("quality",x)));$('#dc-quality-scan-form [name="scope"]')?.addEventListener("change",renderQualityScanScope);renderQualityScanScope();$('#dc-quality-filter')?.addEventListener("submit",e=>loadQuality(e).catch(x=>viewError("quality",x)));$('#dc-quality-filter')?.addEventListener("reset",()=>setTimeout(()=>{state.selectedIssues.clear();loadQuality().catch(showError)},0));$$('[data-quality-bulk]').forEach(b=>b.addEventListener("click",()=>bulkQuality(b.dataset.qualityBulk).catch(showError)));$('#dc-quality-export')?.addEventListener("click",()=>exportQuality().catch(e=>viewError("quality",e)));$('#dc-versions-refresh')?.addEventListener("click",()=>loadView("versions"));$$('.nav-tab[data-page="market"]').forEach(b=>b.addEventListener("click",()=>{activateView("overview");loadView("overview")}));const q=new URLSearchParams(location.search),v=viewNames[q.get("dc_view")]?q.get("dc_view"):"overview";if(q.get("page")==="market"||$('#page-market')?.classList.contains("is-active")){activateView(v);loadView(v)}}
+async function deleteQualityScan(scanId){if(!window.confirm("确认删除该检查任务？任务记录会从列表移除；已发现的异常及处置审计仍会保留。"))return;const r=(await api(`/api/data-center/quality/scans/${encodeURIComponent(scanId)}`,{method:"DELETE"})).result;await loadQualityScans();feedback(`检查任务已删除；保留 ${count(r.preserved_issue_count)} 条异常记录。`,"success")}
+const bindQualityScanActionsBase=bindQualityScanActions;bindQualityScanActions=function(){bindQualityScanActionsBase();$$(".dc-quality-scan-actions").forEach((actions,index)=>{const scan=state.qualityScans[index];if(scan&&scan.status!=="running"&&!actions.querySelector("[data-quality-scan-delete]")){const button=document.createElement("button");button.type="button";button.className="dc-danger-button";button.dataset.qualityScanDelete=scan.scan_id;button.textContent="删除";button.onclick=()=>deleteQualityScan(scan.scan_id).catch(showError);actions.append(button)}})}
+const bindTaskActionsBase=bindTaskActions;bindTaskActions=function(){bindTaskActionsBase();state.tasks.filter(task=>task.status==="stopped"&&Number(task.stopped_items||0)>0).forEach(task=>{const detail=$$("[data-task-detail]").find(button=>button.dataset.taskDetail===task.job_id),actions=detail?.closest(".dc-inline-actions");if(!actions||actions.querySelector("[data-task-retry]"))return;const button=document.createElement("button");button.type="button";button.dataset.taskRetry=task.job_id;button.textContent="仅重试未完成项";button.onclick=async()=>{if(!window.confirm(`仅重新执行 ${count(task.stopped_items)} 个未完成工作项，已成功的 ${count(task.completed_items)} 项不会重跑。确认继续？`))return;await api(`/api/data-center/sync/tasks/${encodeURIComponent(task.job_id)}/retry-failed`,{method:"POST",body:{run_now:false}});await loadTasks();feedback("未完成项已恢复为待执行；请点击“运行任务”继续。","success")};actions.insertBefore(button,actions.querySelector("[data-task-delete]"))})}
+function installNativeModalGuard(){
+  if(window.__scqNativeModalGuard)return;
+  window.__scqNativeModalGuard=true;
+  ["confirm","alert"].forEach(name=>{
+    const original=window[name]?.bind(window);
+    if(!original)return;
+    window[name]=(...args)=>{
+      document.documentElement.classList.add("scq-native-modal-open");
+      void document.body?.offsetHeight;
+      try{return original(...args)}
+      finally{document.documentElement.classList.remove("scq-native-modal-open")}
+    };
+  });
+}
+installNativeModalGuard();
+const taskDetailBase=taskDetail;
+taskDetail=async function(taskId){
+  if(!taskId)return;
+  const dialog=$("#dc-sync-task-dialog"),detail=$("#dc-sync-task-detail"),title=$("#dc-sync-task-dialog-title");
+  if(title)title.textContent=id(taskId);
+  if(detail){
+    detail.className="dc-task-detail dc-task-dialog-loading";
+    detail.setAttribute("aria-busy","true");
+    detail.innerHTML='<div class="empty-cell">正在加载任务详情，请稍候</div>';
+  }
+  if(dialog&&!dialog.open)dialog.showModal();
+  try{return await taskDetailBase(taskId)}
+  catch(error){
+    if(detail){
+      detail.className="dc-task-detail dc-task-dialog-error";
+      detail.innerHTML=`<div><strong>任务详情加载失败</strong><p>${esc(error.message||String(error))}</p></div>`;
+    }
+    throw error;
+  }finally{
+    detail?.classList.remove("dc-task-dialog-loading");
+    detail?.removeAttribute("aria-busy");
+  }
+};
+function actionConfirm({title,message,context="",confirmLabel="确认"}){
+  const dialog=$("#dc-action-confirm-dialog"),titleNode=$("#dc-action-confirm-title"),messageNode=$("#dc-action-confirm-message"),contextNode=$("#dc-action-confirm-context"),cancel=$("#dc-action-confirm-cancel"),submit=$("#dc-action-confirm-submit");
+  if(!dialog)return Promise.resolve(window.confirm(message));
+  titleNode.textContent=title;messageNode.textContent=message;contextNode.textContent=context;contextNode.hidden=!context;submit.textContent=confirmLabel;
+  return new Promise(resolve=>{
+    let settled=false;
+    const finish=value=>{if(settled)return;settled=true;dialog.removeEventListener("cancel",onCancel);dialog.removeEventListener("close",onClose);cancel.onclick=null;submit.onclick=null;if(dialog.open)dialog.close(value?"confirm":"cancel");resolve(value)};
+    const onCancel=event=>{event.preventDefault();finish(false)},onClose=()=>finish(dialog.returnValue==="confirm");
+    cancel.onclick=()=>finish(false);submit.onclick=()=>finish(true);dialog.addEventListener("cancel",onCancel);dialog.addEventListener("close",onClose);
+    if(!dialog.open)dialog.showModal();requestAnimationFrame(()=>submit.focus());
+  });
+}
+const bindTaskActionsWithCustomRun=bindTaskActions;
+bindTaskActions=function(){
+  bindTaskActionsWithCustomRun();
+  $$("[data-task-run]").forEach(button=>button.onclick=async()=>{
+    const job=button.dataset.taskRun,confirmed=await actionConfirm({title:"运行同步任务",message:"任务将调用免费上游数据源，并把结果写入本地观察表。运行期间可在任务列表查看实时进度。",context:id(job),confirmLabel:"确认运行"});
+    if(!confirmed)return;
+    state.launching.set(job,Date.now());button.disabled=true;feedback("任务正在启动，进度将在 2 秒内刷新","success");
+    try{await api(`/api/data-center/sync/tasks/${encodeURIComponent(job)}/run`,{method:"POST",body:{}})}catch(error){state.launching.delete(job);showError(error)}finally{await loadTasks().catch(showError)}
+  });
+};
 window.openDataCenterView=openView;if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",bind);else bind();
 }());

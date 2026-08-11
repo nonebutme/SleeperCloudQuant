@@ -803,3 +803,9 @@ button.workflow-step:hover { background: #f4f8fb; }
   .stage76-sidebar-subnav { grid-column:1/-1; margin:0; padding:4px; border-left:0; grid-template-columns:repeat(2,minmax(0,1fr)); }
   #stage76-create-mode-tabs { grid-template-columns:repeat(3,minmax(0,1fr)); }
 }
+
+/* Global modal interaction standard: dim and lock every background surface. */
+html:has(dialog[open]),html.scq-native-modal-open{overflow:hidden}
+dialog{z-index:1000}
+dialog::backdrop{background:rgba(17,24,39,.64)!important;backdrop-filter:blur(2px) saturate(.72);pointer-events:auto}
+html.scq-native-modal-open body::after{content:"";position:fixed;inset:0;z-index:2147483646;background:rgba(17,24,39,.64);backdrop-filter:blur(2px) saturate(.72);pointer-events:all}

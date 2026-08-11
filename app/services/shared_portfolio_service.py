@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from backtest_kernel.strategy_execution import execute_target_weights
+from backtest_kernel.strategy_execution import execute_strategy_evidence
 
 
 class SharedPortfolioService:
@@ -25,10 +25,12 @@ class SharedPortfolioService:
         strategy_service: Any,
         runtime_store: Any,
         database_path: str | Path = "var/runtime/shared_portfolio.sqlite3",
+        dataset_resolver: Any | None = None,
     ) -> None:
         self._market_data_service = market_data_service
         self._strategy_service = strategy_service
         self._runtime_store = runtime_store
+        self._dataset_resolver = dataset_resolver
         self._database_path = Path(database_path)
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._threads: dict[str, threading.Thread] = {}
@@ -107,7 +109,7 @@ class SharedPortfolioService:
             "slippage_rate": _bounded(slippage_rate, 0.0, 0.05),
             "lot_size": 100,
             "settlement": "A-share T+1",
-            "rebalance": "daily_close_sell_then_buy",
+            "rebalance": "daily_open_sell_then_buy" if str(parameters.get("execution_price") or "close").lower() == "open" else "daily_close_sell_then_buy",
             "universe_source": "canonical_a_share_sqlite",
             "data_version_binding": data_version_binding,
         }
@@ -357,15 +359,33 @@ class SharedPortfolioService:
                     start_date=str(config["date_window"]["start_date"]),
                     end_date=str(config["date_window"]["end_date"]),
                 )
+                for row in rows:
+                    row.setdefault("symbol", symbol)
+                    row.setdefault("name", str(item.get("name") or ""))
+                    row.setdefault("listing_status", str(item.get("listing_status") or ""))
+                    row.setdefault("trade_date", str(row.get("date") or "")[:10])
                 if len(rows) < 2:
                     raise RuntimeError("not enough local bars")
-                weights = execute_target_weights(
+                dataset_evidence: list[dict[str, Any]] = []
+                if self._dataset_resolver is not None:
+                    resolved = self._dataset_resolver(
+                        str(strategy.get("source_code") or ""), rows, dict(config.get("parameters") or {})
+                    )
+                    rows = [dict(row) for row in resolved.get("bars") or rows]
+                    dataset_evidence = [dict(item) for item in resolved.get("evidence") or []]
+                strategy_evidence = execute_strategy_evidence(
                     str(strategy.get("source_code") or ""),
                     rows,
                     dict(config.get("parameters") or {}),
                     timeout_seconds=10.0,
                 )
-                return symbol, {"meta": item, "rows": rows, "weights": weights}, None
+                return symbol, {
+                    "meta": item,
+                    "rows": rows,
+                    "weights": list(strategy_evidence["weights"]),
+                    "scores": strategy_evidence.get("raw_scores"),
+                    "dataset_evidence": dataset_evidence,
+                }, None
             except Exception as exc:
                 return symbol, None, f"{type(exc).__name__}: {exc}"
 
@@ -558,15 +578,19 @@ def _run_shared_account(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     by_symbol: dict[str, dict[str, dict[str, Any]]] = {}
     weight_by_symbol: dict[str, dict[str, float]] = {}
+    score_by_symbol: dict[str, dict[str, float | None]] = {}
     all_dates: set[str] = set()
     for symbol, payload in prepared.items():
         by_symbol[symbol] = {}
         weight_by_symbol[symbol] = {}
-        for row, weight in zip(payload["rows"], payload["weights"]):
+        score_by_symbol[symbol] = {}
+        scores = payload.get("scores") or [None] * len(payload["rows"])
+        for row, weight, score in zip(payload["rows"], payload["weights"], scores):
             date = str(row.get("date") or "")[:10]
             if date:
                 by_symbol[symbol][date] = dict(row)
                 weight_by_symbol[symbol][date] = float(weight)
+                score_by_symbol[symbol][date] = float(score) if score is not None else None
                 all_dates.add(date)
     dates = sorted(all_dates)
     if len(dates) < 2:
@@ -584,6 +608,7 @@ def _run_shared_account(
     accounts: list[dict[str, Any]] = []
     curve: list[tuple[str, float]] = []
     rejected_orders = 0
+    execution_mode = "open" if str((config.get("parameters") or {}).get("execution_price") or "close").lower() == "open" else "close"
 
     for date in dates:
         available = dict(quantities)
@@ -593,13 +618,23 @@ def _run_shared_account(
             if row is not None and float(row.get("close") or 0) > 0:
                 rows_today[symbol] = row
                 last_prices[symbol] = float(row["close"])
-        total_before = cash + sum(quantities[s] * last_prices.get(s, 0.0) for s in prepared)
+        execution_prices = {
+            symbol: float(row.get("open") or row["close"]) if execution_mode == "open" else float(row["close"])
+            for symbol, row in rows_today.items()
+        }
+        total_before = cash + sum(quantities[s] * execution_prices.get(s, last_prices.get(s, 0.0)) for s in prepared)
         signals = {
             symbol: weight_by_symbol[symbol][date]
             for symbol in rows_today
             if weight_by_symbol[symbol].get(date, 0.0) > 0
         }
-        selected = sorted(signals, key=lambda symbol: (-signals[symbol], symbol))[: int(config["max_positions"])]
+        selected = sorted(
+            signals,
+            key=lambda symbol: (
+                -(score_by_symbol[symbol].get(date) if score_by_symbol[symbol].get(date) is not None else signals[symbol]),
+                symbol,
+            ),
+        )[: int(config["max_positions"])]
         signal_total = sum(signals[symbol] for symbol in selected)
         target_weights = {
             symbol: float(config["portfolio_exposure"]) * signals[symbol] / signal_total
@@ -607,7 +642,7 @@ def _run_shared_account(
         } if signal_total else {}
         targets: dict[str, int] = {}
         for symbol in prepared:
-            price = last_prices.get(symbol, 0.0)
+            price = execution_prices.get(symbol, last_prices.get(symbol, 0.0))
             targets[symbol] = (
                 math.floor(total_before * target_weights.get(symbol, 0.0) / price / 100) * 100
                 if price > 0 and symbol in rows_today else quantities[symbol]
@@ -619,10 +654,11 @@ def _run_shared_account(
             if sell_quantity < 100 or row is None:
                 continue
             close = float(row["close"])
-            if _at_price_limit(symbol, str(prepared[symbol]["meta"].get("name") or ""), close, previous_closes.get(symbol), up=False):
+            reference_price = execution_prices[symbol]
+            if _at_price_limit(symbol, str(prepared[symbol]["meta"].get("name") or ""), reference_price, previous_closes.get(symbol), up=False):
                 rejected_orders += 1
                 continue
-            execution_price = close * (1.0 - float(config["slippage_rate"]))
+            execution_price = reference_price * (1.0 - float(config["slippage_rate"]))
             amount = sell_quantity * execution_price
             commission = max(amount * float(config["commission_rate"]), float(config["min_commission"]))
             tax = amount * float(config["tax_rate"])
@@ -630,7 +666,7 @@ def _run_shared_account(
             cash += amount - commission - tax
             quantities[symbol] -= sell_quantity
             available[symbol] -= sell_quantity
-            trades.append(_trade(date, symbol, "SELL", execution_price, sell_quantity, amount, commission, tax, target_weights.get(symbol, 0.0), realized_pnl=realized_pnl, market_vwap=_market_vwap(row, close), market_volume=_positive_float(row.get("volume"))))
+            trades.append(_trade(date, symbol, "SELL", execution_price, sell_quantity, amount, commission, tax, target_weights.get(symbol, 0.0), realized_pnl=realized_pnl, market_vwap=_market_vwap(row, close), market_volume=_positive_float(row.get("volume")), execution_mode=execution_mode, raw_signal_score=score_by_symbol[symbol].get(date)))
             if quantities[symbol] == 0:
                 average_costs[symbol] = 0.0
 
@@ -640,10 +676,11 @@ def _run_shared_account(
             if buy_quantity < 100 or row is None:
                 continue
             close = float(row["close"])
-            if _at_price_limit(symbol, str(prepared[symbol]["meta"].get("name") or ""), close, previous_closes.get(symbol), up=True):
+            reference_price = execution_prices[symbol]
+            if _at_price_limit(symbol, str(prepared[symbol]["meta"].get("name") or ""), reference_price, previous_closes.get(symbol), up=True):
                 rejected_orders += 1
                 continue
-            execution_price = close * (1.0 + float(config["slippage_rate"]))
+            execution_price = reference_price * (1.0 + float(config["slippage_rate"]))
             buy_quantity = _affordable_quantity(
                 buy_quantity, cash, execution_price, float(config["commission_rate"]), float(config["min_commission"])
             )
@@ -655,7 +692,7 @@ def _run_shared_account(
             average_costs[symbol] = (previous_quantity * average_costs[symbol] + amount + commission) / (previous_quantity + buy_quantity)
             cash -= amount + commission
             quantities[symbol] += buy_quantity
-            trades.append(_trade(date, symbol, "BUY", execution_price, buy_quantity, amount, commission, 0.0, target_weights.get(symbol, 0.0), market_vwap=_market_vwap(row, close), market_volume=_positive_float(row.get("volume"))))
+            trades.append(_trade(date, symbol, "BUY", execution_price, buy_quantity, amount, commission, 0.0, target_weights.get(symbol, 0.0), market_vwap=_market_vwap(row, close), market_volume=_positive_float(row.get("volume")), execution_mode=execution_mode, raw_signal_score=score_by_symbol[symbol].get(date)))
 
         market_value = sum(quantities[s] * last_prices.get(s, 0.0) for s in prepared)
         total_value = cash + market_value
@@ -719,6 +756,8 @@ def _run_shared_account(
             "strategy_version": strategy.get("latest_version"),
             "source_sha256": strategy.get("source_sha256"),
             "execution_contract": strategy.get("execution_contract"),
+            "score_contract": "point_in_time_raw_score_v1" if any(payload.get("scores") is not None for payload in prepared.values()) else "unavailable_generate_signal_scores_missing",
+            "datasets": _dataset_evidence(prepared),
         },
         "execution_rules": {
             "shared_cash": True,
@@ -727,6 +766,7 @@ def _run_shared_account(
             "sell_before_buy": True,
             "suspension": "missing_bar_no_trade_last_close_valuation",
             "price_limit": "5/10/20/30_percent_approximation",
+            "execution_price": execution_mode,
         },
         "data_asset_trace": {
             "status": "bound",
@@ -754,9 +794,18 @@ def _run_shared_account(
     return raw_result, metrics
 
 
-def _trade(date: str, symbol: str, side: str, price: float, quantity: int, amount: float, commission: float, tax: float, target_weight: float, *, realized_pnl: float | None = None, market_vwap: float | None = None, market_volume: float | None = None) -> dict[str, Any]:
+def _dataset_evidence(prepared: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    for payload in prepared.values():
+        for item in payload.get("dataset_evidence") or []:
+            dataset_id = str(item.get("dataset_id") or "")
+            if dataset_id and dataset_id not in by_id:
+                by_id[dataset_id] = dict(item)
+    return [by_id[key] for key in sorted(by_id)]
+
+def _trade(date: str, symbol: str, side: str, price: float, quantity: int, amount: float, commission: float, tax: float, target_weight: float, *, realized_pnl: float | None = None, market_vwap: float | None = None, market_volume: float | None = None, execution_mode: str = "close", raw_signal_score: float | None = None) -> dict[str, Any]:
     return {
-        "trade_time": f"{date}T15:00:00+08:00",
+        "trade_time": f"{date}T{'09:30:00' if execution_mode == 'open' else '15:00:00'}+08:00",
         "order_book_id": symbol,
         "side": side,
         "price": round(price, 6),
@@ -770,6 +819,8 @@ def _trade(date: str, symbol: str, side: str, price: float, quantity: int, amoun
             "mode": "shared_cash_portfolio",
             "market_vwap": market_vwap,
             "market_volume": market_volume,
+            "execution_price_mode": execution_mode,
+            "raw_signal_score": raw_signal_score,
         },
     }
 

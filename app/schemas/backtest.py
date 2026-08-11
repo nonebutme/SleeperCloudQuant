@@ -324,6 +324,14 @@ class IndependentScreeningTaskRunRequestPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class IndependentScreeningRetryRequestPayload:
+    """Retry selected retryable per-symbol failures."""
+
+    symbols: list[str] = field(default_factory=list)
+    wait: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class IndependentScreeningTaskControlRequestPayload:
     """Pause, resume, or cancel one screening task."""
 

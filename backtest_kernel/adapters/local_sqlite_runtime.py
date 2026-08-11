@@ -18,9 +18,11 @@ class LocalSQLiteBacktestRuntime:
         market_repository: MarketDataRepository,
         *,
         strategy_resolver: Callable[[str, str | None], Mapping[str, Any]] | None = None,
+        dataset_resolver: Callable[[str, Sequence[Mapping[str, Any]], Mapping[str, Any]], Mapping[str, Any]] | None = None,
     ) -> None:
         self._market_repository = market_repository
         self._strategy_resolver = strategy_resolver
+        self._dataset_resolver = dataset_resolver
 
     def run(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         parameters = dict(payload.get("parameters") or {})
@@ -38,6 +40,9 @@ class LocalSQLiteBacktestRuntime:
         except TypeError:
             history = self._market_repository.fetch_price_history(symbol, start_date, end_date)
         rows = [dict(row) for row in history]
+        for row in rows:
+            row.setdefault("symbol", symbol)
+            row.setdefault("trade_date", str(row.get("date") or "")[:10])
         if len(rows) < 2:
             raise RuntimeError(f"not enough market rows for local runtime: {symbol} {start_date}..{end_date}")
 
@@ -55,10 +60,17 @@ class LocalSQLiteBacktestRuntime:
         target_weights: list[float] | None = None
         raw_scores: list[float | None] | None = None
         score_contract = "unavailable_legacy_strategy"
+        dataset_evidence: list[dict[str, Any]] = []
         strategy_id = str(extra_config.get("strategy_id") or "")
         strategy_version = str(extra_config.get("strategy_version") or "") or None
         if self._strategy_resolver is not None and strategy_id:
             strategy_snapshot = self._strategy_resolver(strategy_id, strategy_version)
+            if self._dataset_resolver is not None:
+                resolved_datasets = self._dataset_resolver(
+                    str(strategy_snapshot.get("source_code") or ""), rows, parameters
+                )
+                rows = [dict(row) for row in resolved_datasets.get("bars") or rows]
+                dataset_evidence = [dict(item) for item in resolved_datasets.get("evidence") or []]
             strategy_evidence = execute_strategy_evidence(
                 str(strategy_snapshot.get("source_code") or ""),
                 rows,
@@ -81,7 +93,9 @@ class LocalSQLiteBacktestRuntime:
             close = float(row.get("close") or 0.0)
             if close <= 0:
                 continue
-            total_value = cash + quantity * close
+            execution_mode = "open" if str(parameters.get("execution_price") or "close").lower() == "open" else "close"
+            reference_price = float(row.get("open") or close) if execution_mode == "open" else close
+            total_value = cash + quantity * reference_price
             short_ma = _mean(close_values[max(0, index - short_window + 1) : index + 1])
             long_ma = _mean(close_values[max(0, index - long_window + 1) : index + 1])
             target_weight = (
@@ -89,11 +103,11 @@ class LocalSQLiteBacktestRuntime:
                 if target_weights is not None
                 else (position_size if index + 1 >= long_window and short_ma >= long_ma else 0.0)
             )
-            target_quantity = math.floor((total_value * target_weight) / close / 100.0) * 100.0
+            target_quantity = math.floor((total_value * target_weight) / reference_price / 100.0) * 100.0
             delta = target_quantity - quantity
             if abs(delta) >= 1:
                 side = "BUY" if delta > 0 else "SELL"
-                execution_price = close * (1.0 + rqalpha_config["slippage_rate"] if side == "BUY" else 1.0 - rqalpha_config["slippage_rate"])
+                execution_price = reference_price * (1.0 + rqalpha_config["slippage_rate"] if side == "BUY" else 1.0 - rqalpha_config["slippage_rate"])
                 amount = abs(delta) * execution_price
                 commission = max(amount * rqalpha_config["commission_rate"], rqalpha_config["min_commission"] if amount > 0 else 0.0)
                 tax = amount * rqalpha_config["tax_rate"] if side == "SELL" else 0.0
@@ -102,7 +116,7 @@ class LocalSQLiteBacktestRuntime:
                 quantity = target_quantity
                 trades.append(
                     {
-                        "trade_time": f"{date}T15:00:00+08:00",
+                        "trade_time": f"{date}T{'09:30:00' if execution_mode == 'open' else '15:00:00'}+08:00",
                         "order_book_id": symbol,
                         "side": side,
                         "position_effect": "OPEN" if side == "BUY" else "CLOSE",
@@ -115,6 +129,7 @@ class LocalSQLiteBacktestRuntime:
                             "runtime": "local_sqlite_backtest",
                             "target_weight": target_weight,
                             "raw_signal_score": raw_scores[index] if raw_scores is not None else None,
+                            "execution_price_mode": execution_mode,
                             "market_vwap": _market_vwap(row, close),
                             "market_volume": _positive_float(row.get("volume")),
                             "rqalpha_local": rqalpha_config,
@@ -178,6 +193,7 @@ class LocalSQLiteBacktestRuntime:
                     "strategy_version": strategy_snapshot.get("latest_version") if strategy_snapshot else strategy_version,
                     "source_sha256": strategy_snapshot.get("source_sha256") if strategy_snapshot else None,
                     "execution_contract": strategy_snapshot.get("execution_contract") if strategy_snapshot else "legacy-ma-fallback",
+                    "datasets": dataset_evidence,
                 },
                 "signal_evidence": {
                     "version": "stage80-point-in-time-signal-v1",

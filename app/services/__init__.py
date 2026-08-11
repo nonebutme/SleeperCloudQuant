@@ -16,6 +16,8 @@ from .reporting_service import ReportingService
 from .shared_portfolio_service import SharedPortfolioService
 from .single_backtest_task_service import SingleBacktestTaskService
 from .strategy_service import StrategyService
+from .strategy_dataset_service import StrategyDatasetService
+from .strategy_dataset_resolver import StrategyDatasetResolver
 
 __all__ = [
     "AIAnalysisService",
@@ -34,4 +36,6 @@ __all__ = [
     "SharedPortfolioService",
     "SingleBacktestTaskService",
     "StrategyService",
+    "StrategyDatasetService",
+    "StrategyDatasetResolver",
 ]

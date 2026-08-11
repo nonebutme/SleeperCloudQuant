@@ -631,6 +631,19 @@ class AShareMarketStore:
             "rows": [dict(row) for row in rows],
         }
 
+    def fetch_symbol(self, symbol: str) -> dict[str, Any] | None:
+        """Return one canonical security-master row for strategy attachment."""
+
+        code = _normalize_symbol(symbol)
+        with closing(self._connect(read_only=True)) as connection:
+            row = connection.execute(
+                """SELECT symbol, rqalpha_symbol, name, market, listing_status
+                   FROM market_symbols WHERE symbol=? OR rqalpha_symbol=?
+                   ORDER BY CASE WHEN symbol=? THEN 0 ELSE 1 END LIMIT 1""",
+                (code, str(symbol), code),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def fetch_price_history(
         self,
         symbol: str,

@@ -14,6 +14,8 @@ from typing import Any
 
 STRATEGY_ENTRYPOINT = "generate_target_weights"
 STRATEGY_CONTRACT = "target-weights-v1"
+PARAMETER_SCHEMA_NAME = "PARAMETER_SCHEMA"
+_PARAMETER_TYPES = {"integer", "number", "boolean", "string", "enum", "date", "symbol", "list", "symbol_list"}
 
 _FORBIDDEN_CALLS = {
     "__import__",
@@ -104,13 +106,15 @@ class StrategyService:
 
     def validate_source(self, source_code: str) -> dict[str, Any]:
         issues: list[dict[str, str]] = []
+        warnings: list[dict[str, str]] = []
         try:
             tree = ast.parse(source_code)
         except SyntaxError as exc:
             issues.append({"code": "syntax_error", "message": str(exc), "line": str(exc.lineno or "")})
-            return {"ok": False, "status": "invalid", "contract": STRATEGY_CONTRACT, "issues": issues}
+            return {"ok": False, "status": "invalid", "contract": STRATEGY_CONTRACT, "issues": issues, "warnings": warnings}
 
         entrypoint_found = False
+        parameter_name = "parameters"
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 issues.append({"code": "import_forbidden", "message": "策略代码不能导入模块。", "line": str(node.lineno)})
@@ -120,17 +124,33 @@ class StrategyService:
                 entrypoint_found = True
                 if len(node.args.args) != 2:
                     issues.append({"code": "invalid_signature", "message": f"{STRATEGY_ENTRYPOINT} 必须接收 bars, parameters 两个参数。", "line": str(node.lineno)})
+                else:
+                    parameter_name = node.args.args[1].arg
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FORBIDDEN_CALLS:
                 issues.append({"code": "call_forbidden", "message": f"禁止调用 {node.func.id}。", "line": str(node.lineno)})
             elif isinstance(node, ast.Attribute) and node.attr.startswith("__"):
                 issues.append({"code": "dunder_forbidden", "message": "禁止访问双下划线属性。", "line": str(node.lineno)})
         if not entrypoint_found:
             issues.append({"code": "entrypoint_missing", "message": f"必须定义 {STRATEGY_ENTRYPOINT}(bars, parameters)。", "line": ""})
+        declared_schema, schema_issues = _read_parameter_schema(tree)
+        issues.extend(schema_issues)
+        used_parameters = _collect_parameter_keys(tree, parameter_name)
+        if declared_schema is not None:
+            declared_keys = set(declared_schema)
+            for key in sorted(used_parameters - declared_keys):
+                warnings.append({"code": "parameter_undeclared", "message": f"代码使用了未在 {PARAMETER_SCHEMA_NAME} 中声明的参数：{key}。", "line": "", "parameter": key})
+            for key in sorted(key for key in declared_keys - used_parameters if declared_schema[key].get("scope") != "execution"):
+                warnings.append({"code": "parameter_unused", "message": f"参数已声明但策略代码未使用：{key}。", "line": "", "parameter": key})
+        parameter_schema = declared_schema or {}
         return {
             "ok": not issues,
             "status": "valid" if not issues else "invalid",
             "contract": STRATEGY_CONTRACT,
             "issues": issues,
+            "warnings": warnings,
+            "parameter_schema": parameter_schema,
+            "parameter_defaults": _parameter_defaults(parameter_schema),
+            "parameter_keys": sorted(used_parameters),
             "source_sha256": _sha256(source_code),
         }
 
@@ -149,6 +169,17 @@ class StrategyService:
         validation = self.validate_source(source_code)
         if not validation["ok"]:
             raise ValueError(json.dumps(validation, ensure_ascii=False))
+        source_schema = dict(validation.get("parameter_schema") or {})
+        effective_schema = source_schema or dict(parameter_schema or {}) or _infer_parameter_schema(parameters or {})
+        supplied_parameters = dict(parameters or {})
+        if source_schema:
+            effective_parameters = _parameter_defaults(source_schema)
+            effective_parameters.update({key: value for key, value in supplied_parameters.items() if key in source_schema})
+        else:
+            effective_parameters = supplied_parameters
+        parameter_issues = _validate_parameter_values(effective_parameters, effective_schema)
+        if parameter_issues:
+            raise ValueError(json.dumps({"status": "invalid_parameters", "issues": parameter_issues}, ensure_ascii=False))
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._connect() as connection:
             row = connection.execute(
@@ -185,8 +216,8 @@ class StrategyService:
                     version_number,
                     source_code,
                     validation["source_sha256"],
-                    json.dumps(parameters or {}, ensure_ascii=False),
-                    json.dumps(parameter_schema or _infer_parameter_schema(parameters or {}), ensure_ascii=False),
+                    json.dumps(effective_parameters, ensure_ascii=False),
+                    json.dumps(effective_schema, ensure_ascii=False),
                     STRATEGY_CONTRACT,
                     now,
                 ),
@@ -340,8 +371,92 @@ def _infer_parameter_schema(parameters: dict[str, Any]) -> dict[str, Any]:
             kind = "number"
         else:
             kind = "string"
-        schema[key] = {"type": kind}
+        schema[key] = {"type": kind, "default": value, "label": key}
     return schema
+
+
+def _read_parameter_schema(tree: ast.AST) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    issues: list[dict[str, str]] = []
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(isinstance(target, ast.Name) and target.id == PARAMETER_SCHEMA_NAME for target in targets):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, TypeError, SyntaxError):
+            return None, [{"code": "parameter_schema_not_literal", "message": f"{PARAMETER_SCHEMA_NAME} 必须是可静态读取的字典。", "line": str(getattr(node, "lineno", ""))}]
+        if not isinstance(value, dict):
+            return None, [{"code": "parameter_schema_invalid", "message": f"{PARAMETER_SCHEMA_NAME} 必须是字典。", "line": str(getattr(node, "lineno", ""))}]
+        normalized: dict[str, Any] = {}
+        for raw_key, raw_spec in value.items():
+            key = str(raw_key).strip()
+            if not key or not isinstance(raw_spec, dict):
+                issues.append({"code": "parameter_spec_invalid", "message": f"参数 {raw_key!r} 的定义必须是字典。", "line": str(getattr(node, "lineno", ""))})
+                continue
+            spec = dict(raw_spec)
+            kind = str(spec.get("type") or "string")
+            if kind not in _PARAMETER_TYPES:
+                issues.append({"code": "parameter_type_invalid", "message": f"参数 {key} 使用了不支持的类型：{kind}。", "line": str(getattr(node, "lineno", ""))})
+                continue
+            if kind == "enum" and not isinstance(spec.get("options"), (list, tuple)):
+                issues.append({"code": "parameter_options_missing", "message": f"枚举参数 {key} 必须声明 options。", "line": str(getattr(node, "lineno", ""))})
+                continue
+            spec["type"] = kind
+            spec.setdefault("label", key)
+            normalized[key] = spec
+        return normalized, issues
+    return None, issues
+
+
+def _collect_parameter_keys(tree: ast.AST, parameter_name: str) -> set[str]:
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and isinstance(node.func.value, ast.Name) and node.func.value.id == parameter_name and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            keys.add(node.args[0].value)
+        elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == parameter_name and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+            keys.add(node.slice.value)
+    return keys
+
+
+def _parameter_defaults(schema: dict[str, Any]) -> dict[str, Any]:
+    return {key: spec["default"] for key, spec in schema.items() if isinstance(spec, dict) and "default" in spec}
+
+
+def _validate_parameter_values(parameters: dict[str, Any], schema: dict[str, Any]) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    for key, spec in schema.items():
+        if key not in parameters:
+            if spec.get("required"):
+                issues.append({"code": "parameter_required", "parameter": key, "message": f"参数 {key} 不能为空。"})
+            continue
+        value = parameters[key]
+        kind = str(spec.get("type") or "string")
+        valid_type = True
+        if kind == "integer":
+            valid_type = isinstance(value, int) and not isinstance(value, bool)
+        elif kind == "number":
+            valid_type = isinstance(value, (int, float)) and not isinstance(value, bool)
+        elif kind == "boolean":
+            valid_type = isinstance(value, bool)
+        elif kind in {"list", "symbol_list"}:
+            valid_type = isinstance(value, list)
+        elif kind in {"string", "date", "symbol", "enum"}:
+            valid_type = isinstance(value, str)
+        if not valid_type:
+            issues.append({"code": "parameter_type_mismatch", "parameter": key, "message": f"参数 {key} 的值不符合 {kind} 类型。"})
+            continue
+        options = spec.get("options") or []
+        option_values = [item.get("value") if isinstance(item, dict) else item for item in options]
+        if kind == "enum" and value not in option_values:
+            issues.append({"code": "parameter_option_invalid", "parameter": key, "message": f"参数 {key} 必须是允许的选项之一。"})
+        if kind in {"integer", "number"}:
+            if spec.get("min") is not None and value < spec["min"]:
+                issues.append({"code": "parameter_below_minimum", "parameter": key, "message": f"参数 {key} 不能小于 {spec['min']}。"})
+            if spec.get("max") is not None and value > spec["max"]:
+                issues.append({"code": "parameter_above_maximum", "parameter": key, "message": f"参数 {key} 不能大于 {spec['max']}。"})
+    return issues
 
 
 def _builtin_strategies() -> list[dict[str, Any]]:

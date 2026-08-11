@@ -81,7 +81,18 @@ class BacktestModeReportService:
         if cached is not None and cached[0] == cache_version:
             return dict(cached[1])
         all_items = self._read_all_items(task_id)
+        completed_items = [item for item in all_items if item.get("status") == "completed"]
+        failed_items = [item for item in all_items if item.get("status") == "failed"]
         entered = [item for item in all_items if item.get("entered") and item.get("status") == "completed"]
+        failure_groups: dict[str, int] = defaultdict(int)
+        for item in failed_items:
+            failure_groups[str(item.get("error_code") or "UNCLASSIFIED_ERROR")] += 1
+        failure_summary = {
+            "total": len(failed_items),
+            "retryable_count": sum(bool(item.get("retryable")) for item in failed_items),
+            "groups": [{"error_code": key, "count": value} for key, value in sorted(failure_groups.items(), key=lambda pair: (-pair[1], pair[0]))],
+            "items": failed_items,
+        }
         entry_reader = getattr(self._runtime_store, "fetch_first_buy_dates", None)
         entry_dates = entry_reader(f"{task_id}-") if callable(entry_reader) else None
         classification_map = None
@@ -150,11 +161,18 @@ class BacktestModeReportService:
             "sample_scope": {
                 "universe_count": task.get("progress", {}).get("total", len(all_items)),
                 "processed_count": task.get("progress", {}).get("processed", 0),
+                "successful_count": len(completed_items),
                 "entered_count": len(entered),
-                "failed_count": task.get("progress", {}).get("failed", 0),
+                "failed_count": len(failed_items),
                 "no_entry_count": task.get("progress", {}).get("no_entry", 0),
+                "effective_sample_count": len(entered),
+                "coverage_ratio": round(len(completed_items) / len(all_items), 6) if all_items else 0.0,
+                "analysis_available": bool(entered),
                 "statistics_scope": "entered_symbols_only",
+                "failed_symbols_treated_as_zero_return": False,
             },
+            "failure_summary": failure_summary,
+            "selection_bias_warning": "部分股票失败可能造成样本选择偏差；失败股票不计为零收益，绩效仅基于成功且实际建仓的样本。" if failed_items else None,
             "distribution": distribution,
             "risk_analysis": {
                 "loss_probability": distribution.get("loss_probability"),

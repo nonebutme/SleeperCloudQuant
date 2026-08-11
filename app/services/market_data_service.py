@@ -242,7 +242,8 @@ class MarketDataService:
     ) -> list[dict[str, Any]]:
         """Return ascending canonical A-share bars for portfolio backtests."""
 
-        if self._governance_repository is not None and hasattr(
+        qualified_indices = {str(item["qualified_symbol"]).upper() for item in CORE_A_SHARE_INDICES}
+        if str(symbol).upper() in qualified_indices and self._governance_repository is not None and hasattr(
             self._governance_repository, "fetch_index_price_history"
         ):
             index_rows = self._governance_repository.fetch_index_price_history(

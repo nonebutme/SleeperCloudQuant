@@ -69,7 +69,14 @@ const globalFeedback = $("#global-feedback");
 
 function setFeedback(message, kind = "") { globalFeedback.textContent = message; globalFeedback.className = kind ? `feedback is-${kind}` : "feedback"; }
 function buildQuery(params) { const search = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== "" && value != null) search.set(key, value); }); return search.toString(); }
-async function requestJson(path, options = {}) { const response = await fetch(path, { method: options.method || "GET", headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}) }, body: options.body }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.detail || `请求失败 (${response.status})`); return payload; }
+function friendlyApiError(message) {
+  const detail = String(message || "");
+  if (detail.includes("published_version_does_not_cover_requested_window")) {
+    return "回测日期超出当前已发布数据范围。请使用页面给出的最大可用日期，或先在数据中心补齐并发布数据。";
+  }
+  return detail;
+}
+async function requestJson(path, options = {}) { const response = await fetch(path, { method: options.method || "GET", headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}) }, body: options.body }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(friendlyApiError(payload.detail || `请求失败 (${response.status})`)); return payload; }
 function activatePage(pageId) { document.querySelectorAll(".page-section").forEach((section) => section.classList.toggle("is-active", section.id === `page-${pageId}`)); document.querySelectorAll(".nav-tab").forEach((button) => button.classList.toggle("is-active", button.dataset.page === pageId)); $("#page-title").textContent = pageTitles[pageId] || "SleeperCloudQuant"; updateStage75Url({ page: pageId }); }
 function financialToneForLabel(label, value) { const text = String(label || "").toLowerCase(); if (/(收益|回报|盈利|盈亏|年化|超额|return|profit|annual)/i.test(text)) return financialToneClass(value); if (/(回撤|亏损|损失|成本|drawdown|loss|cost)/i.test(text) && value !== "-" && value !== "--") return "market-fall"; return ""; }
 function renderSummaryGrid(target, items) { target.innerHTML = items.map((item) => '<div class="summary-item ' + (item.tone || financialToneForLabel(item.label, item.value)) + '"><strong>' + item.label + '</strong><span>' + item.value + '</span></div>').join(""); }
@@ -734,12 +741,29 @@ async function openBacktestWorkspaceView(view) {
 
 function backtestQueryDateDefaults() {
   const now = new Date();
-  const pad = (value) => String(value).padStart(2, "0");
+  const fallbackEnd = new Date(now);
+  fallbackEnd.setDate(fallbackEnd.getDate() - 30);
+  const formatDate = (value) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
   const start = `${now.getFullYear()}-01-01`;
-  const end = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`;
+  const end = formatDate(fallbackEnd);
   document.querySelectorAll("input[name=\"start_date\"]").forEach((input) => { input.value = start; });
   document.querySelectorAll("input[name=\"end_date\"]").forEach((input) => { input.value = end; });
   document.querySelectorAll("select[name=\"adjustment\"]").forEach((select) => { select.value = "qfq"; });
+}
+async function applyBacktestPublishedCoverageDefaults() {
+  const payload = await requestJson("/api/strategy-datasets");
+  const coverageDates = (payload.items || [])
+    .filter((item) => item.strategy_access === "executable")
+    .map((item) => item.published_version?.coverage_end || item.published_version?.as_of_trade_date)
+    .filter(Boolean)
+    .sort();
+  const commonCoverageEnd = coverageDates[0];
+  if (!commonCoverageEnd) return;
+  document.querySelectorAll("input[name=\"end_date\"]").forEach((input) => {
+    input.max = commonCoverageEnd;
+    input.title = `当前策略数据集共同可用截止日：${commonCoverageEnd}`;
+    if (!input.value || input.value > commonCoverageEnd) input.value = commonCoverageEnd;
+  });
 }
 function renderSingleRunHistory(runs = []) {
   const target = $("#single-run-history");
@@ -751,6 +775,7 @@ function renderSingleRunHistory(runs = []) {
 async function loadSingleRunHistory() { const payload = await requestJson("/api/backtest/runs"); const runs = (payload.runs || []).filter((run) => !run.extra_config?.screening_task_id && run.extra_config?.mode !== "shared_cash_portfolio" && run.extra_config?.portfolio_mode !== "shared_cash"); renderSingleRunHistory(runs); return runs; }
 function configurePcBacktestWorkspace() {
   backtestQueryDateDefaults();
+  applyBacktestPublishedCoverageDefaults().catch((error) => setFeedback("未能读取回测数据截止日：" + friendlyApiError(error.message), "error"));
   document.querySelector(".backtest-workflow")?.remove();
   document.querySelector('[data-backtest-view="overview"]')?.setAttribute("hidden", "hidden");
   document.querySelector('[data-backtest-view-target="overview"]')?.remove();
@@ -882,13 +907,50 @@ function renderScreeningEnteredResults(items = []) {
   target.innerHTML = '<table><thead><tr><th>代码</th><th>名称</th><th>状态</th><th>总收益</th><th>年化收益</th><th>回测编号</th></tr></thead><tbody>' + items.map((item) => '<tr><td>' + escapeHtml(item.symbol) + '</td><td>' + escapeHtml(item.name) + '</td><td>' + escapeHtml(item.status) + '</td><td class="' + financialToneClass(item.metrics?.total_returns) + '">' + (item.metrics?.total_returns ?? "-") + '</td><td class="' + financialToneClass(item.metrics?.annualized_returns) + '">' + (item.metrics?.annualized_returns ?? "-") + '</td><td title="' + escapeHtml(item.run_id || "") + '">' + escapeHtml(shortTechnicalId(item.run_id)) + '</td><td>' + (item.run_id ? '<button type="button" data-screening-item-run="' + escapeHtml(item.run_id) + '">\u67e5\u770b\u660e\u7ec6</button>' : "-") + '</td></tr>').join("") + '</tbody></table>';
   target.querySelectorAll("[data-screening-item-run]").forEach((button) => button.addEventListener("click", () => { const task = currentScreeningTask?.task_id ? nativeModeTask(currentScreeningTask, "independent-screening") : currentModeTask; if (!task) return; currentModeTask = task; activateBacktestView("results"); loadIndependentScreeningResultWorkspace(task, button.dataset.screeningItemRun).catch((error) => setFeedback(error.message, "error")); }));
 }
+
+function renderScreeningResults(items = [], task = {}) {
+  const target = $("#screening-entered-results");
+  if (!items.length) { target.innerHTML = '<div class="empty-cell">暂无逐股处理结果</div>'; return; }
+  const failed = items.filter((item) => item.status === "failed");
+  const primaryFailure = failed[0] || null;
+  const suggestedAction = primaryFailure?.error_details?.suggested_action || "";
+  const failureSummary = primaryFailure
+    ? `<div class="strategy-validation is-error"><strong>主要失败原因：${escapeHtml(primaryFailure.error_code || "未分类错误")}</strong><p>${escapeHtml(primaryFailure.error_message || "-")}</p><p><strong>解决方法：</strong>${escapeHtml(suggestedAction || "复制错误信息并检查策略数据和配置。")}</p><p>失败 ${escapeHtml(task.progress?.failed ?? failed.length)} 只；当前显示 ${failed.length} 条失败记录。</p></div>`
+    : "";
+  target.innerHTML = '<div class="panel-header"><div><h4>逐股处理结果</h4><p>失败股票不按零收益计入分析；可恢复错误可在修复数据后单独重试。</p></div>' + (failed.some((item) => item.retryable) ? '<button type="button" data-screening-retry-all>重试全部可恢复错误</button>' : '') + '</div>' + failureSummary + '<table data-vtable-mode="detail"><thead><tr><th>代码</th><th>名称</th><th>状态</th><th>总收益</th><th>错误码</th><th>错误阶段</th><th>错误信息</th><th>解决方法</th><th>操作</th></tr></thead><tbody>' + items.map((item) => {
+    const statusLabel = item.status === "completed" ? (item.entered ? "成功 / 已建仓" : "成功 / 未建仓") : item.status;
+    const actions = item.status === "failed"
+      ? `${item.retryable ? `<button type="button" data-screening-item-retry="${escapeHtml(item.symbol)}">重试</button>` : ""}<button type="button" data-screening-data-repair="${escapeHtml(item.symbol)}">去数据中心</button>`
+      : (item.run_id && item.entered ? `<button type="button" data-screening-item-run="${escapeHtml(item.run_id)}">查看明细</button>` : "-");
+    return `<tr><td>${escapeHtml(item.symbol)}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml(statusLabel)}</td><td class="${financialToneClass(item.metrics?.total_returns)}">${item.metrics?.total_returns ?? "-"}</td><td>${escapeHtml(item.error_code || "-")}</td><td>${escapeHtml(item.error_stage || "-")}</td><td title="${escapeHtml(item.error_message || "")}">${escapeHtml(item.error_message || "-")}</td><td>${escapeHtml(item.error_details?.suggested_action || "-")}</td><td>${actions}</td></tr>`;
+  }).join("") + '</tbody></table>';
+  target.querySelectorAll("[data-screening-item-run]").forEach((button) => button.addEventListener("click", () => { const task = currentScreeningTask?.task_id ? nativeModeTask(currentScreeningTask, "independent-screening") : currentModeTask; if (!task) return; currentModeTask = task; activateBacktestView("results"); loadIndependentScreeningResultWorkspace(task, button.dataset.screeningItemRun).catch((error) => setFeedback(error.message, "error")); }));
+  target.querySelectorAll("[data-screening-item-retry]").forEach((button) => button.addEventListener("click", () => retryIndependentScreeningFailures([button.dataset.screeningItemRetry]).catch((error) => setFeedback(error.message, "error"))));
+  target.querySelector("[data-screening-retry-all]")?.addEventListener("click", () => retryIndependentScreeningFailures([]).catch((error) => setFeedback(error.message, "error")));
+  target.querySelectorAll("[data-screening-data-repair]").forEach((button) => button.addEventListener("click", () => {
+    if (typeof activatePage === "function") activatePage("market");
+    setFeedback(`请在数据中心检查 ${button.dataset.screeningDataRepair} 的日线及策略依赖数据，修复后返回任务重试`, "error");
+  }));
+  window.AppVTable?.enhanceAll(target);
+}
+
+async function retryIndependentScreeningFailures(symbols = []) {
+  if (!currentScreeningTaskId) throw new Error("请先选择独立账户批量回测任务");
+  await requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(currentScreeningTaskId)}/retry-failures`, { method: "POST", body: JSON.stringify({ symbols, wait: false }) });
+  await loadIndependentScreeningTask(currentScreeningTaskId);
+  setFeedback(symbols.length ? `已重试 ${symbols.join(", ")}` : "已重试全部可恢复错误", "success");
+}
+
 async function loadIndependentScreeningTask(taskId, { schedule = true } = {}) {
   if (!taskId) return null;
   currentScreeningTaskId = taskId;
   const detail = await requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(taskId)}`);
   const task = detail.task || {};
+  const itemPayload = await requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(taskId)}/items?limit=500`);
+  const itemResult = itemPayload.result || {};
   renderScreeningTask(task);
-  if (["completed", "partial_completed", "partial_failed", "failed", "cancelled"].includes(task.status)) { loadIndependentScreeningTasks().catch(() => {}); loadBacktestModeTasks().catch(() => {}); }
+  renderScreeningResults(itemResult.items || [], task);
+  if (["completed", "partial_completed", "partial_failed", "failed", "canceled"].includes(task.status)) { loadIndependentScreeningTasks().catch(() => {}); loadBacktestModeTasks().catch(() => {}); }
   if (screeningPollTimer) clearTimeout(screeningPollTimer);
   if (schedule && ["running", "ready", "interrupted", "pause_requested", "cancel_requested"].includes(task.status)) {
     screeningPollTimer = setTimeout(() => loadIndependentScreeningTask(taskId).catch((error) => setFeedback(error.message, "error")), 2000);
@@ -1053,7 +1115,7 @@ async function loadSharedPortfolioTask(taskId, { schedule = true } = {}) {
   const payload = await requestJson(`/api/backtest/shared-portfolio-tasks/${encodeURIComponent(taskId)}`);
   const task = payload.task || {};
   renderPortfolioTask(task);
-  if (["completed", "partial_completed", "partial_failed", "failed", "cancelled"].includes(task.status)) { loadSharedPortfolioTasks().catch(() => {}); loadBacktestModeTasks().catch(() => {}); }
+  if (["completed", "partial_completed", "partial_failed", "failed", "canceled"].includes(task.status)) { loadSharedPortfolioTasks().catch(() => {}); loadBacktestModeTasks().catch(() => {}); }
   if (portfolioPollTimer) clearTimeout(portfolioPollTimer);
   if (schedule && ["running", "ready", "interrupted"].includes(task.status)) {
     portfolioPollTimer = setTimeout(() => loadSharedPortfolioTask(taskId).catch((error) => setFeedback(error.message, "error")), 2000);
@@ -1530,13 +1592,22 @@ function renderStrategyLibrary() {
     return `<button type="button" class="strategy-library-item${active ? " is-selected" : ""}" data-strategy-id="${escapeHtml(strategy.strategy_id)}" title="${escapeHtml(strategy.description || strategy.name || strategy.strategy_id)}"><span class="strategy-library-item-main"><strong>${escapeHtml(strategy.name)}</strong><small>${escapeHtml(strategy.strategy_id)}</small></span><span class="strategy-library-item-meta"><em>${escapeHtml(strategy.category)}</em><span>${escapeHtml(strategy.latest_version || "v1")} · ${strategy.version_count || 1} 版</span></span></button>`;
   }).join("") : '<div class="empty-cell">没有符合条件的策略</div>';
 }function strategyParameterLabel(key) {
-  const labels = { short_window: "短均线周期", long_window: "长均线周期", atr_window: "ATR 周期", atr_multiplier: "ATR 止损倍数", position_size: "目标仓位", commission: "手续费率", breakout_window: "突破周期", max_position: "最大仓位" };
+  const labels = { short_window: "短均线周期", long_window: "长均线周期", atr_window: "ATR 周期", atr_multiplier: "ATR 止损倍数", position_size: "目标仓位", commission: "手续费率", breakout_window: "突破周期", max_position: "最大仓位", minimum_listing_bars: "最低上市交易日数", trough_window: "低点观察窗口", winner_window: "获利盘计算窗口", winner_spread_min: "获利盘差值下限", trailing_stop: "移动止损保留比例", volume_ratio_window: "成交量均值窗口", execution_price: "信号执行价格", index_symbol: "基准指数" };
   return labels[key] || key;
 }
 function coerceParameterValue(value, spec = {}) {
-  if (spec.type === "integer") return Number.parseInt(value, 10);
-  if (spec.type === "number") return Number.parseFloat(value);
+  if (spec.type === "integer") {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) throw new Error("整数参数不能为空或包含非法字符");
+    return parsed;
+  }
+  if (spec.type === "number") {
+    const parsed = Number.parseFloat(value);
+    if (!Number.isFinite(parsed)) throw new Error("数值参数不能为空或包含非法字符");
+    return parsed;
+  }
   if (spec.type === "boolean") return value === true || value === "true" || value === "on";
+  if (["list", "symbol_list"].includes(spec.type)) return String(value || "").split(/[,，\n\s]+/).map((item) => item.trim()).filter(Boolean);
   return value;
 }
 function collectStrategyParameters() {
@@ -1557,20 +1628,24 @@ function renderParameterForm(strategy) {
     return;
   }
   $("#strategy-parameter-schema").innerHTML = entries.map(([key, spec]) => {
-    const value = parameters[key] ?? "";
-    const label = strategyParameterLabel(key);
+    const value = parameters[key] ?? spec.default ?? "";
+    const label = spec.label || strategyParameterLabel(key);
+    const unit = spec.unit ? ` · ${escapeHtml(spec.unit)}` : "";
+    const help = spec.help || spec.description || "";
     if (spec.type === "enum") {
-      return `<label class="strategy-parameter-field"><span>${escapeHtml(label)}</span><select data-param-key="${escapeHtml(key)}">${(spec.options || []).map((option) => `<option value="${escapeHtml(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}</select></label>`;
+      return `<label class="strategy-parameter-field"><span>${escapeHtml(label)}${unit}</span><select data-param-key="${escapeHtml(key)}">${(spec.options || []).map((option) => { const optionValue = typeof option === "object" ? option.value : option; const optionLabel = typeof option === "object" ? (option.label || option.value) : option; return `<option value="${escapeHtml(optionValue)}" ${optionValue === value ? "selected" : ""}>${escapeHtml(optionLabel)}</option>`; }).join("")}</select><small>${escapeHtml(help || key)}</small></label>`;
     }
     if (spec.type === "boolean") {
-      return `<label class="strategy-parameter-field strategy-toggle-field"><span>${escapeHtml(label)}</span><input data-param-key="${escapeHtml(key)}" type="checkbox" ${value ? "checked" : ""}></label>`;
+      return `<label class="strategy-parameter-field strategy-toggle-field"><span>${escapeHtml(label)}${unit}</span><input data-param-key="${escapeHtml(key)}" type="checkbox" ${value ? "checked" : ""}><small>${escapeHtml(help || key)}</small></label>`;
     }
+    if (["list", "symbol_list"].includes(spec.type)) return `<label class="strategy-parameter-field"><span>${escapeHtml(label)}${unit}</span><textarea data-param-key="${escapeHtml(key)}" rows="2" placeholder="使用逗号或换行分隔">${escapeHtml(Array.isArray(value) ? value.join(", ") : value)}</textarea><small>${escapeHtml(help || key)}</small></label>`;
     const numeric = spec.type === "integer" || spec.type === "number";
-    const type = numeric ? "number" : "text";
-    const step = spec.type === "integer" ? "1" : "any";
+    const type = numeric ? "number" : spec.type === "date" ? "date" : "text";
+    const step = spec.step ?? (spec.type === "integer" ? "1" : "any");
     const min = spec.min == null ? "" : ` min="${spec.min}"`;
     const max = spec.max == null ? "" : ` max="${spec.max}"`;
-    return `<label class="strategy-parameter-field"><span>${escapeHtml(label)}</span><input data-param-key="${escapeHtml(key)}" type="${type}" step="${step}"${min}${max} value="${escapeHtml(value)}"><small>${escapeHtml(key)}</small></label>`;
+    const required = spec.required ? " required" : "";
+    return `<label class="strategy-parameter-field"><span>${escapeHtml(label)}${unit}</span><input data-param-key="${escapeHtml(key)}" type="${type}" step="${step}"${min}${max}${required} value="${escapeHtml(value)}"><small>${escapeHtml(help || key)}</small></label>`;
   }).join("");
 }
 function setStrategyCategory(category) {
@@ -1615,16 +1690,36 @@ async function selectStrategy(strategy) {
     const versionSelect=$("#strategy-version-select"); if(versionSelect) versionSelect.innerHTML='<option value="">版本加载失败</option>';
   }
 }
-function startNewStrategy() {
-  selectedStrategy = { strategy_id: "custom_strategy", name: "自定义策略", category: "自定义策略", description: "", parameters: { position_size: 1.0 }, parameter_schema: { position_size: { type: "number", min: 0, max: 1 } }, source_code: newStrategyTemplate, latest_version: "未保存", version_count: 0, validation_status: "pending" };
+function inferStrategyParameterSchema(parameters = {}) {
+  return Object.fromEntries(Object.entries(parameters).map(([key, value]) => {
+    const type = typeof value === "boolean" ? "boolean" : Number.isInteger(value) ? "integer" : typeof value === "number" ? "number" : "string";
+    const spec = { type };
+    if (key === "position_size") Object.assign(spec, { min: 0, max: 1 });
+    return [key, spec];
+  }));
+}
+function startNewStrategy(seed = {}) {
+  const parameters = { ...(seed.parameters || { position_size: 1.0 }) };
+  selectedStrategy = {
+    strategy_id: seed.strategy_id || "custom_strategy",
+    name: seed.name || "自定义策略",
+    category: seed.category || "自定义策略",
+    description: seed.description || "",
+    parameters,
+    parameter_schema: seed.parameter_schema || inferStrategyParameterSchema(parameters),
+    source_code: seed.source_code || newStrategyTemplate,
+    latest_version: "未保存",
+    version_count: 0,
+    validation_status: "pending",
+  };
   renderStrategyLibrary();
   renderBacktestWorkspace();
-  $("#strategy-draft-id").value = "custom_strategy";
+  $("#strategy-draft-id").value = selectedStrategy.strategy_id;
   $("#strategy-draft-id").readOnly = false;
-  $("#strategy-draft-name").value = "自定义策略";
-  setStrategyCategory("自定义策略");
-  $("#strategy-draft-description").value = "";
-  $("#strategy-editor").value = newStrategyTemplate;
+  $("#strategy-draft-name").value = selectedStrategy.name;
+  setStrategyCategory(selectedStrategy.category);
+  $("#strategy-draft-description").value = selectedStrategy.description;
+  $("#strategy-editor").value = selectedStrategy.source_code;
   renderStage76CodeHighlight();
   $("#strategy-editor-meta").textContent = "新策略 / 尚未保存";
   $("#strategy-editor-state").textContent = "新建中";
@@ -1640,7 +1735,14 @@ async function validateStrategySource() {
   const payload = await requestJson("/api/backtest/strategies/validate", { method: "POST", body: JSON.stringify({ source_code: $("#strategy-editor").value }) });
   const validation = payload.validation || {};
   const issues = (validation.issues || []).map((item) => `${item.line ? `第 ${item.line} 行：` : ""}${item.message}`).join("；");
-  $("#strategy-validation-output").textContent = validation.ok ? `校验通过 · ${validation.contract || "target-weights-v1"}` : `校验失败 · ${issues || "请检查策略源码"}`;
+  const warnings = (validation.warnings || []).map((item) => item.message).join("；");
+  if (validation.ok && Object.keys(validation.parameter_schema || {}).length) {
+    selectedStrategy.parameter_schema = validation.parameter_schema;
+    selectedStrategy.parameters = { ...(validation.parameter_defaults || {}), ...(selectedStrategy.parameters || {}) };
+    selectedStrategy.parameters = Object.fromEntries(Object.entries(selectedStrategy.parameters).filter(([key]) => key in selectedStrategy.parameter_schema));
+    renderParameterForm(selectedStrategy);
+  }
+  $("#strategy-validation-output").textContent = validation.ok ? `校验通过 · ${validation.contract || "target-weights-v1"}${warnings ? ` · 提示：${warnings}` : ""}` : `校验失败 · ${issues || "请检查策略源码"}`;
   $("#strategy-validation-output").className = `inline-status ${validation.ok ? "is-success" : "is-error"}`;
   setFeedback(validation.ok ? "策略代码校验通过" : "策略代码校验未通过", validation.ok ? "success" : "error");
   return validation;
@@ -3196,7 +3298,9 @@ function currentStage76FormTask(mode) {
   const raw=mode==="single"?currentSingleTask:mode==="independent"?currentScreeningTask:currentPortfolioTask;
   if(!raw?.task_id)return null;
   const taskMode=mode==="single"?"single":mode==="independent"?"independent-screening":"shared-portfolio";
-  return stage76TaskCatalog.find((task)=>task.task_id===raw.task_id&&task.mode===taskMode)||raw;
+  const catalogTask=stage76TaskCatalog.find((task)=>task.task_id===raw.task_id&&task.mode===taskMode);
+  if(catalogTask)return catalogTask;
+  return taskMode==="single"?{...raw,mode:"single",mode_label:"单品种测试"}:nativeModeTask(raw,taskMode);
 }
 async function handleStage76FormTaskAction(mode,action) {
   const task=currentStage76FormTask(mode);
@@ -3355,7 +3459,7 @@ function renderStage76ResultDetails(result={}) {
   window.ReportUI?.renderRawTables(result,stage76SelectedTask?.mode||"single");
   renderStage76ResultTaskSwitcher();
 }
-function activateStage76Workspace(workspace, mode = "") {
+function activateStage76Workspace(workspace, mode = "", updateUrl = true) {
   stage76Workspace = workspace;
   document.querySelectorAll("[data-stage76-workspace]").forEach((button)=>button.classList.toggle("is-active",button.dataset.stage76Workspace===workspace));
   const taskPanel=$("#stage76-task-workbench"); if(taskPanel) taskPanel.hidden=workspace!=="tasks";
@@ -3368,7 +3472,7 @@ function activateStage76Workspace(workspace, mode = "") {
     document.querySelectorAll("[data-backtest-view]").forEach((panel)=>panel.classList.remove("is-active"));
     loadStage76Tasks().catch((error)=>setFeedback(error.message,"error"));
   }
-  updateStage75Url({page:"backtest",workspace,view:workspace==="create"?(mode||currentBacktestView):workspace});
+  if (updateUrl) updateStage75Url({page:"backtest",workspace,view:workspace==="create"?(mode||currentBacktestView):workspace});
 }
 
 function activateStage76CreateMode(mode) {
@@ -3526,7 +3630,7 @@ function bindStage76Events() {
   $("#stage76-task-prev")?.addEventListener("click",()=>{stage76TaskPage=Math.max(1,stage76TaskPage-1);renderStage76TaskTable(stage76TaskCatalog);});
   $("#stage76-task-next")?.addEventListener("click",()=>{stage76TaskPage+=1;renderStage76TaskTable(stage76TaskCatalog);});
   $("#stage76-task-page-size")?.addEventListener("change",(event)=>{stage76TaskPageSize=Number(event.currentTarget.value)||20;stage76TaskPage=1;renderStage76TaskTable(stage76TaskCatalog);});
-  activateStage76Workspace("strategy");
+  activateStage76Workspace("strategy", "", false);
 }
 function bindEvents() { configureStage75Shell(); configureStage76InformationArchitecture(); bindBacktestWorkspace(); bindStrategyManager(); configureReportingWorkspace(); configureStage75Relocations(); bindStage75Events(); bindStage76Events(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareOverview().then(() => { aShareWorkspaceLoaded = true; setFeedback("A 股数据基座已加载", "success"); }).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); const marketQueryForm = $("#market-query-form"); if (marketQueryForm) marketQueryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", (event) => submitSingleBacktestTask(event, false).catch((error) => setFeedback(error.message, "error"))); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立账户批量回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("投资组合回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
 function bindBacktestResultControls() {

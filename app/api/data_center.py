@@ -106,6 +106,8 @@ def build_data_center_routes(service: DataCenterService) -> list[RouteDefinition
                         )), DataCenterQualityScanRequest),
         RouteDefinition("GET", "/api/data-center/quality/scans", "data_center_quality_scans",
                         lambda: DataCenterListResponse(service.list_quality_scans()), None),
+        RouteDefinition("DELETE", "/api/data-center/quality/scans/{scan_id}", "data_center_quality_scan_delete",
+                        lambda scan_id: DataCenterObjectResponse(service.delete_quality_scan(scan_id)), None),
         RouteDefinition("GET", "/api/data-center/quality/scans/{scan_id}", "data_center_quality_scan_detail",
                         lambda scan_id: DataCenterObjectResponse(service.get_quality_scan(scan_id)), None),
         RouteDefinition("POST", "/api/data-center/quality/scans/{scan_id}/run", "data_center_quality_scan_run",

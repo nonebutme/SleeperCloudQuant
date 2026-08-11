@@ -42,8 +42,12 @@ class ReportingService:
         self._results_reader = results_reader
         self._batch_comparison_service = batch_comparison_service
         self._snapshot_store = snapshot_store
+        self._completed_run_detail_cache: dict[str, BacktestRunDetailModel] = {}
 
     def get_run_detail(self, run_id: str) -> BacktestRunDetailModel | None:
+        cached = self._completed_run_detail_cache.get(run_id)
+        if cached is not None:
+            return cached
         detail = self._results_reader.get_run_detail(run_id)
         if detail is None:
             return None
@@ -64,7 +68,7 @@ class ReportingService:
             raw_result=raw_result,
             extra_config=dict(run.get("extra_config") or {}),
         )
-        return BacktestRunDetailModel(
+        model = BacktestRunDetailModel(
             run_id=str(run.get("run_id") or run_id),
             strategy_name=str(run.get("strategy_name") or "--"),
             status=str(run.get("status") or "--"),
@@ -101,6 +105,9 @@ class ReportingService:
             parameter_sensitivity=dict(advanced["parameter_sensitivity"]),
             report_governance=dict(advanced["report_governance"]),
         )
+        if model.status in {"completed", "partial_completed"}:
+            self._completed_run_detail_cache[run_id] = model
+        return model
 
     def get_strategy_evaluation(self, run_id: str) -> StrategyEvaluationReportPayload | None:
         detail = self.get_run_detail(run_id)
@@ -1633,7 +1640,9 @@ def _build_strategy_evaluation_diagnostics(detail: BacktestRunDetailModel) -> di
     buy_amount = sum(_float(row.get("buy_amount")) for row in trade_rows)
     sell_amount = sum(_float(row.get("sell_amount")) for row in trade_rows)
     traded_amount = buy_amount + sell_amount
-    estimated_win_rate = _estimate_trade_win_rate(trade_rows)
+    engine_win_rate = metrics.get("win_rate")
+    win_rate_source = "engine_closed_trades" if engine_win_rate is not None else "estimated_sell_days"
+    reported_win_rate = _float(engine_win_rate) if engine_win_rate is not None else _estimate_trade_win_rate(trade_rows)
     cost_rate = _estimate_report_cost_rate(detail.extra_config)
     latest_exposure = exposure_rows[-1] if exposure_rows else {}
     latest_market_value = _float(latest_exposure.get("position_market_value"))
@@ -1672,7 +1681,11 @@ def _build_strategy_evaluation_diagnostics(detail: BacktestRunDetailModel) -> di
             "sell_count": sell_count,
             "buy_amount": buy_amount,
             "sell_amount": sell_amount,
-            "estimated_win_rate": estimated_win_rate,
+            # Keep the legacy key for report/UI compatibility, but prefer the
+            # backtest engine's closed-trade metric whenever it is available.
+            "estimated_win_rate": reported_win_rate,
+            "win_rate": reported_win_rate,
+            "win_rate_source": win_rate_source,
         },
         "capacity_cost": {
             "estimated_cost_rate": cost_rate,
@@ -1811,6 +1824,7 @@ def _build_strategy_analysis_summary(
     max_drawdown = _float(risk.get("max_drawdown"))
     total_return = _float(returns.get("total_return"))
     trade_count = int(trade.get("trade_count") or 0)
+    win_rate_label = "已平仓胜率" if trade.get("win_rate_source") == "engine_closed_trades" else "估算胜率"
     if average >= 80 and max_drawdown <= 0.15 and quality_status not in {"failed", "unknown"}:
         verdict = "research_candidate"
     elif average >= 65 and len(warning_flags) <= 1:
@@ -1835,7 +1849,7 @@ def _build_strategy_analysis_summary(
         "cards": [
             {"key": "return", "label": "收益", "value": _pct(total_return), "detail": f"年化 {_pct(returns.get('annualized_return'))}"},
             {"key": "risk", "label": "风险", "value": _pct(max_drawdown), "detail": f"波动 {_pct(risk.get('volatility'))}"},
-            {"key": "trade", "label": "交易", "value": trade_count, "detail": f"胜率 {_pct(trade.get('estimated_win_rate'))}"},
+            {"key": "trade", "label": "交易", "value": trade_count, "detail": f"{win_rate_label} {_pct(trade.get('win_rate'))}"},
             {"key": "cost", "label": "成本", "value": _money(cost.get("estimated_cost")), "detail": f"费率 {_pct(cost.get('estimated_cost_rate'))}"},
             {"key": "exposure", "label": "暴露", "value": exposure.get("latest_holding_count") or 0, "detail": f"最大权重 {_pct(exposure.get('max_single_weight'))}"},
             {"key": "data", "label": "数据", "value": quality_status, "detail": f"{coverage_status} / {data_version}"},
@@ -1860,10 +1874,11 @@ def _build_strategy_conclusions(*, average: int, diagnostics: Mapping[str, Any],
     trade = dict(diagnostics.get("trade_quality") or {})
     cost = dict(diagnostics.get("capacity_cost") or {})
     warning_count = sum(1 for flag in decision_flags if flag.get("level") == "warning")
+    win_rate_label = "已平仓胜率" if trade.get("win_rate_source") == "engine_closed_trades" else "估算胜率"
     return [
         f"核心结论：当前策略综合评分 {average}/100，阶段 43 评分已基于本地回测明细、风险曲线、交易活跃度和成本估算生成。",
         f"风险观察：最大回撤 {_pct(risk.get('max_drawdown'))}，区间波动 {_pct(risk.get('volatility'))}，需要结合更长样本继续确认。",
-        f"交易质量：交易活跃点 {trade.get('trade_count') or 0}，估算胜率 {_pct(trade.get('estimated_win_rate'))}，成交额 {_money(cost.get('traded_amount'))}。",
+        f"交易质量：交易活跃点 {trade.get('trade_count') or 0}，{win_rate_label} {_pct(trade.get('win_rate'))}，成交额 {_money(cost.get('traded_amount'))}。",
         f"决策提示：当前有 {warning_count} 个观察项需要人工复核；本报告只用于本地研究，不构成投资建议。",
     ]
 

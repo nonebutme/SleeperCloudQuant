@@ -415,6 +415,13 @@ class DataCenterService:
     def get_quality_scan(self, scan_id: str) -> dict[str, Any]:
         return self.quality_scan_engine.get_scan(scan_id)
 
+    def delete_quality_scan(self, scan_id: str) -> dict[str, Any]:
+        with self._quality_scan_lock:
+            worker = self._quality_scan_threads.get(scan_id)
+            if worker is not None and worker.is_alive():
+                raise ValueError("running quality scan cannot be deleted; stop it first")
+        return self.quality_scan_engine.delete_scan(scan_id)
+
     def run_quality_scan(self, scan_id: str) -> dict[str, Any]:
         scan = self.quality_scan_engine.get_scan(scan_id)
         if scan["status"] in {"passed", "issues_found"}:

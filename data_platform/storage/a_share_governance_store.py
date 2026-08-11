@@ -667,6 +667,94 @@ class AShareGovernanceStore:
             "members": [dict(row) for row in members],
         }
 
+    def fetch_trade_calendar(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        *,
+        market: str = "CN",
+    ) -> list[dict[str, Any]]:
+        """Return governed trading-session facts in ascending date order."""
+
+        self.ensure_schema()
+        conditions = ["market=?"]
+        parameters: list[Any] = [str(market or "CN")]
+        if start_date:
+            conditions.append("trade_date>=?")
+            parameters.append(str(start_date))
+        if end_date:
+            conditions.append("trade_date<=?")
+            parameters.append(str(end_date))
+        with closing(self._connect(read_only=True)) as connection:
+            rows = connection.execute(
+                f"""SELECT market, trade_date, is_open, session_status, source,
+                           source_observed_at
+                    FROM market_trade_calendar
+                    WHERE {' AND '.join(conditions)} ORDER BY trade_date""",
+                parameters,
+            ).fetchall()
+        return [{**dict(row), "is_open": bool(row["is_open"])} for row in rows]
+
+    def fetch_trading_status_history(
+        self,
+        symbol: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return point-in-time daily tradability evidence for one security."""
+
+        self.ensure_schema()
+        code = str(symbol).split(".")[0].strip()
+        conditions = ["symbol=?"]
+        parameters: list[Any] = [code]
+        if start_date:
+            conditions.append("trade_date>=?")
+            parameters.append(str(start_date))
+        if end_date:
+            conditions.append("trade_date<=?")
+            parameters.append(str(end_date))
+        with closing(self._connect(read_only=True)) as connection:
+            rows = connection.execute(
+                f"""SELECT symbol, trade_date, status, is_tradable,
+                           suspension_reason, expected_resume_date, source,
+                           source_observed_at
+                    FROM security_trading_status_daily
+                    WHERE {' AND '.join(conditions)} ORDER BY trade_date""",
+                parameters,
+            ).fetchall()
+        return [{**dict(row), "is_tradable": None if row["is_tradable"] is None else bool(row["is_tradable"])} for row in rows]
+
+    def fetch_corporate_action_history(
+        self,
+        symbol: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return announced corporate actions without exposing future announcements."""
+
+        self.ensure_schema()
+        code = str(symbol).split(".")[0].strip()
+        event_date = "COALESCE(ex_date, record_date, announcement_date)"
+        conditions = ["symbol=?", f"{event_date} IS NOT NULL"]
+        parameters: list[Any] = [code]
+        if start_date:
+            conditions.append(f"{event_date}>=?")
+            parameters.append(str(start_date))
+        if end_date:
+            conditions.extend((f"{event_date}<=?", "(announcement_date IS NULL OR announcement_date<=?)"))
+            parameters.extend((str(end_date), str(end_date)))
+        with closing(self._connect(read_only=True)) as connection:
+            rows = connection.execute(
+                f"""SELECT action_id, symbol, action_type AS event_type,
+                           {event_date} AS event_date, announcement_date AS available_at,
+                           record_date, ex_date, pay_date, cash_ratio, bonus_ratio,
+                           transfer_ratio, status, source, source_observed_at
+                    FROM corporate_action_events
+                    WHERE {' AND '.join(conditions)} ORDER BY event_date, action_id""",
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def fetch_index_price_history(
         self,
         index_symbol: str,
