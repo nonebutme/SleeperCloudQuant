@@ -4,8 +4,12 @@
 
 - `project_name`: `SleeperCloudQuant`
 - `project_type`: `local-quant-web-system`
-- `current_stage`: `stage-86-data-center-upgrade-stage-c-completed`
-- `priority_goal`: `维护阶段 C 质量闭环候选基线；阶段 D M4 可视化增强或阶段 87 独立因子研究均须再次人工批准。`
+- `current_stage`: `r3-standard-factor-research`
+- `priority_goal`: `暂缓 R2 验收；完成三项标准因子实证研究，验证 A 股规律；保留 R1 数据限制及 2025 年后既有封存样本。`
+- `r3_protocol`: `docs/requirements/r3-standard-factor-protocol.md`
+- `r2_implementation`: `docs/architecture/r2-indicator-library.md`
+- `r2_acceptance`: `docs/verification/r2-indicator-library-acceptance.md`
+- `r1_implementation`: `docs/architecture/r1-data-maintenance-simplification.md`
 
 ## 业务属性
 
@@ -51,8 +55,14 @@
 
 ## 启动属性
 
+- `user_start_entry`: `启动系统.cmd`
+- `user_stop_entry`: `停止系统.cmd`
+- `user_web_url`: `http://127.0.0.1:8010/`
+- `internal_launch_chain`: `scripts/start_sleepercloudquant.ps1 -> scripts/run_formal_web_demo.py`
+- `development_entries`: `纯 API 8000 与策略工作室候选 8020 仅限 --developer-mode 显式启动`
+
 - `startup_bootstrap_script`: `python memory_system/project_bootstrap.py --write --input-file <payload.json>`
-- `startup_query`: `数据中心升级阶段 C 已完成；下一步等待阶段 D 或阶段 87 的人工批准`
+- `startup_query`: `R1 自动维护整改候选验证；历史阶段基线保留，正式数据及多问题修复尚未验收`
 - `project_profile_path`: `projects/SleeperCloudQuant/docs/decision-log/project-profile.md`
 - `verification_baseline_path`: `projects/SleeperCloudQuant/docs/verification/verification-baseline.md`
 - `verification_report_template_path`: `projects/SleeperCloudQuant/docs/verification/verification-report-template.md`
@@ -67,13 +77,17 @@
 
 ## 当前交付状态
 
-- `latest_completed_stage`: `stage-86-data-center-upgrade-stage-c`
-- `latest_ui_iteration`: `quant-ui-global-standard-2026-07-30`
-- `current_release_judgment`: `86.3.6 配置治理已闭环：20 个数据集、22 条路由，必需路由缺失与孤儿路由均为 0；本轮未执行同步，历史 queued 任务保持原状；同步任务统一操作口径待人工确认`
-- `current_data_boundary`: `正式版本截止 2026-07-24；覆盖 5,528 个截止日当前标的的生命周期、日交易状态和复权因子，并包含公司行动、三复权日线、交易日历与沪深300；2026-07-27 局部增量仅为未发布观察`
+- `latest_completed_stage`: `stage-91-0-91-3-source-quality-governance-verified`
+- `latest_ui_iteration`: `factor-research-f0-f3-2026-08-12`
+- `latest_factor_optimization`: `fa-opt-0-3-fixed-artifact-aligned-value-explicit-start-verified`
+- `factor_optimization_entry`: `docs/architecture/fa-opt-0-3-factor-optimization.md`
+- `latest_stage_four_factor_consumption`: `fixed-artifact-aligned-value-strategy-declaration-verified`
+- `stage_four_factor_consumption_entry`: `docs/architecture/stage-4-factor-consumption-bridge.md`
+- `current_release_judgment`: `阶段 91.0—91.3 专项与统一正式验证通过；配置有效性、能力探测、修复工单、覆盖版本、复检关闭和发布门禁已闭环。人工浏览器业务验收尚未执行，91.4 未启动。`
+- `current_data_boundary`: `全局默认与最新 published 均为 scq-20260810-27cd5406fa3a12a9；raw/qfq/hfq 到 2026-08-10，交易状态/复权因子/公司行动到 2026-07-24，生命周期到 2026-07-16；研究按版本成员交集裁剪`
 - `usage_boundary`: `非商用、本地研究；优先使用免费且可实现适配的数据接口，不把免费访问表述为授权或 SLA`
-- `next_manual_approval`: `同步任务体系的统一方式与操作口径、数据中心升级阶段 D、阶段 87 独立因子实现、新增依赖、破坏性全量重建或商用边界变更需单独确认`
-- `next_stage_entry`: `docs/architecture/data-center-upgrade-stage-c-implementation.md`
+- `next_manual_approval`: `人工浏览器业务验收、91.4 启动、P2/P3 物理处置、正式指数事实导入、新增依赖或破坏性操作需单独确认`
+- `next_stage_entry`: `docs/verification/stage-91-source-quality-governance-acceptance.md`
 ## 关键关注点
 
 - `core_terms`:

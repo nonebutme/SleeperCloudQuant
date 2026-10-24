@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.strategy_dataset_validation import validate_strategy_data_contract
+
 
 STRATEGY_ENTRYPOINT = "generate_target_weights"
 STRATEGY_CONTRACT = "target-weights-v1"
@@ -105,8 +107,8 @@ class StrategyService:
         raise KeyError(f"strategy version not found: {strategy_id} {version}")
 
     def validate_source(self, source_code: str) -> dict[str, Any]:
-        issues: list[dict[str, str]] = []
-        warnings: list[dict[str, str]] = []
+        issues: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
         try:
             tree = ast.parse(source_code)
         except SyntaxError as exc:
@@ -142,6 +144,16 @@ class StrategyService:
             for key in sorted(key for key in declared_keys - used_parameters if declared_schema[key].get("scope") != "execution"):
                 warnings.append({"code": "parameter_unused", "message": f"参数已声明但策略代码未使用：{key}。", "line": "", "parameter": key})
         parameter_schema = declared_schema or {}
+        data_contract = validate_strategy_data_contract(source_code)
+        if data_contract.get("strict_contract") is not None and not data_contract["ok"]:
+            issues.extend(
+                {
+                    "code": f"data_contract_{item.get('code') or 'invalid'}",
+                    "message": json.dumps(item, ensure_ascii=False, separators=(",", ":")),
+                    "line": "",
+                }
+                for item in data_contract.get("issues") or []
+            )
         return {
             "ok": not issues,
             "status": "valid" if not issues else "invalid",
@@ -152,6 +164,7 @@ class StrategyService:
             "parameter_defaults": _parameter_defaults(parameter_schema),
             "parameter_keys": sorted(used_parameters),
             "source_sha256": _sha256(source_code),
+            "data_contract": data_contract,
         }
 
     def save_version(

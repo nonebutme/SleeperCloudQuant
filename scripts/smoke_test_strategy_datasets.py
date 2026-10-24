@@ -41,11 +41,11 @@ class _Catalog:
 def main() -> None:
     service = StrategyDatasetService(_Catalog())
     listing = service.list_products(consumer_scope="strategy")
-    assert listing["summary"]["strategy_ready"] == 6
+    assert listing["summary"]["strategy_ready"] == 7
     assert listing["summary"]["template_only"] >= 5
     assert all(item["example_count"] == 3 for item in listing["items"])
     assert {item["dataset_id"] for item in listing["items"]} >= {
-        "a_share_daily", "trade_calendar", "corporate_actions",
+        "a_share_daily", "trade_calendar", "corporate_actions", "factor_values",
     }
     detail = service.get_product("a_share_daily")
     assert detail["schema_status"] == "available"

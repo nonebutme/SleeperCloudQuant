@@ -4,34 +4,72 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SleeperCloudQuant Web MVP</title>
-  <link rel="stylesheet" href="/styles.css?v=770">
+  <link rel="stylesheet" href="/styles.css?v=922">
   <link rel="stylesheet" href="/vtable-adapter.css?v=1">
-  <link rel="stylesheet" href="/report-ui.css?v=780">
-  <link rel="stylesheet" href="/data_center.css?v=881">
-  <link rel="stylesheet" href="/quant-ui-candidate.css?v=2">
+  <link rel="stylesheet" href="/report-ui.css?v=872">
+  <link rel="stylesheet" href="/data_center.css?v=925">
+  <link rel="stylesheet" href="/factor_research.css?v=924">
+  <link rel="stylesheet" href="/indicators.css?v=1">
   <link rel="stylesheet" href="/m4_asset_browser.css?v=1">
+  <link rel="stylesheet" href="/quant-ui-candidate.css?v=3">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand-block"><div class="brand-mark">SQ</div><div><h1>SleeperCloudQuant</h1><p>本地量化分析 MVP</p></div></div>
       <nav class="nav-tabs" aria-label="主导航">
-        <button class="nav-tab is-active" type="button" data-page="dashboard">总览</button>
-        <button class="nav-tab" type="button" data-page="market">数据中心</button>
-        <div class="dc-sidebar-subnav" aria-label="数据中心下级菜单">
-          <button class="is-active" type="button" data-dc-view="overview"><span>M0</span> 总览指挥舱</button>
-          <button type="button" data-dc-view="routes"><span>M1</span> 数据源管理</button>
-          <button type="button" data-dc-view="sync"><span>M2</span> 同步执行器</button>
-          <button type="button" data-dc-view="quality"><span>M3</span> 质量纠错</button>
-          <button type="button" data-dc-view="assets"><span>M4</span> 资产浏览</button>
-          <button type="button" data-dc-view="versions"><span>M5</span> 快照管理</button>
+        <button class="nav-tab" type="button" data-page="market" data-nav-group="market-data" aria-expanded="false">市场数据</button>
+        <div class="sidebar-subnav market-data-sidebar-subnav" data-nav-submenu="market-data" aria-label="市场数据下级菜单" hidden>
+          <button type="button" data-dc-view="assets" data-market-category="个股行情">个股行情</button>
+          <button type="button" data-dc-view="assets" data-market-category="行业板块">行业板块</button>
+          <button type="button" data-dc-view="assets" data-market-category="概念板块">概念板块</button>
+          <button type="button" data-dc-view="assets" data-market-category="新闻公告">新闻公告</button>
         </div>
-        <button class="nav-tab" type="button" data-page="factor">因子分析</button>
-        <button class="nav-tab" type="button" data-page="backtest">策略回测</button>
-        <button class="nav-tab" type="button" data-page="ai">AI 分析</button>
-        <button class="nav-tab" type="button" data-page="reporting">报告中心</button>
-        <button class="nav-tab" type="button" data-page="config">配置中心</button>
-        <button class="nav-tab" type="button" data-page="traceability">重构溯源</button>
+        <button class="nav-tab" type="button" data-page="market" data-nav-group="market" aria-expanded="false">数据中心</button>
+        <div class="sidebar-subnav dc-sidebar-subnav" data-nav-submenu="market" aria-label="数据中心下级菜单" hidden>
+          <button type="button" data-dc-view="routes">数据源与路由</button>
+          <button type="button" data-dc-view="sync">同步任务</button>
+          <button type="button" data-dc-view="quality">质量与修复</button>
+          <button type="button" data-dc-view="versions">更新记录</button>
+          <button type="button" data-dc-view="overview">数据总览</button>
+        </div>
+        <button class="nav-tab" type="button" data-page="strategy-datasets" data-nav-group="datasets" aria-expanded="false">数据集</button>
+        <div class="sidebar-subnav dataset-sidebar-subnav" data-nav-submenu="datasets" aria-label="数据集下级菜单" hidden>
+          <button class="is-active" type="button" data-strategy-dataset-view="catalog">策略数据集与指标</button>
+          <button type="button" data-strategy-dataset-view="detail">数据集详情</button>
+        </div>
+        <button class="nav-tab" type="button" data-page="factor" data-nav-group="factor" aria-expanded="false">因子分析</button>
+        <div class="sidebar-subnav factor-sidebar-subnav" data-nav-submenu="factor" aria-label="因子分析下级菜单" hidden>
+          <button class="is-active" type="button" data-factor-view-target="dashboard">因子库</button>
+          <button type="button" data-factor-view-target="development">因子开发</button>
+          <button type="button" data-factor-view-target="detail">因子研究</button>
+          <button type="button" data-factor-view-target="tasks">研究任务</button>
+          <button type="button" data-factor-view-target="report">研究报告</button>
+          <button type="button" data-factor-view-target="multi">多因子研究</button>
+          <button type="button" data-factor-view-target="artifacts">因子发布与应用</button>
+        </div>
+        <button class="nav-tab" type="button" data-page="backtest" data-nav-group="backtest" aria-expanded="false">策略回测</button>
+        <div id="stage76-workspace-nav" class="sidebar-subnav stage76-workspace-nav stage76-sidebar-subnav" data-nav-submenu="backtest" aria-label="策略回测下级菜单" hidden>
+          <button type="button" data-stage76-workspace="strategy">策略库与编辑</button>
+          <button type="button" data-stage76-workspace="create">创建回测</button>
+          <button type="button" data-stage76-workspace="tasks">回测任务</button>
+          <button type="button" data-stage76-workspace="research">研究实验</button>
+          <button type="button" data-stage76-workspace="results">回测结果详情</button>
+          <button type="button" data-route-page="reporting" data-nav-context="backtest">回测分析与复盘</button>
+        </div>
+        <button class="nav-tab is-active" type="button" data-page="dashboard" data-nav-group="dashboard">工作台</button>
+        <button class="nav-tab" type="button" data-page="ai" data-nav-group="reporting" aria-expanded="false">报告与复盘</button>
+        <div class="sidebar-subnav reporting-sidebar-subnav" data-nav-submenu="reporting" aria-label="报告与复盘下级菜单" hidden>
+          <button type="button" data-route-page="ai">AI 研究</button>
+          <button type="button" data-route-page="report-management">报告资产</button>
+        </div>
+        <button class="nav-tab" type="button" data-page="config" data-nav-group="config" aria-expanded="false">系统设置</button>
+        <div class="sidebar-subnav system-sidebar-subnav" data-nav-submenu="config" aria-label="系统设置下级菜单" hidden>
+          <button type="button" data-route-page="config" data-config-anchor="config-ai-agent">AI 与 Agent</button>
+          <button type="button" data-route-page="config" data-config-anchor="config-runtime">回测运行时与默认参数</button>
+          <button type="button" data-route-page="config" data-config-anchor="config-template-cache">模板与缓存</button>
+          <button type="button" data-route-page="traceability">系统信息与工程审计</button>
+        </div>
       </nav>
       <div class="sidebar-note"><strong>MVP 边界</strong><span>本地 demo/runtime 数据，可替换真实数据源、rqalpha 和 LLM。</span></div>
     </aside>
@@ -41,18 +79,18 @@
 
       <section id="page-dashboard" class="page-section is-active">
         <div class="metric-grid" id="dashboard-metrics"></div>
-        <section class="panel panel-wide"><div class="panel-header"><h3>研究闭环</h3><p>数据、因子、回测、AI、报告与配置状态的一屏检查。</p></div><div class="workflow-strip"><button type="button" data-jump="market">数据确认</button><button type="button" data-jump="factor">因子研究</button><button type="button" data-jump="backtest">策略回测</button><button type="button" data-jump="ai">AI 摘要</button><button type="button" data-jump="reporting">报告复盘</button></div></section><section class="panel panel-wide"><div class="panel-header"><h3>MVP 验收状态</h3><p>按最初需求、五仓库重构和 Web MVP 功能域逐项标记当前覆盖情况。</p></div><div id="dashboard-acceptance" class="definition-list"></div></section>
+        <section class="panel panel-wide"><div class="panel-header"><h3>研究闭环</h3><p>数据、因子、回测、AI、报告与配置状态的一屏检查。</p></div><div class="workflow-strip"><button type="button" data-jump="market">数据确认</button><button type="button" data-jump="factor">因子研究</button><button type="button" data-jump="strategy-datasets">策略数据集</button><button type="button" data-jump="backtest">策略与回测</button><button type="button" data-jump="ai">AI 摘要</button><button type="button" data-jump="reporting">报告复盘</button></div></section><section class="panel panel-wide"><div class="panel-header"><h3>MVP 验收状态</h3><p>按最初需求、五仓库重构和 Web MVP 功能域逐项标记当前覆盖情况。</p></div><div id="dashboard-acceptance" class="definition-list"></div></section>
         <div class="two-column"><section class="panel"><div class="panel-header"><h3>最近回测摘要</h3></div><div id="dashboard-backtest" class="summary-grid"></div></section><section class="panel"><div class="panel-header"><h3>五仓库覆盖</h3></div><div id="dashboard-sources" class="source-list"></div></section></div>
       </section>
 
       <section id="page-market" class="page-section"><div class="section-grid">
-        <header class="dc-hero panel panel-wide"><div><span class="dc-eyebrow">STAGE 86 · NONCOMMERCIAL LOCAL RESEARCH</span><h3>数据中心工作台</h3><p>默认只读正式发布快照；未发布观察、隔离项和历史版本始终分开展示。</p></div><div class="dc-badges"><span id="dc-default-version">默认版本：—</span><span id="dc-health">健康：读取中</span><span id="dc-unpublished">未发布观察：—</span></div></header>
+        <header class="dc-hero panel panel-wide"><div><span class="dc-eyebrow">NONCOMMERCIAL LOCAL RESEARCH</span><h3>数据中心工作台</h3><p>更新数据、处理异常、查看当前可用范围；检查通过后自动生效。</p></div><div class="dc-badges"><span id="dc-default-version">当前数据：—</span><span id="dc-health">健康：读取中</span><span id="dc-unpublished">最新观察：—</span></div></header>
         <div class="dc-global-status"><span id="dc-footer-storage">规范库占用：读取中</span><span id="dc-footer-latest">最新行情：读取中</span><span id="dc-footer-issues">待处理：读取中</span></div>
         <div id="dc-view-overview" class="dc-view panel-wide is-active">
           <section class="panel dc-command-panel">
-            <div class="panel-header"><div><h3>总览指挥舱</h3><p>先回答当前默认版本能否支持研究，再检查最新发布、最新观察和阻断项。</p></div><button id="dc-overview-refresh" type="button">刷新总览</button></div>
+            <div class="panel-header"><div><h3>数据概览</h3><p>查看数据可用日期、更新进度和需要处理的问题。</p></div><button id="dc-overview-refresh" type="button">刷新总览</button></div>
             <div id="dc-overview-metrics" class="dc-status-cards"></div><div id="dc-version-divergence" class="dc-inline-alert" hidden></div>
-            <div class="dc-overview-columns"><section class="dc-surface"><div class="dc-surface-title"><h4>最近人工同步</h4><span>最近任务</span></div><div id="dc-recent-tasks" class="dc-timeline"></div></section><section class="dc-surface"><div class="dc-surface-title"><h4>关键版本时间轴</h4><span>最近 5 个</span></div><div id="dc-overview-version-timeline" class="dc-timeline"></div></section></div>
+            <div class="dc-overview-columns"><section class="dc-surface"><div class="dc-surface-title"><h4>最近专项任务</h4><span>最近任务</span></div><div id="dc-recent-tasks" class="dc-timeline"></div></section><section class="dc-surface"><div class="dc-surface-title"><h4>数据更新记录</h4><span>最近 5 个</span></div><div id="dc-overview-version-timeline" class="dc-timeline"></div></section></div>
             <div id="dc-system-summary" class="dc-system-summary"></div><div class="dc-overview-actions"><button type="button" data-dc-jump="sync">生成缺口同步预览</button><button type="button" data-dc-jump="quality" class="secondary-button">进入质量工坊</button></div>
             <details class="technical-details"><summary>查看技术状态 JSON</summary><pre id="dc-overview-output" class="code-block">正在读取数据中心状态…</pre></details>
           </section>
@@ -61,11 +99,81 @@
                 <div id="dc-view-routes" class="dc-view panel-wide"><section class="panel">
           <div class="panel-header"><div><h3>数据源管理中心</h3><p>数据源回答“谁提供能力”，路由回答“某数据集按什么顺序使用能力”。</p></div></div>
           <div class="dc-subtabs"><button type="button" class="is-active" data-dc-route-tab="sources">数据源配置</button><button type="button" data-dc-route-tab="routes">源路由配置</button></div>
-          <div id="dc-source-panel" data-dc-route-panel="sources"><div class="dc-route-workspace"><section class="dc-surface"><div class="dc-surface-title"><h4>受控数据源</h4><span>未验证来源默认停用</span></div><div id="dc-source-list" class="dc-source-list"></div></section><section class="dc-surface"><div class="dc-surface-title"><h4>数据源详情</h4><div class="dc-header-actions"><button id="dc-source-test" type="button">只读探测</button><button id="dc-source-save" type="button">保存配置</button></div></div><div id="dc-source-detail" class="dc-route-detail"><div class="empty-cell">请选择受控数据源</div></div><details class="technical-details"><summary>查看探测结果</summary><pre id="dc-source-output" class="code-block">尚未探测</pre></details></section></div></div>
-          <div id="dc-route-panel" data-dc-route-panel="routes" hidden><div class="dc-route-workspace"><aside class="dc-surface dc-route-tree-panel"><div class="dc-surface-title"><h4>七层数据目录</h4><span>选择叶子数据集</span></div><div id="dc-route-dataset-tree" class="dc-dataset-tree"></div></aside><section class="dc-surface dc-route-editor-panel"><div class="dc-surface-title"><h4>路由表与参数</h4><div class="dc-header-actions"><label class="dc-live-toggle"><input id="dc-route-live" type="checkbox">真实只读探测</label><button id="dc-route-test" type="button">测试选中连接</button><button id="dc-routes-save" type="button">应用当前配置</button></div></div><div id="dc-route-list" class="dc-route-table"></div><div id="dc-route-detail" class="dc-route-detail"><div class="empty-cell">请选择路由</div></div><details class="technical-details"><summary>查看连接测试结果</summary><pre id="dc-route-output" class="code-block">尚未测试连接</pre></details></section></div></div>
+          <div id="dc-source-panel" data-dc-route-panel="sources">
+            <div class="dc-source-workspace">
+              <section class="dc-surface dc-source-catalog">
+                <div class="dc-surface-title"><h4>受控数据源</h4><span>未验证来源默认停用</span></div>
+                <div id="dc-source-list" class="dc-source-list"></div>
+              </section>
+              <section class="dc-surface dc-source-history">
+                <div class="dc-surface-title">
+                  <div><h4>最近探测历史</h4><p id="dc-source-probe-context">请选择受控数据源</p></div>
+                  <span>最近 20 条 · 业务写入 0</span>
+                </div>
+                <div id="dc-source-probe-history"><div class="empty-cell">请选择受控数据源</div></div>
+              </section>
+            </div>
+          </div>
+          <div id="dc-route-panel" data-dc-route-panel="routes" hidden>
+            <div class="dc-route-workspace">
+              <aside class="dc-surface dc-route-tree-panel"><div class="dc-surface-title"><h4>七层数据目录</h4><span>选择叶子数据集</span></div><div id="dc-route-dataset-tree" class="dc-dataset-tree"></div></aside>
+              <section class="dc-surface dc-route-editor-panel">
+                <div class="dc-surface-title dc-route-table-heading">
+                  <div><h4>路由表与参数</h4><p id="dc-route-selection-context">请选择路由</p></div>
+                  <div class="dc-header-actions"><button id="dc-route-check" type="button" class="secondary-button" disabled>检查配置</button><button id="dc-route-test" type="button" disabled>连接测试</button></div>
+                </div>
+                <div id="dc-route-list" class="dc-route-table"></div>
+              </section>
+            </div>
+          </div>
+          <dialog id="dc-route-dialog" class="dc-task-dialog dc-route-dialog" aria-modal="true" aria-labelledby="dc-route-dialog-title">
+            <div class="dc-dialog-head"><div><span>源路由配置</span><h4 id="dc-route-dialog-title">路由详情</h4></div><button id="dc-route-dialog-close" type="button" class="secondary-button" aria-label="关闭路由详情">关闭</button></div>
+            <form id="dc-route-form" class="dc-route-dialog-body" novalidate>
+              <div id="dc-route-detail"><div class="empty-cell">请选择路由</div></div>
+              <p id="dc-route-form-error" class="dc-dialog-inline-error" role="alert" hidden></p>
+              <div class="dc-source-dialog-actions"><button id="dc-route-dialog-cancel" type="button" class="secondary-button">取消</button><button id="dc-route-save" type="submit">应用当前配置</button></div>
+            </form>
+          </dialog>
+          <dialog id="dc-route-test-dialog" class="dc-task-dialog dc-route-test-dialog" aria-modal="true" aria-labelledby="dc-route-test-dialog-title">
+            <div class="dc-dialog-head"><div><span>源路由配置</span><h4 id="dc-route-test-dialog-title">查看连接测试结果</h4></div><button id="dc-route-test-dialog-close" type="button" class="secondary-button" aria-label="关闭连接测试结果">关闭</button></div>
+            <div id="dc-route-test-detail" class="dc-route-test-body"><div class="empty-cell">尚未测试连接</div></div>
+          </dialog>
+          <dialog id="dc-source-dialog" class="dc-task-dialog dc-source-dialog" aria-modal="true" aria-labelledby="dc-source-dialog-title">
+            <div class="dc-dialog-head"><div><span>受控数据源</span><h4 id="dc-source-dialog-title">数据源详情</h4></div><button id="dc-source-dialog-close" type="button" class="secondary-button" aria-label="关闭数据源详情">关闭</button></div>
+            <form id="dc-source-form" class="dc-source-dialog-body">
+              <div id="dc-source-detail"><div class="empty-cell">请选择受控数据源</div></div>
+              <div class="dc-source-dialog-actions"><button id="dc-source-dialog-cancel" type="button" class="secondary-button">取消</button><button id="dc-source-save" type="button">保存</button></div>
+            </form>
+          </dialog>
+          <dialog id="dc-source-capability-dialog" class="dc-task-dialog dc-source-capability-dialog" aria-modal="true" aria-labelledby="dc-source-capability-title">
+            <div class="dc-dialog-head"><div><span>可获数据类别</span><h4 id="dc-source-capability-title">数据源能力</h4></div><button id="dc-source-capability-close" type="button" class="secondary-button" aria-label="关闭可获数据类别">关闭</button></div>
+            <div id="dc-source-capability-detail" class="dc-source-capability-body"><div class="empty-cell">请选择受控数据源</div></div>
+          </dialog>
+          <dialog id="dc-source-probe-dialog" class="dc-task-dialog dc-source-probe-dialog" aria-modal="true" aria-labelledby="dc-source-probe-dialog-title">
+            <div class="dc-dialog-head"><div><span>探测错误处理</span><h4 id="dc-source-probe-dialog-title">探测诊断</h4></div><button id="dc-source-probe-dialog-close" type="button" class="secondary-button" aria-label="关闭探测诊断">关闭</button></div>
+            <div id="dc-source-probe-detail" class="dc-source-probe-body"><div class="empty-cell">请选择探测记录</div></div>
+          </dialog>
         </section></div>
                 <div id="dc-view-sync" class="dc-view panel-wide"><section class="panel">
-          <div class="panel-header"><div><h3>同步执行器</h3><p>一个任务只处理一个数据集；必须先生成零写入预览，再冻结分片和路由。</p></div><span class="dc-safe-badge">人工增量 · 自动任务已停用</span></div>
+          <div class="panel-header"><div><h3>更新数据</h3><p>系统依次更新参考数据和三种行情口径，检查通过后自动生效。</p></div><span class="dc-safe-badge">检查失败不改变当前可用数据</span></div>
+          <section class="dc-surface" aria-labelledby="dc-maintenance-title">
+            <div class="dc-surface-title"><h4 id="dc-maintenance-title">日常更新</h4><span>全部当前 A 股</span></div>
+            <form id="dc-maintenance-form" class="dc-sync-controls">
+              <label><span>更新至（已结束日期）</span><input name="target_trade_date" type="date" required></label>
+              <button type="submit">更新数据</button>
+            </form>
+            <p id="dc-maintenance-feedback" role="status">无需逐项启动或手动发布；日期不足时会显示具体原因。</p>
+            <div id="dc-maintenance-list" aria-live="polite"></div>
+          </section>
+          <details class="technical-details"><summary>专项同步与历史任务</summary>
+          <section class="dc-surface dc-reference-refresh">
+            <div class="dc-surface-title"><div><h4>高级诊断 · 参考数据</h4><p>此处仅预览覆盖；证券目录、日历和基准行情由“更新数据”统一维护。</p></div><span>只读预览</span></div>
+            <div class="dc-sync-controls dc-reference-refresh-controls">
+              <label><span>目标日期</span><input id="dc-reference-target" type="date"></label>
+              <div class="dc-inline-actions"><button id="dc-reference-preview" type="button" class="secondary-button">零写入预览</button><button id="dc-reference-refresh" type="button" disabled hidden>统一更新已替代独立刷新</button></div>
+            </div>
+            <div id="dc-reference-output" class="dc-preview-card"><div class="empty-cell">先预览证券目录、交易日历和沪深300基准的当前覆盖。</div></div>
+          </section>
           <div class="dc-sync-builder">
             <aside class="dc-surface dc-sync-catalog"><div class="dc-surface-title"><div><h4>七层数据目录</h4><p>选择本次同步的数据集</p></div><span>单选</span></div><div id="dc-sync-dataset-tree" class="dc-dataset-tree"></div></aside>
             <div class="dc-sync-create-column">
@@ -73,7 +181,8 @@
               <section class="dc-surface dc-sync-preview-surface"><div class="dc-surface-title"><div><h4>执行前预览</h4><p>确认请求量、路由和具体缺失日期</p></div><span>步骤 2 · 零写入 · 15 分钟有效</span></div><div id="dc-sync-preview-output" class="dc-preview-card"><div class="empty-cell">选择数据集并填写参数后生成预览</div></div><div id="dc-sync-shards" class="dc-shard-table"></div></section>
             </div>
           </div>
-          <section class="dc-surface dc-task-list-section"><div class="dc-surface-title"><div><h4>任务列表</h4><p>当前任务与历史任务统一展示；运行中每 2 秒刷新</p></div><span>最近 50 条 · 审计留痕</span></div><div id="dc-sync-active" class="dc-sync-list-live" aria-live="polite"></div><div id="dc-sync-task-list" class="dc-task-list"></div></section>
+          <section class="dc-surface dc-task-list-section"><div class="dc-surface-title"><div><h4>专项任务记录</h4><p>当前任务与历史任务统一展示；运行中每 2 秒刷新</p></div><span>最近 50 条 · 审计留痕</span></div><div id="dc-sync-active" class="dc-sync-list-live" aria-live="polite"></div><div id="dc-sync-task-list" class="dc-task-list"></div></section>
+          </details>
           <dialog id="dc-sync-task-dialog" class="dc-task-dialog" aria-modal="true" aria-labelledby="dc-sync-task-dialog-title"><div class="dc-dialog-head"><div><span>同步任务详情</span><h4 id="dc-sync-task-dialog-title">任务详情</h4></div><button id="dc-sync-task-dialog-close" type="button" class="secondary-button" aria-label="关闭任务详情">关闭</button></div><div id="dc-sync-task-detail" class="dc-task-detail" aria-live="polite"><div class="empty-cell">正在加载任务详情</div></div></dialog>
           <dialog id="dc-action-confirm-dialog" class="dc-action-confirm-dialog" aria-modal="true" aria-labelledby="dc-action-confirm-title" aria-describedby="dc-action-confirm-message"><div class="dc-action-confirm-icon" aria-hidden="true">!</div><div class="dc-action-confirm-copy"><span id="dc-action-confirm-eyebrow">请确认操作</span><h4 id="dc-action-confirm-title">确认操作</h4><p id="dc-action-confirm-message"></p><code id="dc-action-confirm-context" hidden></code></div><div class="dc-action-confirm-actions"><button id="dc-action-confirm-cancel" type="button" class="secondary-button">取消</button><button id="dc-action-confirm-submit" type="button">确认</button></div></dialog>
         </section></div>
@@ -96,11 +205,52 @@
             <section class="dc-surface"><div class="dc-surface-title"><h4>当前检查任务</h4><span>运行中每 3 秒刷新</span></div><div id="dc-quality-scan-current" class="dc-live-board"><div class="empty-cell">当前没有质量检查任务</div></div></section>
           </div>
           <section class="dc-surface dc-quality-scan-history"><div class="dc-surface-title"><div><h4>检查任务列表</h4><p>查看进度、检查结果和复查关系</p></div><span>运行中每 3 秒刷新</span></div><div id="dc-quality-scan-list"><div class="empty-cell">尚无质量检查记录</div></div></section>
+          <section class="dc-surface dc-status-remediation-admin" aria-labelledby="dc-status-remediation-title">
+            <div class="dc-surface-title"><div><h4 id="dc-status-remediation-title">管理员 · 历史交易状态长任务</h4><p>用于首次历史积压治理；日常少量异常仍使用下方逐问题修复。</p></div><span>候选清单冻结 · 后台执行 · 单事务不超过 1,000 条</span></div>
+            <div class="dc-status-remediation-warning" role="note"><strong>高风险数据操作</strong><span>先按范围执行只读预演并核对候选哈希。Web 总授权最多 1,000,000 条；提交后范围、候选清单、总授权量和事务批次会冻结，同一运行不能追加额度。</span></div>
+            <div class="dc-status-remediation-workspace">
+              <form id="dc-status-remediation-form" class="dc-status-remediation-form">
+                <label><span>治理范围</span><select name="scope"><option value="all_symbols" selected>全部历史证券（含已退市）</option><option value="current_symbols">仅当前证券</option></select><small>历史积压默认审计全部证券；“当前证券”只覆盖当前目录成员。</small></label>
+                <label><span>运行编号</span><input name="run_id" maxlength="80" placeholder="例如 status-remediation-20260823" required></label>
+                <label><span>操作人</span><input name="operator" maxlength="120" value="local-admin" required></label>
+                <label class="dc-status-remediation-authorization"><span>冻结总写入授权</span><input name="authorized_total_writes" type="number" min="1" max="1000000" step="1" value="100" required><small>最高 1,000,000 条；任务累计授权消耗达到该值即停止。</small></label>
+                <label><span>单事务提交量</span><input name="commit_batch_size" type="number" min="1" max="1000" step="1" value="100" required><small>每个原子事务最多 1,000 条。</small></label>
+                <label class="dc-status-remediation-reference"><span>授权依据</span><input name="authorization_reference" maxlength="240" placeholder="例如 用户授权：2026-08-23 阶段2" required><small>记录授权人、日期、范围或审批编号。</small></label>
+                <label class="dc-status-remediation-hash"><span>候选集合哈希</span><input name="expected_candidate_set_hash" readonly required></label>
+                <label class="dc-status-remediation-confirm"><span>输入确认短语</span><input name="confirmation" autocomplete="off" placeholder="预演后显示" required></label>
+                <div class="dc-inline-actions"><button id="dc-status-remediation-preview" type="button">按范围只读预演</button><button id="dc-status-remediation-apply" type="submit" class="dc-danger-button" disabled>提交后台修复任务</button><button id="dc-status-remediation-status" type="button" class="secondary-button">按运行编号查询</button><button id="dc-status-remediation-new" type="button" class="secondary-button">新建任务参数</button></div>
+              </form>
+              <div id="dc-status-remediation-summary" class="dc-status-remediation-summary" aria-live="polite"><div class="empty-cell">尚未执行只读预演；系统不会写入数据。</div></div>
+            </div>
+            <section class="dc-status-remediation-history" aria-labelledby="dc-status-remediation-history-title"><div class="dc-surface-title"><div><h5 id="dc-status-remediation-history-title">历史修复任务</h5><p>查看冻结授权、工作量、吞吐、失败证据和暂停检查点。</p></div><div class="dc-inline-actions"><span>运行中每 3 秒刷新</span><button id="dc-status-remediation-refresh" type="button" class="secondary-button">刷新任务</button></div></div><div id="dc-status-remediation-task-list" aria-live="polite"><div class="empty-cell">正在检测后台任务能力</div></div></section>
+            <section class="dc-status-remediation-closure" aria-labelledby="dc-status-remediation-closure-title">
+              <div class="dc-surface-title"><div><h5 id="dc-status-remediation-closure-title">交易状态修复闭环</h5><p>仅用于已获授权的历史修复；确认一次后自动复检并生效。</p></div><button id="dc-status-remediation-closure-refresh" type="button" class="secondary-button">刷新闭环状态</button></div>
+              <div id="dc-status-remediation-closure-steps" class="dc-closure-steps" aria-label="交易状态修复闭环步骤">
+                <article class="dc-closure-step" data-closure-step="repair"><span>1</span><div><strong>物理修复</strong><small>等待读取变更集合</small></div></article>
+                <article class="dc-closure-step" data-closure-step="recheck"><span>2</span><div><strong>快速复检</strong><small>仅检查冻结变更键和发布必需规则</small></div></article>
+                <article class="dc-closure-step" data-closure-step="release"><span>3</span><div><strong>独立修正版</strong><small>复检通过后才可生成</small></div></article>
+                <article class="dc-closure-step" data-closure-step="default"><span>4</span><div><strong>默认版本</strong><small>检查通过后自动生效</small></div></article>
+              </div>
+              <div id="dc-status-remediation-closure-summary" class="dc-closure-summary" aria-live="polite"><div class="empty-cell">正在读取未发布交易状态变更</div></div>
+              <div id="dc-status-remediation-closure-blockers" class="dc-closure-blockers" aria-live="polite"></div>
+              <form id="dc-status-issue-reconciliation-form" class="dc-disposition-form" hidden>
+                <div id="dc-status-issue-reconciliation-summary" class="dc-inline-alert" aria-live="polite"></div>
+                <label><span>复检任务</span><input name="scan_id" readonly required></label>
+                <label><span>操作人</span><input name="operator" maxlength="120" value="local-admin" required></label>
+                <label><span>批量关单依据</span><textarea name="reason" maxlength="500" required placeholder="例如：定向复检覆盖全部历史开放工单，当前物理语义异常为 0"></textarea></label>
+                <label><span>确认短语</span><input name="confirmation" autocomplete="off" required></label>
+                <div class="dc-inline-actions"><button id="dc-status-issue-reconciliation-submit" type="submit" class="dc-danger-button" disabled>关闭已通过复检的旧工单</button></div>
+                <small>只关闭复检已证明不再复现的旧质量工单；不会改交易状态事实、不会裁决人工候选、不会发布版本。</small>
+              </form>
+              <div class="dc-inline-actions"><button id="dc-status-remediation-quick-recheck" type="button" disabled>运行快速复检</button><button id="dc-status-remediation-open-versions" type="button" class="secondary-button" disabled>前往确认修复生效</button></div>
+            </section>
+            <p class="dc-status-remediation-publish-boundary"><strong>闭环边界：</strong>历史修复仍需完整证据和明确授权；复检通过后自动生效，不代替完整工程回归。</p>
+          </section>
           <div class="dc-quality-ledger-heading"><div><span class="dc-section-kicker">问题处置区</span><h4>异常记录</h4><p>这里只展示质量检查或同步校验已经发现并登记的问题；先筛选，再查看证据和处置。</p></div></div>
           <div id="dc-quality-summary" class="dc-quality-summary"></div>
           <form id="dc-quality-filter" class="dc-filter-bar"><label><span>状态（可多选）</span><select name="status" multiple size="3"><option value="open">待处理</option><option value="quarantined">暂缓处理（已隔离）</option><option value="accepted">已确认可用</option><option value="rejected">已记录不可用</option><option value="corrected">已修正</option><option value="superseded">已被取代</option></select></label><label><span>严重度（可多选）</span><select name="severity" multiple size="2"><option value="error">阻断</option><option value="warning">警告</option></select></label><label><span>数据集</span><select id="dc-quality-dataset" name="dataset"><option value="">全部数据集</option></select></label><label><span>数据源</span><select id="dc-quality-source" name="source"><option value="">全部数据源</option></select></label><label><span>证券代码</span><input name="symbol" placeholder="000001"></label><label><span>开始日期</span><input name="date_from" type="date"></label><label><span>结束日期</span><input name="date_to" type="date"></label><label><span>规则</span><select id="dc-quality-rule" name="rule_id"><option value="">全部规则</option></select></label><label><span>来源任务</span><select id="dc-quality-task" name="source_task_id"><option value="">全部任务</option></select></label><button type="submit">查询异常记录</button><button id="dc-quality-reset" type="reset" class="secondary-button">重置</button></form>
           <section class="dc-quality-action-guide" aria-label="异常处理说明"><div><strong>1</strong><span>查看证据<small>先确认问题是否真实，暂时不要批量操作</small></span></div><i></i><div><strong>2</strong><span>选择结论<small>每个选项都会显示“会做什么、不会做什么”</small></span></div><i></i><div><strong>3</strong><span>确认影响<small>提交前再次确认，原始行情默认不改写</small></span></div><i></i><div><strong>4</strong><span>完成下一步<small>需修复时去 M2 运行任务，再回 M3 复查</small></span></div></section><section class="dc-quality-operation-manual" aria-label="异常处理方式说明"><article><strong>确认可用并关闭提醒</strong><p>用于误报或已核实可用的数据。只关闭这条提醒，不改行情。</p></article><article><strong>记录为不可用</strong><p>只留下“不可用”结论，不会自动删除或屏蔽行情；通常还要创建修复任务。</p></article><article><strong>暂缓处理</strong><p>证据不足时保留异常，之后仍可继续判断或修复。</p></article><article><strong>生成修复任务</strong><p>只在 M2 创建待执行任务；必须去 M2 运行，完成后回到 M3 复查。</p></article></section>
-          <div class="dc-quality-workspace"><section class="dc-surface"><div class="dc-surface-title"><h4>异常列表</h4><span id="dc-quality-selected">已选 0 条 · VisActor VTable</span></div><div id="dc-quality-list" class="dc-quality-table"></div><div id="dc-quality-bulk" class="dc-quality-bulk"><div class="dc-quality-bulk-intro"><strong>批量处理同类异常</strong><span>所有结论都会保留审计记录；默认不修改原始行情。选择“生成修复任务”后仍需到 M2 运行。</span></div><label><span>统一判断依据（必填）</span><input id="dc-quality-bulk-reason" placeholder="例如：经行情源交叉核对，该批异常为误报"></label><div class="dc-inline-actions"><button type="button" data-quality-bulk="accept" disabled>确认可用并关闭提醒</button><button type="button" data-quality-bulk="reject" class="secondary-button" disabled>记录为不可用（不改数据）</button><button type="button" data-quality-bulk="quarantine" class="secondary-button" disabled>暂缓处理</button><button type="button" data-quality-bulk="refetch" class="secondary-button" disabled>生成修复任务</button></div><small id="dc-quality-bulk-help">先勾选待处理或已隔离的异常。</small></div></section><aside class="dc-surface dc-quality-drawer"><div class="dc-surface-title"><h4>问题处理</h4><span>证据与操作全程留痕</span></div><div id="dc-quality-output" class="dc-quality-detail"><div class="empty-cell">点击“查看证据与处理”，判断是误报、无效数据，还是需要创建修复任务</div></div></aside></div>
+          <div class="dc-quality-workspace"><section class="dc-surface"><div class="dc-surface-title"><h4>异常列表</h4><span id="dc-quality-selected">已选 0 条 · VisActor VTable</span></div><div id="dc-quality-list" class="dc-quality-table"></div><div id="dc-quality-bulk" class="dc-quality-bulk"><div class="dc-quality-bulk-intro"><strong>批量处理同类异常</strong><span>所有结论都会保留审计记录；默认不修改原始行情。选择“生成修复任务”后仍需到 M2 运行。</span></div><label><span>统一判断依据（必填）</span><input id="dc-quality-bulk-reason" placeholder="例如：经行情源交叉核对，该批异常为误报"></label><div class="dc-inline-actions"><button type="button" data-quality-bulk="accept" disabled>确认可用并关闭提醒</button><button type="button" data-quality-bulk="reject" class="secondary-button" disabled>记录为不可用（不改数据）</button><button type="button" data-quality-bulk="quarantine" class="secondary-button" disabled>暂缓处理</button><button type="button" class="secondary-button" data-quality-bulk="correct" disabled>整批纠错并生效</button><button type="button" data-quality-bulk="refetch" class="secondary-button" disabled>重拉并自动生效</button></div><small id="dc-quality-bulk-help">先勾选待处理或已隔离的异常。</small></div></section><aside class="dc-surface dc-quality-drawer"><div class="dc-surface-title"><h4>问题处理</h4><span>证据与操作全程留痕</span></div><div id="dc-quality-output" class="dc-quality-detail"><div class="empty-cell">点击“查看证据与处理”，判断是误报、无效数据，还是需要创建修复任务</div></div></aside></div>
         </section></div>                <div id="dc-view-assets" class="dc-view panel-wide">
           <section class="panel panel-wide dc-m4-shell" aria-labelledby="dc-m4-page-title">
             <header class="dc-m4-header">
@@ -178,6 +328,7 @@
                   <details>
                     <summary>元数据</summary>
                     <div class="dc-m4-tree-group">
+                      <button type="button" data-m4-node data-m4-title="行业板块" data-m4-path="市场数据 / 行业板块" data-m4-mode="unavailable" data-m4-ready="false"><span>行业板块</span><span class="dc-m4-node-state">待接入</span></button>
                       <button type="button" data-m4-node data-m4-title="行业分类" data-m4-path="数据中心 / 资产浏览 / 元数据" data-m4-mode="unavailable" data-m4-ready="false"><span>行业分类</span><span class="dc-m4-node-state">待接入</span></button>
                       <button type="button" data-m4-node data-m4-title="概念板块" data-m4-path="数据中心 / 资产浏览 / 元数据" data-m4-mode="unavailable" data-m4-ready="false"><span>概念板块</span><span class="dc-m4-node-state">待接入</span></button>
                     </div>
@@ -270,19 +421,145 @@
 
         </div>
         <div id="dc-view-versions" class="dc-view panel-wide"><section class="panel">
-          <div class="panel-header"><div><h3>快照管理</h3><p>发布不会自动切换默认研究版本；切换默认只修改指针，不影响历史 Run。</p></div><button id="dc-versions-refresh" type="button">刷新版本</button></div>
-          <div id="dc-version-compare" class="dc-version-compare"><div id="dc-version-default" class="dc-active-version"><div class="empty-cell">正在读取默认研究版本</div></div><div id="dc-version-latest" class="dc-active-version"><div class="empty-cell">正在读取最新发布版本</div></div></div><div id="dc-version-notice" class="dc-inline-alert" hidden></div>
-          <section class="dc-surface"><div class="dc-surface-title"><h4>最近 5 个关键版本</h4><span>发布与默认指针分离</span></div><div id="dc-version-timeline" class="dc-timeline"></div></section><section class="dc-surface"><div class="dc-surface-title"><h4>完整历史版本</h4><span>不可删除</span></div><div id="dc-version-list" class="dc-version-table"></div></section><div id="dc-asset-members" class="table-wrap"></div><details class="technical-details"><summary>查看版本清单 JSON</summary><pre id="dc-version-output" class="code-block">尚未读取版本目录</pre></details>
+          <div class="panel-header"><div><h3>更新记录</h3><p>检查通过自动生效；历史记录用于追溯，不代表可回退的数据副本。</p></div><button id="dc-versions-refresh" type="button">刷新记录</button></div>
+          <div id="dc-version-compare" class="dc-version-compare"><div id="dc-version-default" class="dc-active-version"><div class="empty-cell">正在读取当前可用数据</div></div><div id="dc-version-latest" class="dc-active-version"><div class="empty-cell">正在读取更新记录</div></div></div><div id="dc-version-notice" class="dc-inline-alert" hidden></div>
+          <section id="dc-correction-release-card" class="dc-surface dc-correction-release-card" aria-labelledby="dc-correction-release-title">
+            <div class="dc-surface-title"><div><h4 id="dc-correction-release-title">历史交易状态修复确认</h4><p>核对授权和冻结变更后，一次完成复检与生效；失败不切换当前数据。</p></div><button id="dc-correction-release-refresh" type="button" class="secondary-button">刷新修复闭环</button></div>
+            <div id="dc-correction-release-steps" class="dc-closure-steps" aria-label="交易状态修正版发布步骤">
+              <article class="dc-closure-step" data-closure-step="repair"><span>1</span><div><strong>物理修复</strong><small>等待读取变更集合</small></div></article>
+              <article class="dc-closure-step" data-closure-step="recheck"><span>2</span><div><strong>快速复检</strong><small>等待复检结果</small></div></article>
+              <article class="dc-closure-step" data-closure-step="release"><span>3</span><div><strong>独立修正版</strong><small>等待发布条件</small></div></article>
+              <article class="dc-closure-step" data-closure-step="default"><span>4</span><div><strong>默认版本</strong><small>检查通过后自动生效</small></div></article>
+            </div>
+            <div id="dc-correction-release-summary" class="dc-closure-summary" aria-live="polite"><div class="empty-cell">正在读取待发布修复集合</div></div>
+            <div id="dc-correction-release-blockers" class="dc-closure-blockers" aria-live="polite"></div>
+            <form id="dc-correction-release-form" class="dc-correction-release-form"><label><span>操作人</span><input name="operator" maxlength="120" value="local-admin" required></label><label><span>独立发版授权依据</span><input name="authorization_reference" maxlength="500" placeholder="记录授权人、日期、范围或审批编号" required><small>与修复任务授权分开留痕，不得留空。</small></label><label><span>发布确认短语</span><input name="confirmation" autocomplete="off" placeholder="读取发布条件后显示" required><small id="dc-correction-release-confirmation-help">复检通过后显示确认短语。</small></label><div class="dc-inline-actions"><button id="dc-correction-release-publish" type="submit" disabled>确认修复：复检并生效</button></div></form>
+            <p class="dc-correction-release-note">成功后即可使用当前数据，无需额外发布或设置默认；历史记录不支持整库回退。</p>
+          </section>
+          <section class="dc-surface"><div class="dc-surface-title"><h4>发布就绪度</h4><span>质量工单统一门禁</span></div><div id="dc-release-readiness"><div class="empty-cell">正在检查发布条件</div></div></section><section class="dc-surface"><div class="dc-surface-title"><h4>最近 5 次更新</h4><span>通过检查自动生效</span></div><div id="dc-version-timeline" class="dc-timeline"></div></section><section class="dc-surface"><div class="dc-surface-title"><h4>完整更新历史</h4><span>不可删除</span></div><div id="dc-version-list" class="dc-version-table"></div></section><div id="dc-asset-members" class="table-wrap"></div><details class="technical-details"><summary>查看版本清单 JSON</summary><pre id="dc-version-output" class="code-block">尚未读取版本目录</pre></details>
         </section></div>
             </div></section>
 
-      <section id="page-factor" class="page-section"><div class="section-grid">
+      <section id="page-factor-legacy" class="page-section"><div class="section-grid">
         <section class="panel panel-wide"><div class="panel-header"><h3>因子分析</h3><p>展示因子库、股票池、截面摘要与 Top N。</p></div><form id="factor-query-form" class="control-row"><label><span>股票池</span><input name="index_code" value="000300.XSHG"></label><label><span>交易日</span><input name="trade_date" type="date" value="2020-01-02"></label><label><span>因子</span><input name="factor_id" value="close_to_ma2_bias"></label><button type="submit">刷新因子</button></form></section>
         <section class="panel"><div class="panel-header"><h3>因子库</h3></div><div id="factor-definitions-list" class="definition-list"></div></section>
         <section class="panel"><div class="panel-header"><h3>股票池成员</h3></div><ul id="factor-pool-list" class="simple-list"></ul></section>
         <section class="panel panel-wide"><div class="panel-header"><h3>Top N 排名</h3></div><div id="factor-ranking-chart" class="bar-chart"></div><pre id="factor-summary-output" class="code-block"></pre></section>
       </div></section>
 
+      <section id="page-factor" class="page-section">
+        <div class="factor-workspace">
+          <section class="factor-view is-active" data-factor-view="dashboard"><section class="panel">
+            <div class="panel-header"><div><h3>因子库</h3><p>在同一数据版本、样本区间、股票池和研究参数下比较因子，避免混合口径排序。</p></div><button id="factor-dashboard-refresh" type="button">刷新因子库</button></div>
+            <form id="factor-dashboard-form" class="control-row"><label><span>因子</span><select name="factor_id"><option value="">全部因子</option></select></label><label><span>股票池类型</span><select name="pool_type"><option value="">全部</option><option value="all_a">全部 A 股</option><option value="index">指数池</option></select></label><label class="factor-context-filter"><span>对比口径</span><select name="context_id"><option value="">最近同口径研究</option></select></label><button type="submit">应用筛选</button></form>
+            <div id="factor-dashboard-summary" class="summary-grid factor-summary-strip"></div>
+            <div class="table-wrap"><table data-vtable-mode="factor" aria-label="因子库同口径比较"><thead><tr><th data-vtable-width="180">因子</th><th>分类</th><th>版本</th><th>研究状态</th><th>Rank IC</th><th>方向 Rank IC</th><th>ICIR</th><th>覆盖率</th><th>最大回撤</th><th>成员换手率</th><th data-vtable-cell-type="button" data-vtable-button-kind="secondary">详情</th><th data-vtable-cell-type="button">研究</th><th data-vtable-cell-type="button" data-vtable-button-kind="secondary">报告</th></tr></thead><tbody id="factor-dashboard-body"></tbody></table></div>
+            <dialog id="factor-profile-dialog" class="factor-profile-dialog">
+              <div class="panel-header"><div><h3 id="factor-profile-title">因子详情</h3><p>在当前因子上下文中查看定义、研究证据和版本记录。</p></div><button id="factor-profile-close" type="button">关闭</button></div>
+              <nav class="factor-profile-tabs" aria-label="因子详情页签" role="tablist">
+                <button type="button" class="is-active" data-factor-profile-tab="overview" role="tab" aria-selected="true">基本信息</button>
+                <button type="button" data-factor-profile-tab="evidence" role="tab" aria-selected="false">研究证据</button>
+                <button type="button" data-factor-profile-tab="versions" role="tab" aria-selected="false">版本记录</button>
+              </nav>
+              <section id="factor-profile-overview" class="factor-profile-panel" data-factor-profile-panel="overview"><div id="factor-profile-content" class="factor-definition-detail"><div class="empty-cell">请选择因子</div></div></section>
+              <section id="factor-profile-evidence" class="factor-profile-panel" data-factor-profile-panel="evidence" hidden>
+                <div class="factor-profile-section-heading"><div><h4>研究证据</h4><p>最近标准研究报告与该因子的 R3 封存证据；未验收证据不能进入策略调用。</p></div><button id="factor-profile-evidence-refresh" type="button">刷新证据</button></div>
+                <div id="factor-profile-evidence-summary" class="summary-grid factor-summary-strip"></div>
+                <div class="table-wrap"><table data-vtable-mode="factor" aria-label="当前因子的 R3 标准研究证据"><thead><tr><th>证据来源</th><th>状态</th><th>留出期</th><th>完整退出</th><th>Rank IC</th><th>20bp 超额</th><th>40bp 超额</th><th>未知退出</th><th>显著性</th></tr></thead><tbody id="r3-study-body"><tr><td colspan="9" class="empty-cell">请选择因子</td></tr></tbody></table></div>
+                <div id="factor-profile-report-action" class="factor-profile-report-action"></div>
+              </section>
+              <section id="factor-profile-versions" class="factor-profile-panel" data-factor-profile-panel="versions" hidden>
+                <div class="factor-profile-section-heading"><div><h4>版本记录</h4><p>每次冻结形成不可变版本；研究任务绑定具体版本。</p></div></div>
+                <div class="table-wrap"><table data-vtable-mode="factor" aria-label="因子版本记录"><thead><tr><th>版本</th><th>状态</th><th>类型</th><th data-vtable-width="220">公式</th><th>登记时间</th><th>定义哈希</th></tr></thead><tbody id="factor-profile-version-body"><tr><td colspan="6" class="empty-cell">请选择因子</td></tr></tbody></table></div>
+              </section>
+              <div class="factor-profile-actions"><button id="factor-profile-create-version" type="button">基于当前版本创建新版</button><button id="factor-profile-start-research" type="button">开始研究</button></div>
+            </dialog>
+          </section></section>
+          <section class="factor-view" data-factor-view="development" hidden><section class="panel">
+            <div class="panel-header"><div><h3>因子开发</h3><p>这是因子定义与版本生产工作台；从因子详情进入时，可基于自定义表达式因子的当前版本创建新版。</p></div><div class="factor-development-actions"><span class="workspace-status">表达式因子</span><button id="factor-definition-new" type="button">新建因子</button></div></div>
+            <form id="factor-definition-form" class="factor-definition-form"><label><span>因子标识</span><input name="factor_id" required pattern="[a-z][a-z0-9_]{2,63}" placeholder="price_momentum_20"></label><label><span>名称</span><input name="name" required maxlength="80" placeholder="20 日价格动量"></label><label><span>分类</span><input name="category" value="自定义" maxlength="40"></label><label><span>方向</span><select name="direction"><option value="positive">正向</option><option value="negative">负向</option></select></label><label class="factor-expression-field"><span>表达式</span><textarea name="expression" required rows="3">close / mean(close, 20) - 1</textarea><small>字段：open/high/low/close/volume/amount；函数：lag/mean/std/min/max/abs；窗口 1–252。</small></label><label class="factor-description-field"><span>说明</span><input name="description" maxlength="500" placeholder="说明因子逻辑、假设与适用范围"></label><div class="factor-definition-actions"><button id="factor-definition-validate" type="button">校验表达式</button><button type="submit">冻结新版本</button></div><pre id="factor-definition-output" hidden></pre></form>
+          </section></section>
+          <section class="factor-view" data-factor-view="detail" hidden><section class="panel factor-config-panel">
+            <div class="panel-header"><div><h3>因子研究</h3><p>版本、股票池、日期交集和处理参数会写入不可变研究上下文。</p></div><span id="factor-config-state" class="workspace-status">等待预检</span></div>
+            <div id="factor-definition-detail" class="factor-definition-detail"></div>
+            <form id="factor-research-form" class="factor-config-grid">
+              <label><span>因子</span><select name="factor_id"></select></label>
+              <label><span>研究级别</span><select name="research_mode"><option value="governed">受控研究</option><option value="exploratory">探索研究</option></select></label>
+              <label><span>验收政策</span><input name="acceptance_policy_id" value="factor-acceptance-v1" readonly></label>
+              <label><span>股票池</span><select name="pool_type"><option value="all_a">全部 A 股</option><option value="index">指数池</option></select></label>
+              <label data-factor-index-field hidden><span>指数</span><select name="pool_code"><option value="000300.XSHG">沪深 300</option><option value="000905.XSHG">中证 500</option><option value="000906.XSHG">中证 800</option><option value="000852.XSHG">中证 1000</option><option value="000985.XSHG">中证全指</option></select></label>
+              <label><span>开始日期</span><input name="start_date" type="date" value="2026-01-05"></label><label><span>结束日期</span><input name="end_date" type="date" value="2026-07-16"></label>
+              <label><span>标的上限（受控研究必须为 0）</span><input name="symbol_limit" type="number" min="0" value="0"></label>
+              <label><span>前瞻周期</span><select name="forward_horizon"><option value="1">1 日</option><option value="5" selected>5 日</option><option value="10">10 日</option><option value="20">20 日</option></select></label>
+              <label><span>分组数</span><input name="group_count" type="number" min="2" max="10" value="5"></label>
+              <label><span>因子复权</span><select name="factor_adjustment"><option value="raw">不复权</option><option value="qfq">前复权</option><option value="hfq">后复权</option></select></label>
+              <label><span>收益复权</span><select name="outcome_adjustment"><option value="qfq">前复权</option><option value="raw">不复权</option><option value="hfq">后复权</option></select></label>
+              <label><span>MAD 倍数</span><input name="winsor_mad" type="number" min="0" max="10" step="0.5" value="3"></label><label><span>单边成本率</span><input name="one_side_rate" type="number" min="0" max="0.05" step="0.0001" value="0"></label>
+              <label class="factor-check"><input name="standardize" type="checkbox" checked><span>Z-score 标准化</span></label><label class="factor-check"><input name="industry_neutral" type="checkbox"><span>行业中性化</span></label>
+              <label><span>训练样本比例</span><input name="split_training" type="number" min="0.1" max="0.8" step="0.05" value="0.6"></label><label><span>验证样本比例</span><input name="split_validation" type="number" min="0.1" max="0.4" step="0.05" value="0.2"></label><label><span>样本外比例</span><input name="split_out_of_sample" type="number" min="0.1" max="0.4" step="0.05" value="0.2"></label>
+              <label class="factor-wide"><span>指定标的（逗号分隔，可留空）</span><input name="symbols" placeholder="000001,600000"></label>
+              <div class="factor-form-actions factor-wide"><button id="factor-preflight" type="button">执行预检</button><button type="submit">创建研究任务</button></div>
+            </form>
+            <div id="factor-preflight-summary" class="summary-grid factor-summary-strip"></div><div id="factor-preflight-reasons" class="factor-inline-alert" hidden></div>
+            <details class="technical-details"><summary>查看预检证据</summary><pre id="factor-preflight-output" class="code-block">尚未执行预检</pre></details>
+          </section></section>
+          <section class="factor-view" data-factor-view="tasks" hidden><section class="panel">
+            <div class="panel-header"><div><h3>研究任务中心</h3><p>任务持久化保存，支持显式启动、协作式停止和失败后重试。</p></div><button id="factor-task-refresh" type="button">刷新任务</button></div>
+            <div class="factor-task-toolbar"><label><span>当前任务</span><select id="factor-task-select"><option value="">请选择任务</option></select></label><button id="factor-task-start" type="button">启动 / 继续</button><button id="factor-task-stop" type="button">停止</button><button id="factor-task-retry" type="button">失败重试</button><button id="factor-task-open-report" type="button">打开报告</button></div>
+            <div id="factor-task-progress" class="summary-grid factor-summary-strip"></div>
+            <div class="table-wrap"><table data-vtable-mode="factor" aria-label="因子研究任务"><thead><tr><th data-vtable-width="190">任务</th><th>因子</th><th>股票池</th><th>状态</th><th>阶段</th><th>进度</th><th>数据版本</th><th>报告</th></tr></thead><tbody id="factor-task-body"></tbody></table></div>
+            <details class="technical-details"><summary>查看任务上下文</summary><pre id="factor-task-output" class="code-block">请选择任务</pre></details>
+          </section></section>
+          <section class="factor-view" data-factor-view="report" hidden><section class="panel">
+            <div class="panel-header"><div><h3>因子研究报告</h3><p>覆盖率、IC/Rank IC、衰减、分组收益、回撤、换手、行业和执行成本估算。</p></div><div class="factor-report-heading-actions"><button id="factor-report-back" type="button">返回研究任务</button><span id="factor-report-state" class="workspace-status">请选择已完成任务</span></div></div>
+            <div id="factor-report-context" class="factor-report-context">请从研究任务或因子库打开一份报告。</div>
+            <div id="factor-report-credibility" class="research-credibility-banner" role="note">历史研究结果，仅用于因子筛选；不构成投资建议或收益承诺。</div><div id="factor-report-summary" class="summary-grid factor-summary-strip"></div>
+            <div id="factor-oos-reveal-toolbar" class="factor-task-toolbar" hidden><label><span>解封人</span><input id="factor-oos-actor" value="local-research-owner"></label><label><span>解封原因</span><input id="factor-oos-reason" placeholder="确认配方已冻结，现执行一次样本外检验"></label><button id="factor-oos-reveal" type="button">解封一次样本外证据</button></div>
+            <article class="factor-acceptance-card"><h4>验收决策</h4><div id="factor-acceptance-summary" class="summary-grid factor-summary-strip"></div><div class="table-wrap"><table data-vtable-mode="factor" aria-label="因子验收检查"><thead><tr><th>检查项</th><th>实际值</th><th>标准</th><th>结果</th></tr></thead><tbody id="factor-acceptance-body"></tbody></table></div></article>
+            <div class="factor-report-grid"><article class="factor-chart-card"><h4>方向一致 Rank IC</h4><div id="factor-ic-chart" class="factor-series-chart"></div></article><article class="factor-chart-card"><h4>Top-Bottom 累计净值</h4><div id="factor-nav-chart" class="factor-series-chart"></div></article></div>
+            <div class="factor-report-grid"><article><h4>样本内外证据</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="样本内外证据"><thead><tr><th>样本</th><th>期间数</th><th>Rank IC</th><th>HAC t</th><th>正 IC 比例</th><th>成本后收益</th></tr></thead><tbody id="factor-sample-body"></tbody></table></div></article><article><h4>处理后分布</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="因子分布"><thead><tr><th>样本数</th><th>均值</th><th>标准差</th><th>P01</th><th>中位数</th><th>P99</th></tr></thead><tbody id="factor-distribution-body"></tbody></table></div></article></div>
+            <div class="factor-report-grid"><article><h4>因子衰减</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="因子衰减"><thead><tr><th>周期</th><th>Rank IC</th><th>方向 Rank IC</th></tr></thead><tbody id="factor-decay-body"></tbody></table></div></article><article><h4>行业维度</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="行业分析"><thead><tr><th>行业</th><th>样本数</th><th>Rank IC</th></tr></thead><tbody id="factor-industry-body"></tbody></table></div></article></div>
+            <div class="factor-report-grid"><article><h4>年度稳定性</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="年度稳定性"><thead><tr><th>年度</th><th>周期</th><th>期间数</th><th>方向 Rank IC</th><th>正 IC 比例</th><th>HAC t</th></tr></thead><tbody id="factor-annual-body"></tbody></table></div></article><article><h4>成本压力</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="成本压力"><thead><tr><th>单边成本率</th><th>估算总成本</th><th>成本后收益</th></tr></thead><tbody id="factor-cost-stress-body"></tbody></table></div></article></div>
+            <article><h4>Q1—Q5 分组与成本</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="分组收益与成本"><thead><tr><th>日期</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th>Q5</th><th>多空毛收益</th><th>成员换手成本</th><th>成本后收益</th></tr></thead><tbody id="factor-group-body"></tbody></table></div></article>
+            <article><h4>最新截面 Top / Bottom</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="最新截面股票"><thead><tr><th>方向</th><th>代码</th><th>日期</th><th>原始值</th><th>处理值</th><th>行业</th><th>分组</th></tr></thead><tbody id="factor-stock-body"></tbody></table></div></article>
+            <article class="factor-compare-card"><h4>股票池增强对比</h4><div class="factor-task-toolbar"><label><span>对比报告 ID（逗号分隔）</span><input id="factor-compare-report-ids" placeholder="factor-report-..."></label><button id="factor-compare-run" type="button">执行同口径对比</button></div><div class="table-wrap"><table data-vtable-mode="factor" aria-label="因子报告对比"><thead><tr><th>报告</th><th>股票池</th><th>Rank IC</th><th>ICIR</th><th>覆盖率</th><th>最终净值</th><th>兼容性</th></tr></thead><tbody id="factor-compare-body"><tr><td colspan="7" class="empty-cell">请输入另一份同因子、同版本、同区间报告</td></tr></tbody></table></div><pre id="factor-compare-output" class="code-block" hidden></pre></article>
+            <details class="technical-details"><summary>查看不可变报告 JSON</summary><pre id="factor-report-output" class="code-block">请选择报告</pre></details>
+          </section></section>
+          <section class="factor-view" data-factor-view="multi" hidden><section class="panel">
+            <div class="panel-header"><div><h3>多因子研究</h3><p>使用已审批登记且研究口径一致的单因子制品，冻结等权秩或固定权重秩配方，并执行相关性、样本外、消融与增量检验。</p></div><span class="workspace-status">固定配方 v1</span></div>
+            <form id="multi-factor-form" class="factor-config-grid"><label><span>复合因子标识</span><input name="factor_id" required pattern="[a-z][a-z0-9_]{2,63}" placeholder="quality_momentum_combo"></label><label><span>名称</span><input name="name" required placeholder="质量动量复合因子"></label><label><span>组合方法</span><select name="method"><option value="equal_rank">等权秩组合</option><option value="fixed_weight_rank">固定权重秩组合</option></select></label><label><span>固定权重（逗号分隔）</span><input name="weights" placeholder="0.6,0.4"></label><label class="factor-wide"><span>组件 Artifact ID（逗号分隔，至少两个）</span><input name="artifact_ids" required placeholder="factor-artifact-..., factor-artifact-..."></label><label class="factor-wide"><span>研究假设与说明</span><input name="description" maxlength="500" placeholder="说明组合逻辑、预期互补关系与适用范围"></label><div class="factor-form-actions factor-wide"><button type="submit">创建并运行多因子研究</button></div></form>
+            <div id="multi-factor-summary" class="summary-grid factor-summary-strip"></div>
+            <div class="factor-report-grid"><article><h4>相关性与冗余</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="多因子相关性"><thead><tr><th>因子 A</th><th>因子 B</th><th>秩相关</th><th>样本</th><th>判断</th></tr></thead><tbody id="multi-factor-correlation-body"></tbody></table></div></article><article><h4>消融与增量贡献</h4><div class="table-wrap"><table data-vtable-mode="factor" aria-label="多因子消融"><thead><tr><th>移除因子</th><th>移除后 Rank IC</th><th>完整组合增量</th><th>成本后收益</th></tr></thead><tbody id="multi-factor-ablation-body"></tbody></table></div></article></div>
+            <pre id="multi-factor-output" class="code-block">请选择已审批登记的同口径单因子制品</pre>
+          </section></section>
+          <section class="factor-view" data-factor-view="artifacts" hidden><section class="panel">
+            <div class="panel-header"><div><h3>因子发布与应用</h3><p>复核不可变研究制品，完成审批、登记和策略声明导出。</p></div><button id="factor-artifact-refresh" type="button">刷新制品</button></div>
+            <div class="research-credibility-banner" role="note"><strong>受控消费边界：</strong>必须选择精确 <code>artifact_id</code>；默认字段固定为 <code>aligned_value</code>；FA-OPT 创建后保持待启动。</div>
+            <div id="factor-artifact-summary" class="summary-grid factor-summary-strip"></div>
+            <div class="table-wrap"><table data-vtable-mode="factor" aria-label="因子制品目录"><thead><tr><th>制品</th><th>因子</th><th>版本</th><th>覆盖区间</th><th>行数</th><th>数据版本</th><th>状态</th><th>操作</th></tr></thead><tbody id="factor-artifact-body"><tr><td colspan="8" class="empty-cell">正在读取因子制品</td></tr></tbody></table></div>
+            <div class="factor-artifact-grid">
+              <article class="factor-chart-card"><h4>当前制品与准入</h4><div id="factor-artifact-detail" class="definition-list"><div class="empty-cell">请选择制品</div></div><label><span>审核人</span><input id="factor-reviewer" value="local-research-owner"></label><label><span>审核依据 / 停用原因</span><textarea id="factor-review-note" rows="3" placeholder="记录结论依据；拒绝或停用时说明原因"></textarea></label><div class="factor-form-actions"><button id="factor-artifact-approve" type="button">审核通过</button><button id="factor-artifact-reject" type="button">审核拒绝</button><button id="factor-artifact-register" type="button">登记供策略使用</button><button id="factor-artifact-suspend" type="button">暂停新增使用</button></div><div class="factor-form-actions"><button id="factor-artifact-export" type="button">生成策略声明</button><button id="factor-artifact-import" type="button" disabled>导入策略草稿</button><button id="factor-artifact-monitor" type="button">执行发布后监控</button></div><pre id="factor-governance-output" class="code-block">请选择制品查看审批与登记记录</pre><pre id="factor-monitoring-output" class="code-block">登记后可检查依赖完整性、近期覆盖与统计衰减</pre></article>
+              <article class="factor-chart-card"><h4>创建参数敏感性任务</h4><form id="factor-optimization-form" class="factor-config-grid">
+                <label class="factor-wide"><span>Artifact ID</span><input name="artifact_id" readonly required placeholder="请从制品列表选择"></label>
+                <label><span>分析字段</span><input name="value_field" value="aligned_value" readonly></label>
+                <label><span>前瞻周期</span><input name="forward_horizons" placeholder="留空沿用来源任务，如 5,10"></label>
+                <label><span>分组候选</span><input name="group_counts" value="3,5,10"></label>
+                <label><span>单边成本候选</span><input name="one_side_rates" value="0,0.001"></label>
+                <label><span>最小横截面样本</span><input name="min_cross_section_size" type="number" min="2" value="5"></label>
+                <div class="factor-form-actions factor-wide"><button id="factor-optimization-preflight" type="button">执行敏感性预检</button><button type="submit">创建待启动任务</button></div>
+              </form><pre id="factor-optimization-preflight-output" class="code-block">尚未执行优化预检</pre></article>
+            </div>
+            <article class="factor-compare-card"><div class="panel-header"><div><h4>参数敏感性任务</h4><p>比较固定候选参数的稳定性，仅生成研究证据，不自动替换已登记配方。</p></div><button id="factor-optimization-refresh" type="button">刷新任务</button></div>
+              <div class="factor-task-toolbar"><label><span>当前优化任务</span><select id="factor-optimization-task-select"><option value="">请选择任务</option></select></label><button id="factor-optimization-start" type="button">启动任务</button><button id="factor-optimization-retry" type="button">失败重试</button><button id="factor-optimization-open-report" type="button">查看优化报告</button></div>
+              <div class="table-wrap"><table data-vtable-mode="factor" aria-label="因子优化任务"><thead><tr><th>任务</th><th>制品</th><th>字段</th><th>状态</th><th>阶段</th><th>进度</th><th>报告</th></tr></thead><tbody id="factor-optimization-task-body"><tr><td colspan="7" class="empty-cell">暂无优化任务</td></tr></tbody></table></div>
+            </article>
+            <div class="factor-artifact-grid">
+              <article class="factor-chart-card"><h4>策略声明</h4><div id="factor-strategy-declaration-summary" class="summary-grid"></div><pre id="factor-strategy-declaration-output" class="code-block">请选择制品并生成策略声明</pre></article>
+              <article class="factor-chart-card"><h4>参数敏感性报告</h4><div id="factor-optimization-report-summary" class="summary-grid"></div><pre id="factor-optimization-report-output" class="code-block">请选择已完成敏感性任务</pre></article>
+            </div>
+          </section></section>
+        </div>
+      </section>
       <section id="page-backtest" class="page-section"><div class="section-grid">
         <section id="backtest-workspace-header" class="panel panel-wide backtest-workspace-header">
           <div class="panel-header"><div><h3>策略回测工作台</h3><p id="backtest-workspace-subtitle">选择策略后，按回测模式完成配置、运行和报告分析。</p></div><span id="backtest-workspace-status" class="workspace-status">准备中</span></div>
@@ -373,7 +650,7 @@
       </div></section>
 
       <section id="page-reporting" class="page-section"><div class="section-grid">
-        <section class="panel panel-wide report-cover"><div class="report-cover-text"><h3>量化策略 7 维全方位评估报告</h3><p>阶段 74 证据化 7 维报告：投资组合回测评价组合收益、风险、归因、成本与持仓分散；独立账户批量回测单股报告将第 7 维改为执行与数据可靠性。</p></div><form id="reporting-query-form" class="control-row"><label><span>Run ID</span><input name="run_id" value="phase1-demo-run-001"></label><label><span>Experiment ID</span><input name="experiment_id" value="phase1-batch-001"></label><button type="submit">刷新报告</button></form></section><section class="panel panel-wide"><div class="panel-header"><div><h3>双模式回测专业报告</h3><p>独立账户批量回测提供任务级统计/因子关系与任务内任意建仓股票 7 维诊断；投资组合回测按单一真实组合账户生成 7 维专业报告。</p></div></div><form id="mode-report-form" class="control-row"><label><span>报告模式</span><select name="mode"><option value="shared-portfolio">投资组合</option><option value="independent-screening">独立账户批量回测建仓汇总</option></select></label><label><span>任务 ID</span><input name="task_id" value="stage62-http-real"></label><button type="submit">生成模式报告</button></form><div id="mode-report-context" class="mode-report-context"></div><div id="mode-report-tabs" class="mode-report-tabs"><button type="button" data-mode-report-tab="task_statistics">任务统计分析</button><button type="button" data-mode-report-tab="single_run_evaluation">单股 7 维诊断</button></div><div id="independent-report-run-toolbar" class="independent-report-run-toolbar" hidden><label><span>搜索股票</span><input id="independent-report-run-search" placeholder="代码或名称"></label><label><span>实际建仓股票</span><select id="independent-report-run-select"></select></label><button id="independent-report-run-prev" type="button">上一只</button><button id="independent-report-run-next" type="button">下一只</button></div><div id="mode-report-summary" class="summary-grid"></div><div id="mode-report-radar" class="radar-chart mode-report-radar" hidden></div><div id="mode-report-content" class="report-tables"></div><pre id="mode-report-output" class="code-block">尚未生成双模式回测报告</pre></section>
+        <section class="panel panel-wide report-cover"><div class="report-cover-text"><h3>量化策略 7 维全方位评估报告</h3><p>阶段 74 证据化 7 维报告：投资组合回测评价组合收益、风险、归因、成本与持仓分散；独立账户批量回测单股报告将第 7 维改为执行与数据可靠性。</p></div><form id="reporting-query-form" class="control-row"><label><span>Run ID</span><input name="run_id" value="phase1-demo-run-001"></label><label><span>Experiment ID</span><input name="experiment_id" value="phase1-batch-001"></label><button type="submit">刷新报告</button></form></section><section class="panel panel-wide"><div class="panel-header"><div><h3>双模式回测专业报告</h3><p>独立账户批量回测提供任务级统计/因子关系与任务内任意建仓股票 7 维诊断；投资组合回测按单一真实组合账户生成 7 维专业报告。</p></div></div><form id="mode-report-form" class="control-row"><label><span>报告模式</span><select name="mode"><option value="shared-portfolio">投资组合</option><option value="independent-screening">独立账户批量回测建仓汇总</option></select></label><label><span>任务 ID</span><input name="task_id" value="stage62-http-real"></label><button type="submit">生成模式报告</button></form><div id="mode-report-context" class="mode-report-context"></div><div id="mode-report-credibility" class="research-credibility-banner" role="note">历史回测结果；未经过模拟盘或实盘验证，不构成投资建议。</div><div id="mode-report-tabs" class="mode-report-tabs"><button type="button" data-mode-report-tab="task_statistics">任务统计分析</button><button type="button" data-mode-report-tab="single_run_evaluation">单股 7 维诊断</button></div><div id="independent-report-run-toolbar" class="independent-report-run-toolbar" hidden><label><span>搜索股票</span><input id="independent-report-run-search" placeholder="代码或名称"></label><label><span>实际建仓股票</span><select id="independent-report-run-select"></select></label><button id="independent-report-run-prev" type="button">上一只</button><button id="independent-report-run-next" type="button">下一只</button></div><div id="mode-report-summary" class="summary-grid"></div><div id="mode-report-radar" class="radar-chart mode-report-radar" hidden></div><div id="mode-report-content" class="report-tables"></div><pre id="mode-report-output" class="code-block">尚未生成双模式回测报告</pre></section>
         <section class="panel"><div class="panel-header"><h3>Run 摘要</h3></div><div id="run-detail-summary" class="summary-grid"></div></section>
         <section class="panel panel-wide"><div class="panel-header"><h3>综合评分雷达图</h3><p id="report-score-summary">等待报告数据</p></div><div id="report-radar" class="radar-chart"></div><div id="report-decision-flags" class="summary-grid"></div><pre id="report-score-breakdown" class="code-block">等待评分明细</pre></section><section class="panel panel-wide"><div class="panel-header"><h3>策略诊断摘要</h3><p>收益、风险、交易质量、成本容量、暴露与数据覆盖的结构化诊断。</p></div><div id="report-diagnostics-grid" class="summary-grid"></div></section><section class="panel panel-wide report-analysis-panel"><div class="panel-header"><h3>报告分析摘要</h3><p id="report-analysis-headline">等待分析摘要</p></div><div id="report-analysis-cards" class="report-analysis-cards"></div><div id="report-data-asset-summary" class="report-asset-grid"></div><div id="report-action-items" class="report-action-list"></div></section>
         <section class="panel panel-wide"><div class="panel-header"><h3>7 维评估详情</h3><p>按 three2.html 模板组织指标卡、图表和维度结论。</p></div><div id="report-dimension-grid" class="dimension-grid"></div></section>
@@ -389,13 +666,11 @@
 
       <section id="page-config" class="page-section"><div class="section-grid">
         <section class="panel panel-wide"><div class="panel-header"><h3>配置中心</h3><p>按 TradingAgents-CN-main 偏好的数据源、LLM、Agent、缓存、报告模板分区展示。</p></div><button id="config-refresh" type="button">刷新配置</button></section>
-        <section class="panel"><div class="panel-header"><h3>数据源</h3></div><div id="config-data-sources" class="definition-list"></div></section>
-        <section class="panel"><div class="panel-header"><h3>LLM Provider</h3></div><div id="config-llm" class="definition-list"></div></section>
-        <section class="panel"><div class="panel-header"><h3>外部行情 Provider</h3><p>仅保存非密钥配置；API Key 仍读取本机环境变量。</p></div><div id="config-market-provider-status" class="summary-grid"></div><form id="config-market-provider-form" class="control-row"><label><span>启用外部行情</span><select name="enabled"><option value="false">关闭</option><option value="true">启用</option></select></label><label><span>Provider Name</span><input name="provider_name" value="open-http-market-provider" /></label><label><span>Base URL</span><input name="base_url" placeholder="https://provider.example/api" /></label><label><span>Timeout 秒</span><input name="timeout_seconds" type="number" min="1" max="60" value="8" /></label><label><span>价格 Path</span><input name="price_history_path" value="/price-history" /></label><label><span>Rows 路径</span><input name="price_history_rows_path" value="rows" /></label><label><span>日历 Path</span><input name="trading_calendar_path" value="/trading-calendar" /></label><label><span>交易日路径</span><input name="trading_calendar_days_path" value="days" /></label><label><span>分页</span><select name="pagination_enabled"><option value="false">关闭</option><option value="true">启用</option></select></label><label><span>Page Size</span><input name="page_size" type="number" min="1" max="5000" value="200" /></label><label><span>Max Pages</span><input name="max_pages" type="number" min="1" max="50" value="1" /></label><label><span>重试次数</span><input name="retry_max_attempts" type="number" min="1" max="5" value="1" /></label><label><span>字段映射 JSON</span><textarea name="field_mapping" rows="6" spellcheck="false"></textarea></label><button id="config-market-provider-apply" type="button">写入草稿</button><button id="config-market-provider-preflight" type="button">预检 Provider</button></form><pre id="config-market-provider-preflight-output" class="code-block">尚未执行预检</pre></section>
-        <section class="panel panel-wide"><div class="panel-header"><h3>行情同步任务</h3><p>本地运行期任务队列；支持手动运行、失败重试、增量游标和最近同步状态。</p></div><form id="config-sync-task-form" class="control-row"><label><span>Symbols</span><input name="symbols" value="000001.XSHE,600000.XSHG" /></label><label><span>开始日期</span><input name="start_date" type="date" value="2020-06-01" /></label><label><span>结束日期</span><input name="end_date" type="date" value="2020-06-02" /></label><label><span>刷新间隔秒</span><input name="interval_seconds" type="number" min="30" max="86400" placeholder="手动" /></label><button id="config-sync-task-create" type="submit">创建同步任务</button></form><div id="config-sync-task-list" class="definition-list"></div><pre id="config-sync-task-output" class="code-block">尚未创建同步任务</pre></section>
-        <section class="panel"><div class="panel-header"><h3>rqalpha Runtime</h3><p>先做本地探测与 fallback，真实策略包执行待环境确认。</p></div><div id="config-rqalpha-status" class="summary-grid"></div><div id="config-rqalpha-capabilities" class="definition-list"></div></section>
-        <section class="panel"><div class="panel-header"><h3>Agent 设置</h3></div><div id="config-agents" class="summary-grid"></div></section>
-        <section class="panel"><div class="panel-header"><h3>缓存 / 模板 / Profiles</h3></div><pre id="config-output" class="code-block"></pre></section>
+        <section id="config-data-sources-panel" class="panel"><div class="panel-header"><h3>数据源</h3></div><div id="config-data-sources" class="definition-list"></div></section>
+        <section id="config-ai-agent" class="panel"><div class="panel-header"><h3>LLM Provider</h3></div><div id="config-llm" class="definition-list"></div></section>
+        <section id="config-runtime" class="panel"><div class="panel-header"><h3>rqalpha Runtime</h3><p>先做本地探测与 fallback，真实策略包执行待环境确认。</p></div><div id="config-rqalpha-status" class="summary-grid"></div><div id="config-rqalpha-capabilities" class="definition-list"></div></section>
+        <section id="config-agent-settings" class="panel"><div class="panel-header"><h3>Agent 设置</h3></div><div id="config-agents" class="summary-grid"></div></section>
+        <section id="config-template-cache" class="panel"><div class="panel-header"><h3>缓存 / 模板 / Profiles</h3></div><pre id="config-output" class="code-block"></pre></section>
         <section class="panel panel-wide"><div class="panel-header"><h3>运行时配置草稿</h3><p>编辑可公开展示的运行时模式，不保存密钥。</p></div><textarea id="config-draft-editor" class="code-editor" spellcheck="false"></textarea><button id="config-save-draft" type="button">保存配置草稿</button></section>
       </div></section>
 
@@ -403,53 +678,16 @@
     </main>
   </div>
   <script src="/vendor/vtable/vtable.min.js?v=1.23.1"></script>
-  <script src="/vtable-adapter.js?v=2"></script>
-  <script src="/report-ui.js?v=780"></script>
-  <script src="/data_center_stage_c.js?v=882"></script>
-  <script src="/app.js?v=780"></script>
+  <script src="/vtable-adapter.js?v=3"></script>
+  <script src="/report-ui.js?v=872"></script>
+  <script src="/data_center_stage_c.js?v=926"></script>
+  <script src="/factor_research.js?v=924"></script>
+  <script src="/app.js?v=923"></script>
   <script src="/quant-ui-candidate.js?v=2"></script>
-  <script src="/m4_asset_browser.js?v=1"></script>
-  <script src="/strategy-datasets.js?v=4"></script>
+  <script src="/m4_asset_browser.js?v=2"></script>
+  <script src="/strategy-datasets.js?v=921"></script>
+  <script src="/indicators.js?v=1"></script>
+  <script src="/data-maintenance.js?v=1"></script>
   <script src="/strategy-explorer.js?v=1"></script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

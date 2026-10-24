@@ -8,6 +8,7 @@ from typing import Any
 
 from data_platform.dataset_registry import DatasetRegistry
 from factor_lab.dataset_bindings import get_factor_dataset_binding
+from app.services.strategy_research_preflight import validate_strategy_research_contract
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +32,7 @@ def validate_strategy_data_contract(
         factor_ids=factor_ids,
     )
     catalog = registry or DatasetRegistry()
-    issues: list[dict[str, str]] = []
+    issues: list[dict[str, Any]] = []
     datasets: list[dict[str, Any]] = []
     for dataset_id in requirements.dataset_ids:
         definition = catalog.get(dataset_id)
@@ -79,15 +80,32 @@ def validate_strategy_data_contract(
                 }
             )
 
+    strict_contract = None
+    from app.services.indicator_service import declared_indicators
+    try:
+        indicator_ids = declared_indicators(source_code)
+    except (ValueError, SyntaxError) as error:
+        indicator_ids = []
+        issues.append({"code": "invalid_indicator_requirements", "message": str(error)})
+    if indicator_ids and "indicator_values" not in requirements.dataset_ids:
+        issues.append({"code": "indicator_dataset_not_declared"})
+    if "indicator_values" in requirements.dataset_ids and not indicator_ids:
+        issues.append({"code": "registered_indicator_config_required"})
+    if _has_assignment(source_code, "DATASET_CONTRACTS"):
+        strict_contract = validate_strategy_research_contract(source_code, registry=catalog)
+        issues.extend(dict(item) for item in strict_contract.get("issues") or [])
+
     return {
         "ok": not issues,
         "execution_contract": "target-weights-v1",
         "requirements": {
             "dataset_ids": list(requirements.dataset_ids),
             "factor_ids": list(requirements.factor_ids),
+            "indicator_ids": indicator_ids,
         },
         "datasets": datasets,
         "factors": factors,
+        "strict_contract": strict_contract,
         "issues": issues,
     }
 
@@ -125,6 +143,17 @@ def _read_literal_list(source_code: str, name: str) -> list[str]:
     return []
 
 
+def _has_assignment(source_code: str, name: str) -> bool:
+    try:
+        tree = ast.parse(source_code)
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+        for node in tree.body
+    )
+
+
 def _normalize(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
-

@@ -809,6 +809,9 @@ def create_shared_portfolio_task(
         max_positions=payload.max_positions, portfolio_exposure=payload.portfolio_exposure,
         commission_rate=payload.commission_rate, min_commission=payload.min_commission,
         tax_rate=payload.tax_rate, slippage_rate=payload.slippage_rate,
+        rebalance_policy=payload.rebalance_policy,
+        capacity_replacement_policy=payload.capacity_replacement_policy,
+        max_single_position_weight=payload.max_single_position_weight,
     )
     return SharedPortfolioTaskResponsePayload(task=task)
 
@@ -839,9 +842,9 @@ def list_backtest_mode_tasks(
     single_service: SingleBacktestTaskService | None = None,
 ) -> BacktestModeTaskDirectoryResponsePayload:
     tasks = [
-        *(_mode_task_entry("single", task) for task in (single_service.list_tasks(limit=200) if single_service else [])),
-        *(_mode_task_entry("independent-screening", task) for task in independent_service.list_tasks(limit=200)),
-        *(_mode_task_entry("shared-portfolio", task) for task in portfolio_service.list_tasks(limit=200)),
+        *(_mode_task_entry("single", task) for task in (single_service.list_tasks(limit=None) if single_service else [])),
+        *(_mode_task_entry("independent-screening", task) for task in independent_service.list_tasks(limit=None)),
+        *(_mode_task_entry("shared-portfolio", task) for task in portfolio_service.list_tasks(limit=None)),
     ]
     mode = str(payload.mode or "").strip().lower()
     status = str(payload.status or "").strip().lower()
@@ -854,17 +857,20 @@ def list_backtest_mode_tasks(
     if strategy_id:
         tasks = [task for task in tasks if str(task["strategy_binding"]["strategy_id"]).lower() == strategy_id]
     if search:
-        tasks = [task for task in tasks if search in f"{task['task_id']} {task['name']} {task['strategy_binding']['strategy_id']}".lower()]
+        tasks = [task for task in tasks if search in f"{task['task_id']} {task['name']} {task['strategy_binding']['strategy_id']} {task.get('symbol') or ''}".lower()]
     tasks.sort(key=lambda task: str(task.get("updated_at") or task.get("created_at") or ""), reverse=True)
-    tasks = tasks[: max(1, min(int(payload.limit), 200))]
+    total = len(tasks)
+    offset = max(0, int(payload.offset))
+    limit = max(1, min(int(payload.limit), 200))
     status_counts: dict[str, int] = {}
     mode_counts: dict[str, int] = {}
     for task in tasks:
         status_counts[task["status"]] = status_counts.get(task["status"], 0) + 1
         mode_counts[task["mode"]] = mode_counts.get(task["mode"], 0) + 1
     return BacktestModeTaskDirectoryResponsePayload(
-        tasks=tasks,
-        summary={"task_count": len(tasks), "mode_counts": mode_counts, "status_counts": status_counts},
+        tasks=tasks[offset:offset + limit],
+        summary={"task_count": total, "mode_counts": mode_counts, "status_counts": status_counts,
+                 "offset": offset, "limit": limit, "has_next": offset + limit < total},
     )
 
 
@@ -932,6 +938,7 @@ def _mode_task_entry(mode: str, task: dict[str, Any]) -> dict[str, Any]:
             "source_sha256": str(config.get("source_sha256") or ""),
         },
         "date_window": dict(config.get("date_window") or {}),
+        "benchmark": config.get("benchmark"),
         "adjustment": str(config.get("adjustment") or "qfq"),
         "universe_count": universe_count, "symbol": config.get("symbol"),
         "progress": normalized_progress, "execution": dict(task.get("execution") or {}),

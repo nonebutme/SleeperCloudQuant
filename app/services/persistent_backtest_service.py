@@ -1,9 +1,11 @@
 """Persistence-aware backtest execution service."""
 
 from __future__ import annotations
+from data_platform.maintenance_transaction import guarded_research, require_current_input
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+from dataclasses import replace
 from typing import Any
 
 from app.runtime.sqlite_runtime_store import SqliteRuntimeStore
@@ -30,10 +32,18 @@ class PersistentBacktestService:
         if not hasattr(self._runtime_store, "list_backtest_runs"):
             return []
         return [dict(item) for item in self._runtime_store.list_backtest_runs(limit=limit)]
+    @guarded_research
     def run_once(self, request: BacktestRunRequest) -> BacktestResultSummary:
+        adjustment = str(request.parameters.get("adjustment") or request.extra_config.get("adjustment") or "raw")
+        if request.extra_config.get("adjustment") and request.extra_config["adjustment"] != adjustment:
+            raise ValueError("conflicting adjustment settings")
+        request = replace(request, parameters={**request.parameters, "adjustment": adjustment},
+                          extra_config={**request.extra_config, "adjustment": adjustment})
         started_at = _utc_now()
         data_asset_trace = self._build_data_asset_trace(request=request, bound_at=started_at)
         extra_config = _merge_data_asset_trace(request.extra_config, data_asset_trace)
+        request = replace(request, extra_config=extra_config)
+        require_current_input(self, extra_config)
         self._runtime_store.upsert_backtest_run(
             run_id=request.run_id,
             strategy_name=request.strategy_name,
@@ -142,7 +152,7 @@ class PersistentBacktestService:
 
 
     def _build_data_asset_trace(self, *, request: BacktestRunRequest, bound_at: str) -> dict[str, Any]:
-        adjustment = str(request.extra_config.get("adjustment") or "raw")
+        adjustment = str(request.parameters.get("adjustment") or request.extra_config.get("adjustment") or "raw")
         if self._market_data_service is not None and hasattr(
             self._market_data_service, "get_published_data_version"
         ):
@@ -335,6 +345,9 @@ class PersistentBacktestService:
             "yearly_returns": yearly_returns,
             "logs": logs,
             "parameter_snapshot": parameter_snapshot,
+            "benchmark_alignment": raw_result.get("benchmark_alignment") or {},
+            "benchmark_status": raw_result.get("benchmark_status"),
+            "benchmark_curve": raw_result.get("benchmark_curve") or [],
             "data_asset_trace": data_asset_trace,
             "input_snapshot": input_snapshot,
             "equity_curve": equity_curve,
@@ -689,7 +702,7 @@ def _build_equity_curve(accounts: Sequence[Mapping[str, Any]]) -> list[dict[str,
 
 
 def _build_drawdown_curve(equity_curve: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    peak: float | None = None
+    peak: float | None = 1.0
     rows: list[dict[str, Any]] = []
     for point in equity_curve:
         value = _to_float(point.get("value"))
@@ -830,7 +843,8 @@ def _build_trade_attribution(
             buy_count += 1
             buy_amount += amount
             quantity_by_symbol[symbol] = quantity_by_symbol.get(symbol, 0.0) + quantity
-            cost_by_symbol[symbol] = cost_by_symbol.get(symbol, 0.0) + amount
+            buy_fees = abs(_to_float(trade.get("commission")) or 0.0) + abs(_to_float(trade.get("tax")) or 0.0)
+            cost_by_symbol[symbol] = cost_by_symbol.get(symbol, 0.0) + amount + buy_fees
     roundtrip_count = len(realized_pnls)
     wins = [value for value in realized_pnls if value > 0]
     losses = [value for value in realized_pnls if value < 0]
@@ -972,10 +986,6 @@ def _csv_cell(value: Any) -> str:
     if any(char in text for char in (",", '"', "\n", "\r")):
         text = '"' + text.replace('"', '""') + '"'
     return text
-
-
-
-
 
 
 

@@ -16,3 +16,21 @@ traces/*.log
 traces/*.tmp
 var/runtime/*.json
 var/runtime/*.log
+
+# Local databases, backups and browser/runtime state are not project sources.
+var/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+*.duckdb
+*.mdb
+*.accdb
+*.dump
+*.bak
+.env
+.env.local
+.env.*.local
+/0)

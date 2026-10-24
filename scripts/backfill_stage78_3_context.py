@@ -19,6 +19,9 @@ def main() -> None:
     from data_platform.providers.akshare_governance_provider import (
         AkshareGovernanceProvider,
     )
+    from data_platform.providers.baostock_security_master_provider import (
+        BaostockSecurityMasterProvider,
+    )
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -34,6 +37,7 @@ def main() -> None:
     parser.add_argument("--job-id")
     parser.add_argument("--symbols")
     parser.add_argument("--all-current", action="store_true")
+    parser.add_argument("--historical-only", action="store_true")
     parser.add_argument("--start-date", default="2015-01-05")
     parser.add_argument("--end-date")
     parser.add_argument("--datasets", default=",".join(ALL_DATASETS))
@@ -50,49 +54,55 @@ def main() -> None:
     if not database_path.is_file():
         raise SystemExit(f"canonical database not found: {database_path}")
     provider = AkshareGovernanceProvider(proxy_url=args.proxy, retry_count=1)
+    security_master_provider = BaostockSecurityMasterProvider()
     service = AShareContextBackfill(
         database_path,
         provider=provider,
+        security_master_provider=security_master_provider,
         requests_per_minute=args.requests_per_minute,
         max_workers=args.max_workers,
         retry_count=args.retry_count,
         base_backoff_seconds=args.base_backoff_seconds,
     )
 
-    if args.action in {"create-run", "create"}:
-        if not args.end_date:
-            raise SystemExit("--end-date is required when creating a job")
-        symbols = _items(args.symbols) if args.symbols else None
-        if not symbols and not args.all_current:
-            raise SystemExit("provide --symbols or --all-current")
-        job = service.create_job(
-            start_date=args.start_date,
-            end_date=args.end_date,
-            symbols=symbols,
-            all_current=bool(args.all_current),
-            datasets=_items(args.datasets),
-        )
-        print(json.dumps(job, ensure_ascii=False, indent=2), flush=True)
-        if args.action == "create":
-            return
-        job_id = str(job["job_id"])
-    else:
-        latest = service.latest_job()
-        job_id = args.job_id or (str(latest["job_id"]) if latest else "")
-        if not job_id:
-            raise SystemExit("--job-id is required when no previous job exists")
+    try:
+        if args.action in {"create-run", "create"}:
+            if not args.end_date:
+                raise SystemExit("--end-date is required when creating a job")
+            symbols = _items(args.symbols) if args.symbols else None
+            if not symbols and not args.all_current and not args.historical_only:
+                raise SystemExit("provide --symbols, --all-current, or --historical-only")
+            job = service.create_job(
+                start_date=args.start_date,
+                end_date=args.end_date,
+                symbols=symbols,
+                all_current=bool(args.all_current),
+                historical_only=bool(args.historical_only),
+                datasets=_items(args.datasets),
+            )
+            print(json.dumps(job, ensure_ascii=False, indent=2), flush=True)
+            if args.action == "create":
+                return
+            job_id = str(job["job_id"])
+        else:
+            latest = service.latest_job()
+            job_id = args.job_id or (str(latest["job_id"]) if latest else "")
+            if not job_id:
+                raise SystemExit("--job-id is required when no previous job exists")
 
-    if args.action == "status":
-        result = service.get_job(job_id)
-    elif args.action == "retry":
-        result = service.retry_quarantined(job_id)
-    else:
-        result = service.run_job(
-            job_id,
-            publish=not args.no_publish,
-            max_items=args.max_items,
-        )
-    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+        if args.action == "status":
+            result = service.get_job(job_id)
+        elif args.action == "retry":
+            result = service.retry_quarantined(job_id)
+        else:
+            result = service.run_job(
+                job_id,
+                publish=not args.no_publish,
+                max_items=args.max_items,
+            )
+        print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+    finally:
+        security_master_provider.close()
 
 
 def _items(value: str | None) -> list[str]:

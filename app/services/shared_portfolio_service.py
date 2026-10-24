@@ -1,7 +1,9 @@
 """Shared-cash multi-stock portfolio backtests."""
 
 from __future__ import annotations
+from data_platform.maintenance_transaction import guarded_research, require_current_input
 
+import ast
 import json
 import math
 import sqlite3
@@ -13,7 +15,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from backtest_kernel.strategy_execution import execute_strategy_evidence
+from app.services.strategy_causality_gate import verify_strategy_prefix_stability
+from app.services.strategy_research_preflight import parse_strategy_dataset_contracts
+from app.services.strategy_research_preflight import require_strategy_runtime_adjustment
+from app.services.strategy_research_preflight import research_fetch_start_date
+from backtest_kernel.strategy_execution import bar_is_tradable, execute_strategy_evidence, open_signal_lag
 
 
 class SharedPortfolioService:
@@ -38,6 +44,7 @@ class SharedPortfolioService:
         self._ensure_schema()
         self._recover_interrupted_tasks()
 
+    @guarded_research
     def create_task(
         self,
         *,
@@ -61,6 +68,9 @@ class SharedPortfolioService:
         min_commission: float,
         tax_rate: float,
         slippage_rate: float,
+        rebalance_policy: str | None = None,
+        capacity_replacement_policy: str | None = None,
+        max_single_position_weight: float | None = None,
     ) -> dict[str, Any]:
         if start_date > end_date:
             raise ValueError("start_date must not be after end_date")
@@ -69,6 +79,29 @@ class SharedPortfolioService:
         if initial_cash <= 0:
             raise ValueError("initial_cash must be positive")
         strategy = self._strategy_service.resolve_version(strategy_id, strategy_version)
+        require_strategy_runtime_adjustment(
+            str(strategy.get("source_code") or ""), adjustment
+        )
+        declared_execution = _declared_portfolio_execution_contract(
+            str(strategy.get("source_code") or "")
+        )
+        effective_rebalance_policy = _rebalance_policy(
+            rebalance_policy or declared_execution.get("rebalance_policy")
+        )
+        effective_replacement_policy = _capacity_replacement_policy(
+            capacity_replacement_policy
+            or declared_execution.get("capacity_replacement_policy")
+        )
+        effective_position_cap = _optional_position_cap(
+            max_single_position_weight
+            if max_single_position_weight is not None
+            else declared_execution.get("max_single_position_weight")
+        )
+        if self._dataset_resolver is not None:
+            owner = getattr(self._dataset_resolver, "__self__", None)
+            freezer = getattr(owner, "freeze_parameters", None)
+            if callable(freezer):
+                parameters = freezer(str(strategy.get("source_code") or ""), parameters)
         universe = self._freeze_universe(symbols=symbols or [], market=market, limit=symbol_limit)
         if not universe:
             raise ValueError("selected A-share universe is empty")
@@ -107,9 +140,24 @@ class SharedPortfolioService:
             "min_commission": max(0.0, float(min_commission)),
             "tax_rate": _bounded(tax_rate, 0.0, 0.02),
             "slippage_rate": _bounded(slippage_rate, 0.0, 0.05),
+            "rebalance_policy": effective_rebalance_policy,
+            "capacity_replacement_policy": effective_replacement_policy,
+            "max_single_position_weight": effective_position_cap,
+            "portfolio_execution_contract_binding": {
+                "status": "strategy_declared" if declared_execution else "legacy_default",
+                "declared": declared_execution,
+                "request_overrides": {
+                    "rebalance_policy": rebalance_policy,
+                    "capacity_replacement_policy": capacity_replacement_policy,
+                    "max_single_position_weight": max_single_position_weight,
+                },
+            },
             "lot_size": 100,
             "settlement": "A-share T+1",
-            "rebalance": "daily_open_sell_then_buy" if str(parameters.get("execution_price") or "close").lower() == "open" else "daily_close_sell_then_buy",
+            "rebalance": _rebalance_label(
+                effective_rebalance_policy,
+                str(parameters.get("execution_price") or "close"),
+            ),
             "universe_source": "canonical_a_share_sqlite",
             "data_version_binding": data_version_binding,
         }
@@ -149,11 +197,11 @@ class SharedPortfolioService:
             active.join()
         return self.get_task(task_id)
 
-    def list_tasks(self, *, limit: int = 30) -> list[dict[str, Any]]:
+    def list_tasks(self, *, limit: int | None = 30) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT task_id FROM portfolio_tasks WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
-                (max(1, min(int(limit), 200)),),
+                (-1 if limit is None else max(1, min(int(limit), 200)),),
             ).fetchall()
         return [self.get_task(str(row["task_id"])) for row in rows]
 
@@ -214,6 +262,7 @@ class SharedPortfolioService:
             "deleted_reason": row["deleted_reason"],
         }
 
+    @guarded_research
     def _execute_task(self, task_id: str) -> None:
         task = self.get_task(task_id)
         config = dict(task.get("config") or {})
@@ -238,8 +287,11 @@ class SharedPortfolioService:
         )
         try:
             strategy = self._strategy_service.resolve_version(
+                # 数据读取前拒绝无可恢复输入的旧任务。
                 str(config["strategy_id"]), str(config["strategy_version"])
             )
+            require_current_input(self, task)
+            strategy_preflight = self._preflight_strict_strategy(universe, config, strategy)
             prepared, excluded = self._prepare_symbols(task_id, universe, config, strategy)
             if not prepared:
                 raise RuntimeError("no symbols have usable local bars and strategy signals")
@@ -269,6 +321,8 @@ class SharedPortfolioService:
                 excluded,
                 benchmark_rows=benchmark_rows,
             )
+            if strategy_preflight is not None:
+                raw_result["strategy_preflight"] = strategy_preflight
             binding = dict(config.get("data_version_binding") or {})
             if binding.get("status") == "bound":
                 raw_result["data_asset_trace"] = {
@@ -344,6 +398,58 @@ class SharedPortfolioService:
                     (message, finished_at, finished_at, task_id),
                 )
 
+    def _preflight_strict_strategy(
+        self,
+        universe: list[dict[str, Any]],
+        config: dict[str, Any],
+        strategy: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        source_code = str(strategy.get("source_code") or "")
+        if not parse_strategy_dataset_contracts(source_code):
+            return None
+        if not universe or self._dataset_resolver is None:
+            raise RuntimeError("strict strategy preflight requires universe and dataset resolver")
+        item = dict(universe[0])
+        symbol = str(item.get("symbol") or "")
+        rows = self._market_data_service.get_a_share_price_history(
+            symbol=symbol,
+            adjustment=str(config.get("adjustment") or "raw"),
+            start_date=research_fetch_start_date(
+                source_code,
+                str(config["date_window"]["start_date"]),
+            ),
+            end_date=str(config["date_window"]["end_date"]),
+        )
+        normalized = [dict(row) for row in rows]
+        for row in normalized:
+            row.setdefault("symbol", symbol)
+            row.setdefault("name", str(item.get("name") or ""))
+            row.setdefault("trade_date", str(row.get("date") or "")[:10])
+        resolved = self._dataset_resolver(
+            source_code,
+            normalized,
+            dict(config.get("parameters") or {}),
+            {
+                "evaluation_start_date": str(config["date_window"]["start_date"]),
+                "evaluation_end_date": str(config["date_window"]["end_date"]),
+                "adjustment": str(config.get("adjustment") or "raw"),
+                "data_version_id": str(
+                    dict(config.get("data_version_binding") or {}).get("data_version_id")
+                    or dict(config.get("data_version_binding") or {}).get("data_version")
+                    or ""
+                ),
+            },
+        )
+        causality = verify_strategy_prefix_stability(
+            source_code,
+            [dict(row) for row in resolved.get("bars") or normalized],
+            dict(config.get("parameters") or {}),
+            executor=execute_strategy_evidence,
+        )
+        if not causality["ok"]:
+            raise RuntimeError(f"strategy causality preflight failed: {causality['issues']}")
+        return causality
+
     def _prepare_symbols(
         self, task_id: str, universe: list[dict[str, Any]], config: dict[str, Any], strategy: dict[str, Any]
     ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
@@ -356,7 +462,10 @@ class SharedPortfolioService:
                 rows = self._market_data_service.get_a_share_price_history(
                     symbol=symbol,
                     adjustment=str(config.get("adjustment") or "raw"),
-                    start_date=str(config["date_window"]["start_date"]),
+                    start_date=research_fetch_start_date(
+                        str(strategy.get("source_code") or ""),
+                        str(config["date_window"]["start_date"]),
+                    ),
                     end_date=str(config["date_window"]["end_date"]),
                 )
                 for row in rows:
@@ -369,7 +478,19 @@ class SharedPortfolioService:
                 dataset_evidence: list[dict[str, Any]] = []
                 if self._dataset_resolver is not None:
                     resolved = self._dataset_resolver(
-                        str(strategy.get("source_code") or ""), rows, dict(config.get("parameters") or {})
+                        str(strategy.get("source_code") or ""),
+                        rows,
+                        dict(config.get("parameters") or {}),
+                        {
+                            "evaluation_start_date": str(config["date_window"]["start_date"]),
+                            "evaluation_end_date": str(config["date_window"]["end_date"]),
+                            "adjustment": str(config.get("adjustment") or "raw"),
+                            "data_version_id": str(
+                                dict(config.get("data_version_binding") or {}).get("data_version_id")
+                                or dict(config.get("data_version_binding") or {}).get("data_version")
+                                or ""
+                            ),
+                        },
                     )
                     rows = [dict(row) for row in resolved.get("bars") or rows]
                     dataset_evidence = [dict(item) for item in resolved.get("evidence") or []]
@@ -379,12 +500,31 @@ class SharedPortfolioService:
                     dict(config.get("parameters") or {}),
                     timeout_seconds=10.0,
                 )
+                evaluation_start = str(config["date_window"]["start_date"])
+                evaluation_end = str(config["date_window"]["end_date"])
+                evaluation_indices = [
+                    index
+                    for index, row in enumerate(rows)
+                    if evaluation_start
+                    <= str(row.get("date") or row.get("trade_date") or "")[:10]
+                    <= evaluation_end
+                ]
+                evaluation_rows = [rows[index] for index in evaluation_indices]
+                lag = open_signal_lag(str(strategy.get("source_code") or ""), str(strategy.get("execution_contract") or "")) if str((config.get("parameters") or {}).get("execution_price") or "close").lower() == "open" else 0
+                evaluation_weights = [strategy_evidence["weights"][index - lag] if index >= lag else 0.0 for index in evaluation_indices]
+                raw_scores = strategy_evidence.get("raw_scores")
+                evaluation_scores = (
+                    [raw_scores[index - lag] if index >= lag else None for index in evaluation_indices]
+                    if raw_scores is not None
+                    else None
+                )
                 return symbol, {
                     "meta": item,
-                    "rows": rows,
-                    "weights": list(strategy_evidence["weights"]),
-                    "scores": strategy_evidence.get("raw_scores"),
+                    "rows": evaluation_rows,
+                    "weights": evaluation_weights,
+                    "scores": evaluation_scores,
                     "dataset_evidence": dataset_evidence,
+                    "signal_lag_applied": True,
                 }, None
             except Exception as exc:
                 return symbol, None, f"{type(exc).__name__}: {exc}"
@@ -580,12 +720,16 @@ def _run_shared_account(
     weight_by_symbol: dict[str, dict[str, float]] = {}
     score_by_symbol: dict[str, dict[str, float | None]] = {}
     all_dates: set[str] = set()
+    signal_lag = open_signal_lag(str(strategy.get("source_code") or ""), str(strategy.get("execution_contract") or "")) if str((config.get("parameters") or {}).get("execution_price") or "close").lower() == "open" else 0
     for symbol, payload in prepared.items():
         by_symbol[symbol] = {}
         weight_by_symbol[symbol] = {}
         score_by_symbol[symbol] = {}
         scores = payload.get("scores") or [None] * len(payload["rows"])
-        for row, weight, score in zip(payload["rows"], payload["weights"], scores):
+        for index, row in enumerate(payload["rows"]):
+            signal_index = index - (0 if payload.get("signal_lag_applied") else signal_lag)
+            weight = payload["weights"][signal_index] if signal_index >= 0 else 0.0
+            score = scores[signal_index] if signal_index >= 0 else None
             date = str(row.get("date") or "")[:10]
             if date:
                 by_symbol[symbol][date] = dict(row)
@@ -609,15 +753,27 @@ def _run_shared_account(
     curve: list[tuple[str, float]] = []
     rejected_orders = 0
     execution_mode = "open" if str((config.get("parameters") or {}).get("execution_price") or "close").lower() == "open" else "close"
+    rebalance_policy = _rebalance_policy(config.get("rebalance_policy"))
+    replacement_policy = _capacity_replacement_policy(
+        config.get("capacity_replacement_policy")
+    )
+    max_positions = int(config["max_positions"])
+    max_single_position_weight = _optional_position_cap(
+        config.get("max_single_position_weight")
+    )
+    pending_cap_trims: set[str] = set()
+    executed_cap_trim_count = 0
 
     for date in dates:
         available = dict(quantities)
         rows_today: dict[str, dict[str, Any]] = {}
+        closing_prices: dict[str, float] = {}
         for symbol in prepared:
             row = by_symbol[symbol].get(date)
             if row is not None and float(row.get("close") or 0) > 0:
-                rows_today[symbol] = row
-                last_prices[symbol] = float(row["close"])
+                closing_prices[symbol] = float(row["close"])
+                if bar_is_tradable(row):
+                    rows_today[symbol] = row
         execution_prices = {
             symbol: float(row.get("open") or row["close"]) if execution_mode == "open" else float(row["close"])
             for symbol, row in rows_today.items()
@@ -628,25 +784,67 @@ def _run_shared_account(
             for symbol in rows_today
             if weight_by_symbol[symbol].get(date, 0.0) > 0
         }
-        selected = sorted(
+        ranked = sorted(
             signals,
             key=lambda symbol: (
                 -(score_by_symbol[symbol].get(date) if score_by_symbol[symbol].get(date) is not None else signals[symbol]),
                 symbol,
             ),
-        )[: int(config["max_positions"])]
-        signal_total = sum(signals[symbol] for symbol in selected)
-        target_weights = {
-            symbol: float(config["portfolio_exposure"]) * signals[symbol] / signal_total
-            for symbol in selected
-        } if signal_total else {}
+        )
+        if replacement_policy == "incumbent_priority":
+            unavailable_incumbents = sorted(
+                symbol for symbol in prepared
+                if quantities.get(symbol, 0) > 0 and symbol not in rows_today
+            )
+            active_incumbents = [
+                symbol for symbol in ranked if quantities.get(symbol, 0) > 0
+            ]
+            incumbents = unavailable_incumbents + active_incumbents
+            challengers = [symbol for symbol in ranked if symbol not in incumbents]
+            selected = (incumbents + challengers)[:max_positions]
+        else:
+            selected = ranked[:max_positions]
+        if rebalance_policy == "event_driven":
+            slot_weight = float(config["portfolio_exposure"]) / max_positions
+            target_weights = {
+                symbol: (
+                    quantities[symbol]
+                    * execution_prices.get(symbol, last_prices.get(symbol, 0.0))
+                    / total_before
+                    if quantities[symbol] > 0 and total_before > 0
+                    else slot_weight
+                )
+                for symbol in selected
+            }
+        else:
+            signal_total = sum(signals[symbol] for symbol in selected)
+            target_weights = {
+                symbol: float(config["portfolio_exposure"]) * signals[symbol] / signal_total
+                for symbol in selected
+            } if signal_total else {}
         targets: dict[str, int] = {}
+        cap_target_symbols: set[str] = set()
         for symbol in prepared:
             price = execution_prices.get(symbol, last_prices.get(symbol, 0.0))
-            targets[symbol] = (
-                math.floor(total_before * target_weights.get(symbol, 0.0) / price / 100) * 100
-                if price > 0 and symbol in rows_today else quantities[symbol]
-            )
+            if symbol not in rows_today:
+                targets[symbol] = quantities[symbol]
+            elif rebalance_policy == "event_driven" and symbol in selected and quantities[symbol] > 0:
+                targets[symbol] = quantities[symbol]
+                if max_single_position_weight is not None and symbol in pending_cap_trims:
+                    capped_quantity = (
+                        math.floor(
+                            total_before * max_single_position_weight / price / 100
+                        ) * 100
+                        if price > 0 else quantities[symbol]
+                    )
+                    targets[symbol] = min(quantities[symbol], capped_quantity)
+                    if targets[symbol] < quantities[symbol]:
+                        cap_target_symbols.add(symbol)
+            else:
+                targets[symbol] = (
+                    math.floor(total_before * target_weights.get(symbol, 0.0) / price / 100) * 100
+                    if price > 0 else quantities[symbol]
+                )
 
         for symbol in sorted(prepared):
             sell_quantity = min(max(quantities[symbol] - targets[symbol], 0), available[symbol])
@@ -666,7 +864,17 @@ def _run_shared_account(
             cash += amount - commission - tax
             quantities[symbol] -= sell_quantity
             available[symbol] -= sell_quantity
-            trades.append(_trade(date, symbol, "SELL", execution_price, sell_quantity, amount, commission, tax, target_weights.get(symbol, 0.0), realized_pnl=realized_pnl, market_vwap=_market_vwap(row, close), market_volume=_positive_float(row.get("volume")), execution_mode=execution_mode, raw_signal_score=score_by_symbol[symbol].get(date)))
+            sell_cause = (
+                "single_position_weight_cap"
+                if symbol in cap_target_symbols
+                else "strategy_target_zero"
+                if weight_by_symbol[symbol].get(date, 0.0) <= 0
+                else "portfolio_capacity_exclusion"
+                if symbol not in selected
+                else "target_weight_rebalance"
+            )
+            trades.append(_trade(date, symbol, "SELL", execution_price, sell_quantity, amount, commission, tax, target_weights.get(symbol, 0.0), realized_pnl=realized_pnl, market_vwap=_market_vwap(row, close), market_volume=_positive_float(row.get("volume")), execution_mode=execution_mode, raw_signal_score=score_by_symbol[symbol].get(date), sell_cause=sell_cause))
+            executed_cap_trim_count += sell_cause == "single_position_weight_cap"
             if quantities[symbol] == 0:
                 average_costs[symbol] = 0.0
 
@@ -675,14 +883,20 @@ def _run_shared_account(
             row = rows_today.get(symbol)
             if buy_quantity < 100 or row is None:
                 continue
+            # 卖出受阻的旧持仓仍占用名额，不能按理想目标组合计算。
+            if quantities[symbol] == 0 and sum(value > 0 for value in quantities.values()) >= max_positions:
+                rejected_orders += 1
+                continue
             close = float(row["close"])
             reference_price = execution_prices[symbol]
             if _at_price_limit(symbol, str(prepared[symbol]["meta"].get("name") or ""), reference_price, previous_closes.get(symbol), up=True):
                 rejected_orders += 1
                 continue
             execution_price = reference_price * (1.0 + float(config["slippage_rate"]))
+            invested = sum(quantities[s] * execution_prices.get(s, last_prices.get(s, 0.0)) for s in prepared)
+            exposure_room = max(0.0, (cash + invested) * float(config["portfolio_exposure"]) - invested)
             buy_quantity = _affordable_quantity(
-                buy_quantity, cash, execution_price, float(config["commission_rate"]), float(config["min_commission"])
+                buy_quantity, min(cash, exposure_room), execution_price, float(config["commission_rate"]), float(config["min_commission"])
             )
             if buy_quantity < 100:
                 continue
@@ -694,6 +908,7 @@ def _run_shared_account(
             quantities[symbol] += buy_quantity
             trades.append(_trade(date, symbol, "BUY", execution_price, buy_quantity, amount, commission, 0.0, target_weights.get(symbol, 0.0), market_vwap=_market_vwap(row, close), market_volume=_positive_float(row.get("volume")), execution_mode=execution_mode, raw_signal_score=score_by_symbol[symbol].get(date)))
 
+        last_prices.update(closing_prices)
         market_value = sum(quantities[s] * last_prices.get(s, 0.0) for s in prepared)
         total_value = cash + market_value
         snapshot_time = f"{date}T15:00:00+08:00"
@@ -723,6 +938,15 @@ def _run_shared_account(
             "notes": {"holding_count": sum(quantity > 0 for quantity in quantities.values()), "mode": "shared_cash_portfolio"},
         })
         curve.append((date, total_value))
+        if max_single_position_weight is not None:
+            pending_cap_trims = {
+                symbol
+                for symbol, quantity in quantities.items()
+                if quantity > 0
+                and total_value > 0
+                and quantity * last_prices.get(symbol, 0.0) / total_value
+                > max_single_position_weight
+            }
         for symbol, row in rows_today.items():
             previous_closes[symbol] = float(row["close"])
 
@@ -740,6 +964,8 @@ def _run_shared_account(
         "excluded_symbol_count": len(excluded),
         "rejected_order_count": rejected_orders,
         "max_positions": int(config["max_positions"]),
+        "max_single_position_weight": max_single_position_weight,
+        "executed_position_cap_trim_count": executed_cap_trim_count,
     })
     final_holdings = [
         {"symbol": symbol, "quantity": quantity, "market_value": round(quantity * last_prices.get(symbol, 0.0), 6)}
@@ -767,6 +993,18 @@ def _run_shared_account(
             "suspension": "missing_bar_no_trade_last_close_valuation",
             "price_limit": "5/10/20/30_percent_approximation",
             "execution_price": execution_mode,
+            "rebalance_policy": rebalance_policy,
+            "capacity_replacement_policy": replacement_policy,
+            "max_single_position_weight": max_single_position_weight,
+            "position_cap_trigger": (
+                "prior_close_snapshot_next_tradable_open_trim_to_cap"
+                if max_single_position_weight is not None else None
+            ),
+            "position_cap_released_cash": "retain_as_cash",
+            "event_driven_slot_weight_policy": (
+                "portfolio_exposure_divided_by_max_positions"
+                if rebalance_policy == "event_driven" else None
+            ),
         },
         "data_asset_trace": {
             "status": "bound",
@@ -803,7 +1041,69 @@ def _dataset_evidence(prepared: dict[str, dict[str, Any]]) -> list[dict[str, Any
                 by_id[dataset_id] = dict(item)
     return [by_id[key] for key in sorted(by_id)]
 
-def _trade(date: str, symbol: str, side: str, price: float, quantity: int, amount: float, commission: float, tax: float, target_weight: float, *, realized_pnl: float | None = None, market_vwap: float | None = None, market_volume: float | None = None, execution_mode: str = "close", raw_signal_score: float | None = None) -> dict[str, Any]:
+
+def _rebalance_policy(value: Any) -> str:
+    normalized = str(value or "daily_equal_weight").strip().lower()
+    if normalized not in {"daily_equal_weight", "event_driven"}:
+        raise ValueError(
+            "rebalance_policy must be daily_equal_weight or event_driven"
+        )
+    return normalized
+
+
+def _declared_portfolio_execution_contract(source_code: str) -> dict[str, Any]:
+    if not source_code.strip():
+        return {}
+    try:
+        tree = ast.parse(source_code)
+    except SyntaxError:
+        return {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name)
+            and target.id == "PORTFOLIO_EXECUTION_CONTRACT"
+            for target in node.targets
+        ):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (TypeError, ValueError, SyntaxError):
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(key): item
+            for key, item in value.items()
+            if isinstance(key, str) and isinstance(item, (str, int, float, bool))
+        }
+    return {}
+
+
+def _optional_position_cap(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    parsed = float(value)
+    if not 0 < parsed <= 1:
+        raise ValueError("max_single_position_weight must be greater than 0 and at most 1")
+    return parsed
+
+
+def _capacity_replacement_policy(value: Any) -> str:
+    normalized = str(value or "force_top_n").strip().lower()
+    if normalized not in {"force_top_n", "incumbent_priority"}:
+        raise ValueError(
+            "capacity_replacement_policy must be force_top_n or incumbent_priority"
+        )
+    return normalized
+
+
+def _rebalance_label(policy: str, execution_price: str) -> str:
+    timing = "open" if str(execution_price).lower() == "open" else "close"
+    return f"{policy}_{timing}_sell_then_buy"
+
+def _trade(date: str, symbol: str, side: str, price: float, quantity: int, amount: float, commission: float, tax: float, target_weight: float, *, realized_pnl: float | None = None, market_vwap: float | None = None, market_volume: float | None = None, execution_mode: str = "close", raw_signal_score: float | None = None, sell_cause: str | None = None) -> dict[str, Any]:
     return {
         "trade_time": f"{date}T{'09:30:00' if execution_mode == 'open' else '15:00:00'}+08:00",
         "order_book_id": symbol,
@@ -821,6 +1121,7 @@ def _trade(date: str, symbol: str, side: str, price: float, quantity: int, amoun
             "market_volume": market_volume,
             "execution_price_mode": execution_mode,
             "raw_signal_score": raw_signal_score,
+            "sell_cause": sell_cause,
         },
     }
 
@@ -980,7 +1281,7 @@ def _yearly_returns(
 ) -> list[dict[str, Any]]:
     benchmark_by_date = dict(benchmark_curve)
     rows: list[dict[str, Any]] = []
-    previous_portfolio = curve[0][1] if benchmark_curve else initial_cash
+    previous_portfolio = initial_cash
     previous_benchmark = benchmark_curve[0][1] if benchmark_curve else None
     grouped: dict[str, list[tuple[str, float]]] = {}
     for date, value in curve:

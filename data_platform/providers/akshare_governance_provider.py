@@ -15,8 +15,32 @@ from .a_share_sqlite_repository import _normalize_symbol
 from .akshare_a_share_provider import AkshareAShareProvider
 
 
+US_INDEX_SINA_SYMBOLS = {
+    "SPX": ".INX",
+    "IXIC": ".IXIC",
+    "DJI": ".DJI",
+    "NDX": ".NDX",
+}
+
+GLOBAL_INDEX_SINA_SYMBOLS = {
+    "FTSE": "英国富时100指数",
+    "GDAXI": "德国DAX 30种股价指数",
+    "N225": "日经225指数",
+}
+
+
 class AkshareGovernanceProvider(AkshareAShareProvider):
     """Fetch calendar, index and point-in-time context evidence through AKShare."""
+
+    def probe_symbol_catalog(self) -> list[dict[str, Any]]:
+        """Read one bounded exchange catalog as a lightweight connectivity probe."""
+
+        frame = self._retry(lambda ak: ak.stock_info_sh_name_code(symbol="主板A股"))
+        rows = frame.head(1).to_dict("records")
+        return [
+            {str(key): _clean_value(value) for key, value in row.items()}
+            for row in rows
+        ]
 
     def fetch_trade_calendar(
         self,
@@ -88,6 +112,95 @@ class AkshareGovernanceProvider(AkshareAShareProvider):
             start_date=start_date,
             end_date=end_date,
         )
+
+    def fetch_global_index_daily_prices(
+        self,
+        *,
+        index_symbol: str,
+        endpoint: str,
+        start_date: str,
+        end_date: str,
+        retry_count: int | None = None,
+        retry_delay_seconds: float | None = None,
+        request_gate: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch one explicitly mapped global index through a governed Sina endpoint."""
+
+        code = str(index_symbol or "").strip().upper()
+        if endpoint == "index_us_stock_sina":
+            upstream_symbol = US_INDEX_SINA_SYMBOLS.get(code)
+            if upstream_symbol is None:
+                raise ValueError(f"unsupported US Sina index symbol: {code}")
+            frame = self._retry_with_policy(
+                lambda ak: ak.index_us_stock_sina(symbol=upstream_symbol),
+                retry_count=retry_count,
+                retry_delay_seconds=retry_delay_seconds,
+                request_gate=request_gate,
+            )
+        elif endpoint == "index_global_hist_sina":
+            upstream_symbol = GLOBAL_INDEX_SINA_SYMBOLS.get(code)
+            if upstream_symbol is None:
+                raise ValueError(f"unsupported global Sina index symbol: {code}")
+            frame = self._retry_with_policy(
+                lambda ak: ak.index_global_hist_sina(symbol=upstream_symbol),
+                retry_count=retry_count,
+                retry_delay_seconds=retry_delay_seconds,
+                request_gate=request_gate,
+            )
+        else:
+            raise ValueError(f"unsupported global-index endpoint: {endpoint}")
+        return _index_frame_rows(
+            frame,
+            index_symbol=code,
+            start_date=start_date,
+            end_date=end_date,
+            source=f"akshare:{endpoint}:sina",
+        )
+
+    def fetch_index_component_snapshot(
+        self,
+        *,
+        index_code: str,
+    ) -> dict[str, Any]:
+        """Fetch one authoritative latest constituent snapshot from CSI."""
+
+        code = _normalize_symbol(index_code)
+        frame = self._retry(lambda ak: ak.index_stock_cons_csindex(symbol=code))
+        observed_at = _utc_now()
+        records = []
+        for values in frame.itertuples(index=False, name=None):
+            if len(values) < 9:
+                continue
+            as_of_date = _date_text(values[0])
+            member = _normalize_symbol(str(values[4] or ""))
+            if not as_of_date or not member:
+                continue
+            records.append(
+                {
+                    "index_code": code,
+                    "symbol": member,
+                    "as_of_date": as_of_date,
+                    "index_name": _clean_value(values[2]),
+                    "member_name": _clean_value(values[5]),
+                    "exchange": _clean_value(values[7]),
+                }
+            )
+        dates = sorted({str(row["as_of_date"]) for row in records})
+        if not records or len(dates) != 1:
+            raise RuntimeError(
+                f"CSI index snapshot is empty or has mixed dates: {code} {dates}"
+            )
+        content_hash = _record_hash(
+            {"index_code": code, "as_of_date": dates[0], "symbols": sorted(row["symbol"] for row in records)}
+        )
+        return {
+            "index_code": code,
+            "as_of_date": dates[0],
+            "observed_at": observed_at,
+            "source": "akshare:index_stock_cons_csindex:csindex",
+            "source_version": content_hash,
+            "rows": records,
+        }
     def fetch_security_lifecycle_events(
         self,
         *,
@@ -190,6 +303,7 @@ class AkshareGovernanceProvider(AkshareAShareProvider):
             lambda ak: ak.stock_tfp_em(date=str(trade_date).replace("-", ""))
         )
         observed_at = _utc_now()
+        target_date = _date_text(trade_date)
         rows = []
         for source_row in frame.to_dict("records"):
             evidence = {
@@ -197,18 +311,28 @@ class AkshareGovernanceProvider(AkshareAShareProvider):
                 for key, value in source_row.items()
             }
             symbol = _normalize_symbol(str(evidence.get("\u4ee3\u7801") or ""))
-            suspension_date = _date_text(trade_date)
-            evidence["normalized_status_trade_date"] = suspension_date
+            suspension_start = _date_text(evidence.get("\u505c\u724c\u65f6\u95f4"))
+            suspension_end = _date_text(evidence.get("\u505c\u724c\u622a\u6b62\u65f6\u95f4"))
+            expected_resume = _date_text(evidence.get("\u9884\u8ba1\u590d\u724c\u65f6\u95f4"))
+            if not target_date or not suspension_start:
+                continue
+            if target_date < suspension_start:
+                continue
+            if suspension_end and target_date > suspension_end:
+                continue
+            if expected_resume and target_date >= expected_resume:
+                continue
+            evidence["source_suspension_start_date"] = suspension_start
+            evidence["source_suspension_end_date"] = suspension_end
+            evidence["normalized_status_trade_date"] = target_date
             rows.append(
                 {
                     "symbol": symbol,
-                    "trade_date": suspension_date,
+                    "trade_date": target_date,
                     "status": "suspended",
                     "is_tradable": False,
                     "suspension_reason": evidence.get("\u505c\u724c\u539f\u56e0"),
-                    "expected_resume_date": _date_text(
-                        evidence.get("\u9884\u8ba1\u590d\u724c\u65f6\u95f4")
-                    ),
+                    "expected_resume_date": expected_resume,
                     "source": "akshare:stock_tfp_em:eastmoney",
                     "source_observed_at": observed_at,
                     "source_payload_hash": _record_hash(evidence),
@@ -463,6 +587,7 @@ def _index_frame_rows(
     index_symbol: str,
     start_date: str,
     end_date: str,
+    source: str = "akshare:stock_zh_index_daily:sina",
 ) -> list[dict[str, Any]]:
     observed_at = _utc_now()
     rows = []
@@ -482,7 +607,7 @@ def _index_frame_rows(
         }
         rows.append({
             **evidence,
-            "source": "akshare:stock_zh_index_daily:sina",
+            "source": source,
             "source_observed_at": observed_at,
             "source_payload_hash": _record_hash(evidence),
         })

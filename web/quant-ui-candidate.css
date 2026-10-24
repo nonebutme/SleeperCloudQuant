@@ -133,36 +133,62 @@ html.quant-ui-standard body {
 }
 
 .quant-ui-standard .nav-tabs {
+  display: flex;
+  flex-direction: column;
   gap: var(--q-space-1);
+  align-content: start;
 }
 
-.quant-ui-standard .nav-tab,
-.quant-ui-standard .dc-sidebar-subnav > button,
-.quant-ui-standard .stage76-workspace-nav > button {
+.quant-ui-standard .nav-tab {
   position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
   min-height: 40px;
-  padding: 0 12px;
+  padding: 0 36px 0 12px;
   border: 0;
   border-radius: var(--q-radius-control);
-  color: #c9cdd4;
   background: transparent;
+  color: #c9cdd4;
   font-size: 14px;
-  line-height: 40px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: left;
+  transition: background-color .16s ease, color .16s ease;
 }
 
 .quant-ui-standard .nav-tab::before {
   content: "";
+  flex: 0 0 auto;
   width: 4px;
   height: 4px;
   margin-right: 10px;
-  display: inline-block;
-  vertical-align: 3px;
   border-radius: 50%;
   background: #6b7785;
 }
 
-.quant-ui-standard .nav-tab.is-active,
+.quant-ui-standard .nav-tab[aria-expanded]::after {
+  content: "";
+  position: absolute;
+  right: 14px;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform .16s ease;
+}
+
+.quant-ui-standard .nav-tab[aria-expanded="true"]::after {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
 .quant-ui-standard .nav-tab:hover {
+  color: #fff;
+  background: color-mix(in srgb, var(--q-primary) 14%, transparent);
+}
+
+.quant-ui-standard .nav-tab.is-active {
   color: #fff;
   background: color-mix(in srgb, var(--q-primary) 24%, transparent);
 }
@@ -175,29 +201,45 @@ html.quant-ui-standard body {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--q-primary) 20%, transparent);
 }
 
-.quant-ui-standard .dc-sidebar-subnav,
-.quant-ui-standard .stage76-workspace-nav {
+.quant-ui-standard .sidebar-subnav {
+  display: grid;
   gap: var(--q-space-1);
-  margin: 0 0 4px 20px;
-  padding: 4px 0 4px 12px;
+  margin: 0 0 var(--q-space-2) 20px;
+  padding: var(--q-space-1) 0 var(--q-space-1) 12px;
   border-left: 1px solid #363639;
 }
 
-.quant-ui-standard .dc-sidebar-subnav > button,
-.quant-ui-standard .stage76-workspace-nav > button {
+.quant-ui-standard .sidebar-subnav[hidden] {
+  display: none !important;
+}
+
+.quant-ui-standard .sidebar-subnav > button {
+  display: flex;
+  align-items: center;
+  width: 100%;
   min-height: 32px;
-  padding: 0 8px;
+  padding: 0 var(--q-space-2);
+  border: 0;
+  border-radius: var(--q-radius-control);
+  background: transparent;
   color: #86909c;
   font-size: 12px;
-  line-height: 32px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: left;
+  transition: background-color .16s ease, color .16s ease, box-shadow .16s ease;
 }
 
-.quant-ui-standard .dc-sidebar-subnav > button.is-active,
-.quant-ui-standard .stage76-workspace-nav > button.is-active {
+.quant-ui-standard .sidebar-subnav > button:hover {
+  color: #f2f3f5;
+  background: color-mix(in srgb, var(--q-primary) 10%, transparent);
+}
+
+.quant-ui-standard .sidebar-subnav > button.is-active {
   color: #fff;
   background: color-mix(in srgb, var(--q-primary) 18%, transparent);
+  box-shadow: inset 2px 0 0 var(--q-primary);
 }
-
 .quant-ui-standard .sidebar-note {
   padding: var(--q-space-3);
   border: 1px solid #363639;
@@ -664,11 +706,11 @@ html[data-theme="dark"].quant-ui-standard details {
   }
 
   .quant-ui-standard .nav-tabs {
+    display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .quant-ui-standard .dc-sidebar-subnav,
-  .quant-ui-standard .stage76-workspace-nav {
+  .quant-ui-standard .sidebar-subnav {
     grid-column: 1 / -1;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     margin-left: 0;
@@ -702,8 +744,7 @@ html[data-theme="dark"].quant-ui-standard details {
   }
 
   .quant-ui-standard .nav-tabs,
-  .quant-ui-standard .dc-sidebar-subnav,
-  .quant-ui-standard .stage76-workspace-nav {
+  .quant-ui-standard .sidebar-subnav {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

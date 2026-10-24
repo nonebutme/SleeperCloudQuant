@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
 
 from _project_bootstrap import ensure_project_root_on_sys_path
 
@@ -12,6 +11,7 @@ from _project_bootstrap import ensure_project_root_on_sys_path
 def main() -> None:
     ensure_project_root_on_sys_path()
     from app.runtime import build_demo_app, create_http_handler, dispatch_request
+    from app.runtime.database_paths import backtest_runtime_database_path
     from app.runtime.sqlite_runtime_store import SqliteRuntimeStore
 
     app = build_demo_app()
@@ -48,7 +48,7 @@ def main() -> None:
         handler_class._handle_request(context, "POST")
         return context.sent_status, json.loads(context.wfile.getvalue().decode("utf-8"))
     status_code, payload = dispatch_request(app, method="GET", path="/api/factors/definitions")
-    if status_code != 200 or len(payload.get("definitions", [])) != 2:
+    if status_code != 200 or len(payload.get("definitions", [])) != 7:
         raise SystemExit("formal HTTP adapter smoke test failed: factor definitions dispatch")
     status_code, payload = dispatch_request(app, method="GET", path="/api/factors/pool-members", query_string="index_code=000300.XSHG")
     if status_code != 200 or payload.get("symbols", []) != ["000001.XSHE", "600000.XSHG"]:
@@ -323,7 +323,7 @@ def main() -> None:
     status_code, payload = dispatch_request(app, method="GET", path="/api/reporting/batch-summary/http-missing-batch-001")
     if status_code != 404 or payload.get("detail") != "resource not found":
         raise SystemExit("formal HTTP adapter smoke test failed: missing batch-summary should return HTTP 404")
-    SqliteRuntimeStore(Path("tmp") / "formal_http_demo.sqlite3").upsert_research_run(
+    SqliteRuntimeStore(backtest_runtime_database_path()).upsert_research_run(
         run_id="http-batch-failure-001",
         strategy_name="default_a_share",
         status="partial_failed",

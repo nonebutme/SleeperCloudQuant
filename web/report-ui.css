@@ -169,3 +169,23 @@
   color: var(--report-fall, #389e0d);
   background: rgba(56, 158, 13, 0.08);
 }
+.research-credibility-banner {
+  margin: var(--space-3, 12px) 0;
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border: 1px solid var(--warning-border, #a66f16);
+  border-left-width: 4px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--warning-bg, rgba(166, 111, 22, 0.12));
+  color: var(--text-primary, inherit);
+  line-height: 1.55;
+}
+.dc-probe-history{margin-top:var(--space-4);border-top:1px solid var(--border-color);padding-top:var(--space-4)}
+.dc-probe-history table small{display:block;color:var(--text-muted)}
+.dc-config-evidence{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3);margin-top:var(--space-3)}
+.dc-config-evidence>div{min-width:0;padding:var(--space-3);border:1px solid var(--border-color);border-radius:var(--radius-md);background:var(--surface-muted)}
+.dc-config-evidence pre{max-height:18rem;overflow:auto;white-space:pre-wrap}
+.dc-readiness-head{margin-bottom:var(--space-3)}
+.dc-readiness-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3)}
+.dc-readiness-grid>div{display:grid;gap:var(--space-1);padding:var(--space-3);border:1px solid var(--border-color);border-radius:var(--radius-md);background:var(--surface-muted)}
+.dc-readiness-grid span,.dc-readiness-grid small{color:var(--text-muted)}
+@media (max-width:900px){.dc-config-evidence,.dc-readiness-grid{grid-template-columns:1fr}}

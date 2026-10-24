@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime, timezone
@@ -551,6 +552,9 @@ class AShareMarketStore:
                     ORDER BY trade_date DESC LIMIT ? OFFSET ?""",
                 (*values, page_limit, page_offset),
             ).fetchall()
+            normalized_rows = self._apply_published_overlays(
+                connection, code, rows, date_key="date", adjustment=mode,
+            )
             coverage_start_row = connection.execute(
                 "SELECT MIN(trade_date) FROM market_daily_prices WHERE symbol=? AND adjustment=?",
                 (code, mode),
@@ -628,7 +632,7 @@ class AShareMarketStore:
             "start_date": start_date, "end_date": end_date, "total": total,
             "duplicate_rows_removed": 0, "limit": page_limit, "offset": page_offset,
             "quality": quality,
-            "rows": [dict(row) for row in rows],
+            "rows": normalized_rows,
         }
 
     def fetch_symbol(self, symbol: str) -> dict[str, Any] | None:
@@ -643,6 +647,142 @@ class AShareMarketStore:
                 (code, str(symbol), code),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def fetch_symbol_history(
+        self,
+        symbol: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        *,
+        data_version_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return active or explicitly version-bound security-master intervals."""
+
+        code = _normalize_symbol(symbol)
+        filters = ["symbol=?"]
+        values: list[Any] = [code]
+        if not data_version_id:
+            filters.append("is_active=1")
+        if end_date:
+            filters.append("valid_from<=?")
+            values.append(str(end_date)[:10])
+        if start_date:
+            filters.append("(valid_to IS NULL OR valid_to>=?)")
+            values.append(str(start_date)[:10])
+        with closing(self._connect(read_only=True)) as connection:
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='security_master_intervals'"
+            ).fetchone()
+            if table is None:
+                return []
+            snapshot_refs: set[str] | None = None
+            if data_version_id:
+                member = connection.execute(
+                    """
+                    SELECT m.sync_run_ref, m.details_json
+                    FROM data_version_members m
+                    JOIN data_versions v ON v.data_version_id=m.data_version_id
+                    WHERE m.data_version_id=?
+                      AND m.dataset='security_master_intervals'
+                      AND m.adjustment=''
+                      AND m.quality_status='passed'
+                      AND v.status IN ('published','superseded')
+                    """,
+                    (str(data_version_id),),
+                ).fetchone()
+                if member is None:
+                    return []
+                try:
+                    parsed_details = json.loads(str(member["details_json"] or "{}"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return []
+                details = parsed_details if isinstance(parsed_details, dict) else {}
+                snapshot_refs = {
+                    str(item)
+                    for item in details.get("snapshot_refs") or []
+                    if str(item)
+                }
+                if member["sync_run_ref"]:
+                    snapshot_refs.add(str(member["sync_run_ref"]))
+                if not snapshot_refs:
+                    return []
+            rows = connection.execute(
+                f"""
+                SELECT symbol, valid_from, valid_to, name, listing_status,
+                       risk_warning, available_at, source, source_observed_at,
+                       source_payload_hash, evidence_json
+                FROM security_master_intervals
+                WHERE {' AND '.join(filters)}
+                ORDER BY valid_from, interval_id
+                """,
+                values,
+            ).fetchall()
+        normalized = []
+        for row in rows:
+            evidence = json.loads(str(row["evidence_json"] or "{}"))
+            if snapshot_refs is not None and str(evidence.get("job_id") or "") not in snapshot_refs:
+                continue
+            normalized.append(
+                {
+                    **{key: value for key, value in dict(row).items() if key != "evidence_json"},
+                    "rqalpha_symbol": _rqalpha_symbol(code),
+                    "market": _market(code),
+                    "risk_warning": bool(row["risk_warning"]),
+                    "evidence": evidence,
+                    "data_version_id": str(data_version_id) if data_version_id else None,
+                    "snapshot_ref": str(evidence.get("job_id") or "") or None,
+                }
+            )
+        return normalized
+
+    def security_master_history_coverage(self) -> dict[str, Any]:
+        """Summarize governed interval coverage without claiming completeness."""
+
+        with closing(self._connect(read_only=True)) as connection:
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='security_master_intervals'"
+            ).fetchone()
+            if table is None:
+                return {"status": "empty", "interval_count": 0, "symbol_count": 0}
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS interval_count, COUNT(DISTINCT symbol) AS symbol_count,
+                       MIN(valid_from) AS min_date, MAX(COALESCE(valid_to, valid_from)) AS max_date
+                FROM security_master_intervals WHERE is_active=1
+                """
+            ).fetchone()
+            available_tables = {
+                str(item["name"])
+                for item in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            binding = None
+            if {
+                "data_center_settings", "data_versions", "data_version_members"
+            }.issubset(available_tables):
+                binding = connection.execute(
+                    """
+                    SELECT v.data_version_id
+                    FROM data_center_settings s
+                    JOIN data_versions v ON v.data_version_id=s.setting_value
+                    JOIN data_version_members m ON m.data_version_id=v.data_version_id
+                    WHERE s.setting_key='default_data_version_id'
+                      AND v.status IN ('published','superseded')
+                      AND m.dataset='security_master_intervals'
+                      AND m.adjustment=''
+                      AND m.quality_status='passed'
+                    LIMIT 1
+                    """
+                ).fetchone()
+        payload = dict(row)
+        bound = binding is not None
+        return {
+            "status": "ready" if bound else "candidate_only",
+            "published_binding_status": "bound" if bound else "unavailable",
+            "data_version_id": str(binding["data_version_id"]) if binding else None,
+            **payload,
+        }
 
     def fetch_price_history(
         self,
@@ -674,7 +814,79 @@ class AShareMarketStore:
                     ORDER BY trade_date""",
                 values,
             ).fetchall()
-        return [dict(row) for row in rows]
+            return self._apply_published_overlays(
+                connection, code, rows, date_key="date", adjustment=mode,
+            )
+
+    @staticmethod
+    def _apply_published_overlays(
+        connection: sqlite3.Connection,
+        symbol: str,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        date_key: str,
+        adjustment: str,
+    ) -> list[dict[str, Any]]:
+        normalized = [dict(row) for row in rows]
+        tables = {
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "data_correction_overlays" not in tables:
+            return normalized
+        default_version = connection.execute(
+            """
+            SELECT setting_value FROM data_center_settings
+            WHERE setting_key='default_data_version_id'
+            """
+        ).fetchone() if "data_center_settings" in tables else None
+        default_version_id = str(default_version["setting_value"] or "") if default_version else ""
+        if not default_version_id:
+            return normalized
+        overlays = connection.execute(
+            """
+            SELECT overlay.observation_at, overlay.after_json, overlay.overlay_id,
+                   overlay.data_version_id, issue.evidence_json
+            FROM data_correction_overlays overlay
+            JOIN data_quality_issues issue ON issue.issue_id=overlay.issue_id
+            WHERE overlay.dataset='a_share_daily' AND overlay.symbol=?
+              AND overlay.status='published' AND overlay.data_version_id IS NOT NULL
+              AND overlay.data_version_id IN (
+                  WITH RECURSIVE ancestry(data_version_id, parent_version_id) AS (
+                      SELECT data_version_id, parent_version_id FROM data_versions WHERE data_version_id=?
+                      UNION
+                      SELECT v.data_version_id, v.parent_version_id FROM data_versions v
+                      JOIN ancestry a ON v.data_version_id=a.parent_version_id
+                  ) SELECT data_version_id FROM ancestry
+              )
+            ORDER BY overlay.created_at
+            """,
+            (symbol, default_version_id),
+        ).fetchall()
+        by_date = {
+            str(row.get(date_key) or "")[:10]: row
+            for row in normalized
+        }
+        for overlay in overlays:
+            evidence = json.loads(str(overlay["evidence_json"] or "{}"))
+            overlay_adjustment = str(evidence.get("adjustment") or "")
+            if overlay_adjustment and overlay_adjustment != adjustment:
+                continue
+            target = by_date.get(str(overlay["observation_at"] or "")[:10])
+            if target is None:
+                continue
+            changes = json.loads(str(overlay["after_json"] or "{}"))
+            for field, value in changes.items():
+                if field in {
+                    "open", "high", "low", "close", "volume", "amount",
+                    "amplitude", "change_pct", "change_amount", "turnover_rate",
+                }:
+                    target[field] = value
+            target["correction_overlay_id"] = overlay["overlay_id"]
+            target["correction_data_version_id"] = overlay["data_version_id"]
+        return normalized
 
     def _get_state(self, key: str) -> str | None:
         with closing(self._connect()) as connection, connection:
@@ -693,6 +905,10 @@ class AShareMarketStore:
             )
 
     def _connect(self, *, read_only: bool = False) -> sqlite3.Connection:
+        from data_platform.maintenance_transaction import transaction_connection
+        active = transaction_connection(self.database_path)
+        if active is not None:
+            return active
         if read_only:
             connection = sqlite3.connect(
                 f"file:{self.database_path.resolve().as_posix()}?mode=ro", uri=True

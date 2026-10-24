@@ -1,0 +1,141 @@
+{
+  "task": "检查策略回测的业务流程、页面交互和信息展示",
+  "date": "2026-10-13",
+  "method": "读取当前源码，Node vm提取并执行当前页面函数，模拟DOM与接口响应；Python直接调用当前任务目录API并使用内存服务。未引用历史问题列表作为发现依据。",
+  "findings": [
+    {
+      "id": "UI01",
+      "priority": "P1",
+      "title": "克隆任务不能忠实还原原配置",
+      "files": [
+        "web/app.js:3045",
+        "web/app.js:3198",
+        "web/app.js:3564"
+      ],
+      "evidence": "克隆A/v3后，2020年、qfq、1万元被公共栏覆盖为2026年、raw、20万元；参数仍来自当前B策略，period从原5变为99。",
+      "impact": "用户以为复跑同一配置，实际实验条件已改变。"
+    },
+    {
+      "id": "UI02",
+      "priority": "P1",
+      "title": "快速切换结果会被过期响应覆盖",
+      "files": [
+        "web/app.js:1920"
+      ],
+      "evidence": "先请求A再请求B，让B先返回、A后返回，当前选中run为B，但面板渲染A；分页表读取全局B，可能同屏混合两个Run。",
+      "impact": "可能把其他任务的收益和交易明细误认为当前任务结果。"
+    },
+    {
+      "id": "UI03",
+      "priority": "P2",
+      "title": "筛选任务列表会停止运行任务的自动刷新",
+      "files": [
+        "web/app.js:3544"
+      ],
+      "evidence": "currentSingleTask仍running，筛选已完成返回空列表后，已有timer被清除且未安排新timer。",
+      "impact": "后台仍运行，前台进度可停滞；轮询只取决于筛选后的可见任务。"
+    },
+    {
+      "id": "UI04",
+      "priority": "P2",
+      "title": "独立账户明细选择器静默截断为前100只",
+      "files": [
+        "web/app.js:1469"
+      ],
+      "evidence": "模拟接口total=150、has_next=true，页面只请求limit=100一次并渲染100项，没有加载其余50项。",
+      "impact": "该结果入口无法选择后续建仓股票；不代表后端数据丢失，其他报告入口可能可见。"
+    },
+    {
+      "id": "UI05",
+      "priority": "P1",
+      "title": "同标的买入持有基准被标记为真实指数已对齐",
+      "files": [
+        "web/report-ui.js:224",
+        "web/report-ui.js:366"
+      ],
+      "evidence": "task benchmark=000300.XSHG、实际模式same_symbol_buy_hold，仅有benchmark_return=.1，页头显示000300.XSHG及真实基准已对齐。",
+      "impact": "实际比较对象与界面表达不符，容易误读超额收益。"
+    },
+    {
+      "id": "UI06",
+      "priority": "P2",
+      "title": "历史任务搜索先截断再过滤",
+      "files": [
+        "app/api/backtest.py:837",
+        "app/services/single_backtest_task_service.py:124"
+      ],
+      "evidence": "构造201条任务，第201条old-target确实存在，精确搜索仍返回0；API只预取每模式最近200条再搜索。",
+      "impact": "旧任务无法从统一任务工作台搜索找回；页面分页只分页已截断的数据。"
+    }
+  ],
+  "evidence": {
+    "clone": {
+      "original": {
+        "strategy_id": "A",
+        "strategy_version": "v3",
+        "date_window": {
+          "start_date": "2020-01-01",
+          "end_date": "2020-12-31"
+        },
+        "adjustment": "qfq",
+        "initial_cash": 10000,
+        "parameters": {
+          "period": 5
+        }
+      },
+      "after": {
+        "run_id": "new",
+        "strategy_id": "A",
+        "strategy_version": "v3",
+        "start_date": "2026-01-01",
+        "end_date": "2026-10-01",
+        "adjustment": "raw",
+        "initial_cash": "200000"
+      },
+      "strategyStillSelected": "B",
+      "submittedParameters": {
+        "period": 99
+      }
+    },
+    "filteredPolling": {
+      "activeTask": "running",
+      "timerCleared": true,
+      "timerScheduled": false
+    },
+    "resultRace": {
+      "selected": "B",
+      "displayed": "A"
+    },
+    "batchResultLimit": {
+      "total": 150,
+      "rendered": 100,
+      "requests": [
+        "/api/backtest/independent-screening-tasks/batch/items?entered_only=true&limit=100"
+      ]
+    },
+    "benchmarkDisplay": {
+      "label": "<option>000300.XSHG</option>",
+      "status": "真实基准已对齐",
+      "actualMode": "same_symbol_buy_hold"
+    }
+  },
+  "history_evidence": {
+    "stored_tasks": 201,
+    "target_exists": true,
+    "query": "old-target",
+    "returned": 0,
+    "summary": {
+      "task_count": 0,
+      "mode_counts": {},
+      "status_counts": {}
+    }
+  },
+  "verification": {
+    "已验证项": "6条定向逻辑复现：克隆、异步响应乱序、筛选轮询、100条截断、基准提示、200条历史搜索截断。",
+    "未验证项": "完整真实浏览器点击验收、布局截图、所有浏览器兼容性；本轮未重跑上一轮110项完整验证。",
+    "阻塞原因": "无定向验证阻塞；任务范围为检查，未实施修复。",
+    "潜在风险": "配置被覆盖、不同任务结果混用、进度停滞、历史和明细被隐藏、基准含义误导。",
+    "发布判断": "需要修复关键业务和展示缺陷后，增加浏览器端到端验证。"
+  },
+  "changes": "只新增审计JSON和追加根级任务日志，未修改业务源码或正式数据库。"
+}

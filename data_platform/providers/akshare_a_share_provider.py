@@ -318,21 +318,35 @@ class AkshareAShareProvider:
             self.request_gate()
 
     def _retry(self, operation: Any) -> Any:
+        return self._retry_with_policy(operation)
+
+    def _retry_with_policy(
+        self, operation: Any, *, retry_count: int | None = None,
+        retry_delay_seconds: float | None = None,
+        request_gate: Callable[[], None] | None = None,
+    ) -> Any:
+        attempts = self.retry_count if retry_count is None else max(1, int(retry_count))
+        delay = (
+            self.retry_delay_seconds
+            if retry_delay_seconds is None
+            else max(0.0, float(retry_delay_seconds))
+        )
+        acquire = request_gate or self._acquire_request_slot
         last_error: Exception | None = None
-        for attempt in range(1, self.retry_count + 1):
+        for attempt in range(1, attempts + 1):
             try:
-                self._acquire_request_slot()
+                acquire()
                 with proxy_environment(self.proxy_url):
                     import akshare as ak
 
                     return operation(ak)
             except Exception as error:
                 last_error = error
-                if attempt < self.retry_count:
-                    time.sleep(self.retry_delay_seconds * attempt)
+                if attempt < attempts:
+                    time.sleep(delay * attempt)
         assert last_error is not None
         raise RuntimeError(
-            f"AKShare request failed after {self.retry_count} attempts: "
+            f"AKShare request failed after {attempts} attempts: "
             f"{type(last_error).__name__}: {last_error}"
         ) from last_error
 

@@ -30,10 +30,8 @@ require(
     "static cache version missing",
 )
 require(
-    asset_versions["report-ui.css"]
-    == asset_versions["report-ui.js"]
-    == asset_versions["app.js"]
-    and int(asset_versions["app.js"]) >= int(asset_versions["styles.css"]),
+    asset_versions["report-ui.css"] == asset_versions["report-ui.js"]
+    and asset_versions["app.js"] == asset_versions["styles.css"],
     "static cache versions are inconsistent",
 )
 print("Stage 73 history/selection/encoding smoke passed")

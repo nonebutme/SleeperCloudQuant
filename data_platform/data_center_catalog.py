@@ -54,7 +54,10 @@ CONTROLLED_SOURCES: tuple[dict[str, Any], ...] = (
         "upstream_name": "公开财经站点聚合",
         "enabled": True,
         "verification_status": "verified",
-        "allowed_hosts": ["eastmoney.com", "sina.com.cn", "csindex.com.cn"],
+        "allowed_hosts": [
+            "eastmoney.com", "sina.com.cn", "csindex.com.cn",
+            "sse.com.cn", "szse.cn", "bse.cn",
+        ],
         "secret_env_names": ["SCQ_AKSHARE_PROXY"],
         "requests_per_minute": 60,
         "concurrency": 4,
@@ -121,6 +124,8 @@ CONTROLLED_SOURCES: tuple[dict[str, Any], ...] = (
 
 
 SOURCE_CAPABILITIES: tuple[dict[str, Any], ...] = (
+    {"source_id": "akshare", "endpoint_id": "index_us_stock_sina", "dataset_id": "global_index_daily", "enabled": True, "verification_status": "verified"},
+    {"source_id": "akshare", "endpoint_id": "index_global_hist_sina", "dataset_id": "global_index_daily", "enabled": True, "verification_status": "verified"},
     {"source_id": "baostock", "endpoint_id": "query_history_k_data_plus", "dataset_id": "a_share_daily"},
     {"source_id": "baostock", "endpoint_id": "query_stock_basic", "dataset_id": "a_share_catalog"},
     {"source_id": "baostock", "endpoint_id": "query_trade_dates", "dataset_id": "trade_calendar"},
@@ -135,11 +140,12 @@ SOURCE_CAPABILITIES: tuple[dict[str, Any], ...] = (
     {"source_id": "eastmoney_reportapi", "endpoint_id": "report_center", "dataset_id": "research_reports"},
     {"source_id": "akshare_ths", "endpoint_id": "stock_board_industry_index_ths", "dataset_id": "industry_board", "enabled": True, "verification_status": "verified"},
     {"source_id": "akshare_ths", "endpoint_id": "stock_board_concept_index_ths", "dataset_id": "concept_board", "enabled": True, "verification_status": "verified"},
-    {"source_id": "akshare_ths", "endpoint_id": "stock_board_industry_name_ths", "dataset_id": "industry_classification", "enabled": True, "verification_status": "verified"},
+    {"source_id": "akshare_ths", "endpoint_id": "stock_board_industry_name_ths", "dataset_id": "industry_classification", "verification_status": "rejected"},
     {"source_id": "akshare_ths", "endpoint_id": "stock_board_concept_name_ths", "dataset_id": "concept_catalog", "enabled": True, "verification_status": "verified"},
     {"source_id": "cninfo", "endpoint_id": "announcement_search", "dataset_id": "events", "verification_status": "verified"},
     {"source_id": "cninfo", "endpoint_id": "stock_industry_category_cninfo", "dataset_id": "industry_classification", "enabled": True, "verification_status": "verified"},
     {"source_id": "cninfo", "endpoint_id": "stock_industry_change_cninfo", "dataset_id": "industry_classification", "enabled": True, "verification_status": "verified"},
+    {"source_id": "cninfo", "endpoint_id": "stock_industry_change_cninfo", "dataset_id": "industry_classification_repair", "enabled": True, "verification_status": "verified"},
     {"source_id": "cninfo", "endpoint_id": "stock_share_change_cninfo", "dataset_id": "corporate_actions", "verification_status": "verified"},
 )
 
@@ -156,6 +162,9 @@ def _dataset(
     producer_type: str = "external_source",
     producer_id: str = "",
     route_required: bool = True,
+    acquisition_mode: str = "manual_sync",
+    acquisition_note: str = "通过数据中心同步任务下载",
+    required_route_partitions: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return {
         "dataset_id": dataset_id,
@@ -169,6 +178,9 @@ def _dataset(
         "producer_type": producer_type,
         "producer_id": producer_id,
         "route_required": route_required,
+        "acquisition_mode": acquisition_mode,
+        "acquisition_note": acquisition_note,
+        "required_route_partitions": list(required_route_partitions),
     }
 
 
@@ -176,23 +188,31 @@ DATASET_CATALOG: tuple[dict[str, Any], ...] = (
     _dataset("a_share_daily", "L1", "A股日线行情", "A股 raw/qfq/hfq 日线", availability_status="connected", sync_enabled=True, config_fields=("target_trade_date", "scope", "symbols", "adjustments")),
     _dataset("index_daily", "L1", "A股指数日线", "核心 A 股指数日线", availability_status="connected", sync_enabled=True),
     _dataset("industry_board", "L1", "行业板块历史", "行业板块日线序列", availability_status="connected", sync_enabled=True),
-    _dataset("global_index_daily", "L1", "全球指数日线", "全球主要指数历史日线候选", availability_status="disabled"),
+    _dataset(
+        "global_index_daily", "L1", "全球指数日线",
+        "美股四大指数提供较完整历史；富时100、德国DAX、日经225仅提供新浪最近1000条日线",
+        availability_status="connected", sync_enabled=True,
+        acquisition_note="经 AKShare 读取新浪行情；非美指数受上游最近1000条限制，不代表完整历史",
+        required_route_partitions=("US", "INTERNATIONAL"),
+    ),
     _dataset("concept_board", "L1", "概念板块历史", "概念板块日线序列", availability_status="connected", sync_enabled=True),
-    _dataset("a_share_catalog", "L2", "A股证券目录", "代码、名称、市场与上市状态", availability_status="connected"),
-    _dataset("corporate_actions", "L3", "公司行动与分红送配", "除权除息和公司行动事实", availability_status="connected"),
-    _dataset("financial_statements", "L3", "财务报表", "财务报表候选接口", availability_status="disabled"),
-    _dataset("industry_classification", "L4", "行业分类", "股票行业点时区间", availability_status="connected"),
+    _dataset("a_share_catalog", "L2", "A股证券目录", "代码、名称、市场与上市状态", availability_status="connected", acquisition_mode="unified_update", acquisition_note="由“更新数据”统一刷新证券目录"),
+    _dataset("corporate_actions", "L3", "公司行动与分红送配", "除权除息和公司行动事实", availability_status="connected", acquisition_mode="context_backfill", acquisition_note="由 A 股上下文回补流程按证券下载"),
+    _dataset("financial_statements", "L3", "财务报表", "财务报表候选接口", availability_status="disabled", acquisition_mode="disabled", acquisition_note="能力、路由与同步器均未启用"),
+    _dataset("industry_classification", "L4", "行业分类", "股票行业点时区间", availability_status="connected", acquisition_mode="context_backfill", acquisition_note="由巨潮行业历史回补流程按证券下载"),
     _dataset("industry_classification_repair", "L4", "行业分类失败修复", "只重试行业分类失败证券", availability_status="connected", sync_enabled=True),
-    _dataset("concept_catalog", "L4", "概念板块目录", "概念板块目录，不含点时成分", availability_status="connected"),
+    _dataset("concept_catalog", "L4", "概念板块目录", "概念板块目录，不含点时成分", availability_status="connected", acquisition_mode="coupled_sync", acquisition_note="随概念板块历史任务自动刷新"),
     _dataset("industry_flow", "L5", "行业历史资金流", "行业板块历史资金流", availability_status="connected", sync_enabled=True),
     _dataset("concept_flow", "L5", "概念历史资金流", "概念板块历史资金流", availability_status="connected", sync_enabled=True),
     _dataset("events", "L6", "个股公告与新闻", "按股票受控同步公告与新闻", availability_status="connected", sync_enabled=True, config_fields=("target_trade_date", "symbols")),
-    _dataset("research_reports", "L6", "研报目录", "来源与授权尚未验证", availability_status="disabled", producer_type="disabled_candidate", route_required=False),
-    _dataset("trade_calendar", "L7", "A股交易日历", "交易日与休市事实", availability_status="connected"),
-    _dataset("index_components", "L7", "指数成分", "已接入指数成分事实", availability_status="connected"),
-    _dataset("trading_status", "L7", "停复牌与交易状态", "逐日交易状态与停牌证据", availability_status="connected", producer_type="internal_pipeline", producer_id="a_share_sync_scheduler", route_required=False),
-    _dataset("quality_issues", "L7", "质量问题", "质量规则、异常证据与处置历史", availability_status="connected", producer_type="internal_control_plane", producer_id="data_quality_engine", route_required=False),
-    _dataset("data_versions", "L7", "数据版本", "不可变发布版本与默认研究指针", availability_status="connected", producer_type="internal_control_plane", producer_id="a_share_governance_store", route_required=False),
+    _dataset("research_reports", "L6", "研报目录", "来源与授权尚未验证", availability_status="disabled", producer_type="disabled_candidate", route_required=False, acquisition_mode="disabled", acquisition_note="来源与数据使用授权尚未通过验证"),
+    _dataset("trade_calendar", "L7", "A股交易日历", "交易日与休市事实", availability_status="connected", acquisition_mode="unified_update", acquisition_note="由“更新数据”统一刷新交易日历"),
+    _dataset("index_components", "L7", "指数成分", "已接入指数成分事实", availability_status="connected", acquisition_mode="authorized_snapshot", acquisition_note="需提供明确的数据使用授权依据后同步最新观察快照"),
+    _dataset("trading_status", "L7", "停复牌与交易状态", "逐日交易状态与停牌证据", availability_status="connected", producer_type="internal_pipeline", producer_id="a_share_sync_scheduler", route_required=False, acquisition_mode="internal_pipeline", acquisition_note="随 A 股行情任务内部生成"),
+    _dataset("quality_issues", "L7", "质量问题", "质量规则、异常证据与处置历史", availability_status="connected", producer_type="internal_control_plane", producer_id="data_quality_engine", route_required=False, acquisition_mode="internal_pipeline", acquisition_note="由质量检查内部生成"),
+    _dataset("data_versions", "L7", "数据版本", "不可变发布版本与默认研究指针", availability_status="connected", producer_type="internal_control_plane", producer_id="a_share_governance_store", route_required=False, acquisition_mode="internal_pipeline", acquisition_note="由数据发布流程内部生成"),
+    _dataset("factor_values", "L7", "因子值制品", "由已完成因子研究任务发布的不可变点时因子值", availability_status="connected", producer_type="internal_control_plane", producer_id="factor_research_store", route_required=False, acquisition_mode="internal_pipeline", acquisition_note="由因子研究任务内部生成"),
+    _dataset("indicator_values", "L7", "指标库与指标值", "已注册指标配置、统一口径日线计算及当前输入校验；可直接用于策略", availability_status="connected", producer_type="internal_control_plane", producer_id="indicator_service", route_required=False, acquisition_mode="internal_pipeline", acquisition_note="由指标计算任务内部生成"),
 )
 
 

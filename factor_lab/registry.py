@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from factor_lab.calculators import CloseToCloseReturnCalculator, CloseToMa2BiasCalculator
+from factor_lab.calculators import (
+    AmplitudeRatio1dCalculator,
+    CausalTroughEvent16dCalculator,
+    CloseToCloseReturnCalculator,
+    CloseToMa2BiasCalculator,
+    WinnerProxyHigh120dCalculator,
+    WinnerProxyLow120dCalculator,
+    WinnerProxySpread120dCalculator,
+)
 from factor_lab.models import FactorDefinition
 
 
@@ -15,6 +23,11 @@ class FactorRegistry:
         calculators = [
             CloseToCloseReturnCalculator(),
             CloseToMa2BiasCalculator(),
+            WinnerProxyLow120dCalculator(),
+            WinnerProxyHigh120dCalculator(),
+            WinnerProxySpread120dCalculator(),
+            CausalTroughEvent16dCalculator(),
+            AmplitudeRatio1dCalculator(),
         ]
         self._calculators = {calculator.factor_id: calculator for calculator in calculators}
 

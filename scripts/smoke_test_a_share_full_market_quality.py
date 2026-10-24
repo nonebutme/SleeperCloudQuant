@@ -2,29 +2,33 @@
 
 from __future__ import annotations
 
-import sqlite3
 from contextlib import closing
 from datetime import date, timedelta
-from pathlib import Path
 
 from _project_bootstrap import ensure_project_root_on_sys_path
 
 
 def main() -> None:
     ensure_project_root_on_sys_path()
-    from data_platform.storage.a_share_market_store import AShareMarketStore
+    from _formal_read_only_a_share import (
+        ImmutableAShareMarketStore,
+        connect_immutable_a_share_database,
+        resolve_formal_source_database_path,
+    )
 
-    path = Path("var/market/a_share_market.sqlite3")
-    store = AShareMarketStore(path)
+    path = resolve_formal_source_database_path()
+    store = ImmutableAShareMarketStore(path)
     overview = store.get_overview()
     if overview.get("source") != "canonical_a_share_sqlite":
         raise SystemExit("full-market A-share quality failed: canonical store is unavailable")
+    if overview.get("read_only") is not True or overview.get("query_only") is not True:
+        raise SystemExit("full-market A-share quality failed: immutable read-only mode is not enforced")
     if int(overview.get("current_symbol_count") or 0) < 5500:
         raise SystemExit("full-market A-share quality failed: current catalog is incomplete")
     if int(overview.get("catalog_symbol_count") or 0) <= int(overview["current_symbol_count"]):
         raise SystemExit("full-market A-share quality failed: historical catalog is missing")
 
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(connect_immutable_a_share_database(path)) as connection:
         raw_missing_volume = int(connection.execute(
             """SELECT COUNT(*) FROM market_daily_prices
                WHERE adjustment='raw' AND (volume IS NULL OR volume < 0)"""
@@ -106,6 +110,7 @@ def main() -> None:
         ),
         "duplicates=0",
         "raw_ohlcv=valid",
+        "connection=immutable-query-only",
     )
 
 

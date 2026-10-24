@@ -33,6 +33,11 @@ QUALITY_RULES: tuple[dict[str, str], ...] = (
         "name": "复权口径日期一致性",
         "description": "在各口径共同覆盖期内发现不复权、前复权、后复权日期不一致。",
     },
+    {
+        "rule_id": "trading_status_semantics",
+        "name": "交易状态语义一致性",
+        "description": "发现可交易性为空，以及停牌状态与正成交量相冲突的日线。",
+    },
 )
 _RULE_IDS = {item["rule_id"] for item in QUALITY_RULES}
 _ADJUSTMENTS = {"raw", "qfq", "hfq"}
@@ -214,8 +219,9 @@ class QualityScanEngine:
             "preserved_child_scan_count": child_count,
         }
 
-    def run_scan(self, scan_id: str) -> dict[str, Any]:
+    def run_scan(self, scan_id: str, *, selected_issue_ids: set[str] | None = None) -> dict[str, Any]:
         scan = self.get_scan(scan_id)
+        scan["physical_prices"] = selected_issue_ids is not None
         if scan["status"] not in {"queued", "failed"}:
             raise ValueError(f"quality scan is not runnable from status={scan['status']}")
         self._update_scan(
@@ -235,7 +241,11 @@ class QualityScanEngine:
                 findings, checked = self._run_rule(scan, rule_id)
                 scanned_rows += checked
                 for finding in findings:
-                    issue_ids.add(self._upsert_issue(scan_id, finding))
+                    if selected_issue_ids is None:
+                        issue_ids.add(self._upsert_issue(scan_id, finding))
+                    else:
+                        # 定向修复复检只读发现项；不得顺带改写未勾选的问题。
+                        issue_ids.add("selected-recheck-finding-" + str(len(issue_ids)))
                 completed_rules += 1
                 self._update_scan(
                     scan_id, completed_rules=completed_rules,
@@ -243,7 +253,9 @@ class QualityScanEngine:
                 )
                 if not self._wait_until_runnable(scan_id):
                     return self._finish_stopped(scan_id, completed_rules, scanned_rows, len(issue_ids))
-            corrected_count = self._close_resolved_parent_issues(scan, issue_ids)
+            corrected_count = 0 if selected_issue_ids is not None and issue_ids else self._close_resolved_parent_issues(
+                scan, issue_ids, selected_issue_ids=selected_issue_ids,
+            )
             status = "issues_found" if issue_ids else "passed"
             self._update_scan(
                 scan_id, status=status, current_rule=None,
@@ -344,6 +356,8 @@ class QualityScanEngine:
             return self._detect_invalid_ohlcv(scan)
         if rule_id == "adjustment_date_consistency":
             return self._detect_adjustment_date_mismatch(scan)
+        if rule_id == "trading_status_semantics":
+            return self._detect_trading_status_semantics(scan)
         raise ValueError(f"unsupported quality rule: {rule_id}")
 
     def _detect_missing_open_days(
@@ -391,30 +405,56 @@ class QualityScanEngine:
             f"{scope_sql}"
         )
         values: list[Any] = [scan["date_from"], scan["date_to"], *adjustments, *scope_values]
-        invalid_where = """
-            AND (
-                p.open IS NULL OR p.high IS NULL OR p.low IS NULL OR p.close IS NULL
-                OR p.volume IS NULL OR p.volume < 0 OR p.amount IS NULL OR p.amount < 0
-                OR p.high < MAX(p.open, p.close, p.low)
-                OR p.low > MIN(p.open, p.close, p.high)
-            )
-        """
         with closing(self._connect(read_only=True)) as connection:
-            checked = int(connection.execute(
-                f"SELECT COUNT(*) AS count FROM market_daily_prices p WHERE {base_where}",
-                values,
-            ).fetchone()["count"])
             rows = connection.execute(
                 f"""
                 SELECT p.* FROM market_daily_prices p
-                WHERE {base_where} {invalid_where}
+                WHERE {base_where}
                 ORDER BY p.trade_date, p.symbol, p.adjustment
                 """,
                 values,
             ).fetchall()
+            tables = {
+                str(row["name"])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            overlays: dict[tuple[str, str, str], dict[str, Any]] = {}
+            if "data_correction_overlays" in tables and not scan.get("physical_prices"):
+                for overlay in connection.execute(
+                    """
+                    SELECT overlay.symbol, overlay.observation_at, overlay.after_json,
+                           issue.evidence_json
+                    FROM data_correction_overlays overlay
+                    JOIN data_quality_issues issue ON issue.issue_id=overlay.issue_id
+                    WHERE overlay.dataset='a_share_daily' AND overlay.status='published'
+                      AND overlay.observation_at BETWEEN ? AND ?
+                    ORDER BY overlay.created_at
+                    """,
+                    (scan["date_from"], scan["date_to"]),
+                ).fetchall():
+                    evidence = json.loads(str(overlay["evidence_json"] or "{}"))
+                    overlays[
+                        (
+                            str(overlay["symbol"] or ""),
+                            str(overlay["observation_at"] or "")[:10],
+                            str(evidence.get("adjustment") or "*"),
+                        )
+                    ] = json.loads(str(overlay["after_json"] or "{}"))
         findings: list[dict[str, Any]] = []
-        for row in rows:
+        for raw in rows:
+            row = dict(raw)
+            overlay_key = (
+                str(row["symbol"]), str(row["trade_date"]), str(row["adjustment"]),
+            )
+            row.update(
+                overlays.get(overlay_key)
+                or overlays.get((overlay_key[0], overlay_key[1], "*"), {})
+            )
             fields = _invalid_ohlcv_fields(row)
+            if not fields:
+                continue
             findings.append({
                 "dataset": "a_share_daily", "symbol": str(row["symbol"]),
                 "observation_at": str(row["trade_date"]),
@@ -426,7 +466,7 @@ class QualityScanEngine:
                     "values": {name: row[name] for name in ("open", "high", "low", "close", "volume", "amount")},
                 },
             })
-        return findings, checked
+        return findings, len(rows)
 
     def _detect_adjustment_date_mismatch(
         self, scan: Mapping[str, Any],
@@ -487,6 +527,69 @@ class QualityScanEngine:
             })
         return findings, len(rows)
 
+    def _detect_trading_status_semantics(
+        self, scan: Mapping[str, Any],
+    ) -> tuple[list[dict[str, Any]], int]:
+        adjustments = list(scan["adjustments"])
+        adjustment_sql = ",".join("?" for _ in adjustments)
+        scope_sql, scope_values = self._scope_sql(scan, alias="status")
+        values: list[Any] = [
+            *adjustments, scan["date_from"], scan["date_to"], *scope_values,
+        ]
+        with closing(self._connect(read_only=True)) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT status.symbol, status.trade_date, status.status,
+                       status.is_tradable,
+                       COUNT(p.adjustment) AS bar_count,
+                       MAX(COALESCE(p.volume, 0)) AS max_volume,
+                       GROUP_CONCAT(DISTINCT p.adjustment) AS adjustments
+                FROM security_trading_status_daily status
+                LEFT JOIN market_daily_prices p
+                  ON p.symbol=status.symbol AND p.trade_date=status.trade_date
+                 AND p.adjustment IN ({adjustment_sql})
+                WHERE status.trade_date BETWEEN ? AND ?
+                  {scope_sql}
+                  AND (
+                    status.is_tradable IS NULL
+                    OR (status.is_tradable=0 AND COALESCE(p.volume, 0)>0)
+                  )
+                GROUP BY status.symbol, status.trade_date, status.status,
+                         status.is_tradable
+                ORDER BY status.trade_date, status.symbol
+                """,
+                values,
+            ).fetchall()
+        findings: list[dict[str, Any]] = []
+        for row in rows:
+            unknown_tradability = row["is_tradable"] is None
+            adjustments_present = sorted(
+                item for item in str(row["adjustments"] or "").split(",") if item
+            )
+            findings.append({
+                "dataset": "trading_status", "symbol": str(row["symbol"]),
+                "observation_at": str(row["trade_date"]),
+                "rule_id": "trading_status_semantics", "severity": "error",
+                "field_name": "is_tradable" if unknown_tradability else "is_tradable,volume",
+                "evidence": {
+                    "issue_type": (
+                        "unknown_tradability"
+                        if unknown_tradability
+                        else "suspended_with_positive_volume"
+                    ),
+                    "status": str(row["status"] or "unknown"),
+                    "is_tradable": (
+                        None if unknown_tradability else bool(row["is_tradable"])
+                    ),
+                    "bar_count": int(row["bar_count"] or 0),
+                    "max_volume": float(row["max_volume"] or 0),
+                    "adjustments": adjustments_present,
+                    "scan_date_from": scan["date_from"],
+                    "scan_date_to": scan["date_to"],
+                },
+            })
+        return findings, len(rows)
+
     def _scope_sql(
         self, scan: Mapping[str, Any], *, alias: str,
     ) -> tuple[str, list[str]]:
@@ -515,8 +618,10 @@ class QualityScanEngine:
                 INSERT INTO data_quality_issues (
                     issue_id, dataset, symbol, observation_at, rule_id, severity,
                     status, source, data_version_id, evidence_json, source_task_id,
-                    field_name, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'open', 'quality_scan_engine', NULL, ?, ?, ?, ?, ?)
+                    field_name, issue_category, workflow_status, block_release,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'open', 'quality_scan_engine', NULL,
+                          ?, ?, ?, ?, 'open', ?, ?, ?)
                 ON CONFLICT(issue_id) DO UPDATE SET
                     severity=excluded.severity,
                     source=excluded.source,
@@ -527,6 +632,12 @@ class QualityScanEngine:
                         WHEN data_quality_issues.status IN ('corrected','superseded') THEN 'open'
                         ELSE data_quality_issues.status
                     END,
+                    issue_category=excluded.issue_category,
+                    workflow_status=CASE
+                        WHEN data_quality_issues.status IN ('corrected','superseded') THEN 'open'
+                        ELSE data_quality_issues.workflow_status
+                    END,
+                    block_release=excluded.block_release,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -534,6 +645,8 @@ class QualityScanEngine:
                     str(finding.get("observation_at") or "") or None,
                     str(finding["rule_id"]), str(finding.get("severity") or "warning"),
                     _dump(evidence), scan_id, str(finding.get("field_name") or "") or None,
+                    _issue_category(str(finding["rule_id"])),
+                    int(str(finding.get("severity") or "warning") == "error"),
                     now, now,
                 ),
             )
@@ -541,6 +654,7 @@ class QualityScanEngine:
 
     def _close_resolved_parent_issues(
         self, scan: Mapping[str, Any], current_issue_ids: set[str],
+        *, selected_issue_ids: set[str] | None = None,
     ) -> int:
         parent_scan_id = str(scan.get("parent_scan_id") or "")
         if not parent_scan_id:
@@ -549,16 +663,30 @@ class QualityScanEngine:
         with closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 """
-                SELECT issue_id FROM data_quality_issues
-                WHERE source_task_id=? AND status IN ('open','quarantined')
+                SELECT issue.issue_id
+                FROM data_quality_issues issue
+                JOIN data_quality_remediations remediation
+                  ON remediation.issue_id=issue.issue_id
+                 AND remediation.status='awaiting_recheck'
+                WHERE issue.source_task_id=? AND issue.status='quarantined'
                 """,
                 (parent_scan_id,),
             ).fetchall()
-            resolved = [str(row["issue_id"]) for row in rows if str(row["issue_id"]) not in current_issue_ids]
+            resolved = sorted({str(row["issue_id"]) for row in rows
+                               if str(row["issue_id"]) not in current_issue_ids
+                               and (selected_issue_ids is None or str(row["issue_id"]) in selected_issue_ids)})
             for issue_id in resolved:
                 connection.execute(
-                    "UPDATE data_quality_issues SET status='corrected', updated_at=? WHERE issue_id=?",
+                    "UPDATE data_quality_issues SET status='corrected', workflow_status='corrected', updated_at=? WHERE issue_id=?",
                     (now, issue_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE data_quality_remediations
+                    SET status='corrected', verification_scan_id=?, updated_at=?
+                    WHERE issue_id=? AND status='awaiting_recheck'
+                    """,
+                    (str(scan["scan_id"]), now, issue_id),
                 )
                 connection.execute(
                     """
@@ -649,6 +777,10 @@ class QualityScanEngine:
         return payload
 
     def _connect(self, *, read_only: bool = False) -> sqlite3.Connection:
+        from data_platform.maintenance_transaction import transaction_connection
+        active = transaction_connection(self.database_path)
+        if active is not None:
+            return active
         if read_only:
             connection = sqlite3.connect(
                 f"file:{self.database_path.resolve().as_posix()}?mode=ro", uri=True,
@@ -682,6 +814,19 @@ def _invalid_ohlcv_fields(row: Mapping[str, Any]) -> list[str]:
 
 def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _issue_category(rule_id: str) -> str:
+    value = str(rule_id or "").lower()
+    if "missing" in value or "gap" in value:
+        return "missing"
+    if "duplicate" in value:
+        return "duplicate"
+    if "delay" in value or "fresh" in value:
+        return "delay"
+    if "valid" in value or "ohlcv" in value:
+        return "incorrect"
+    return "consistency"
 
 
 def _utc_now() -> str:

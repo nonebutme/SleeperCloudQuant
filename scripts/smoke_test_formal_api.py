@@ -53,7 +53,7 @@ def main() -> None:
         raise SystemExit("formal API smoke test failed: independent screening routes missing")
     if "backtest_shared_portfolio_task_create" not in routes or "backtest_shared_portfolio_task_run" not in routes:
         raise SystemExit("formal API smoke test failed: shared portfolio routes missing")
-    if len(routes["factor_definitions"].handler().definitions) != 2:
+    if len(routes["factor_definitions"].handler().definitions) != 7:
         raise SystemExit("formal API smoke test failed: factor definitions route mismatch")
     default_pool_members = routes["factor_pool_members"].handler(FactorPoolMembersQuery(index_code="000300.XSHG")).symbols
     if default_pool_members != ["000001.XSHE", "600000.XSHG"]:

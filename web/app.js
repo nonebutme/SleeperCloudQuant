@@ -1,4 +1,24 @@
-const pageTitles = { dashboard: "总览工作台", market: "数据中心", factor: "因子分析", backtest: "策略回测", ai: "AI 分析", reporting: "报告中心", "report-management": "报告管理", config: "配置中心", traceability: "重构溯源" };
+const pageTitles = {
+  dashboard: "工作台",
+  market: "数据中心",
+  factor: "因子分析",
+  "strategy-datasets": "策略数据集与指标",
+  backtest: "策略回测",
+  ai: "AI 研究",
+  reporting: "回测分析与复盘",
+  "report-management": "报告资产",
+  config: "系统设置",
+  traceability: "系统信息与工程审计",
+};
+const pageNavigationGroups = {
+  "strategy-datasets": "datasets",
+  ai: "reporting",
+  reporting: "backtest",
+  "report-management": "reporting",
+  traceability: "config",
+};
+let currentConfigAnchor = "config-ai-agent";
+let currentNavigationGroup = "dashboard";
 const acceptanceMatrix = [
   ["数据中心", "已实现可验收", "K线图、OHLC 表、交易日历、同步状态；已接入 SleeperCloudQuant-old 本地 SQLite 行情源，外部 provider 已有接入门禁，未配置密钥时 fallback。"],
   ["因子分析", "已实现可验收", "因子库、股票池、截面摘要、Top N；真实因子库扩展待接入。"],
@@ -77,7 +97,91 @@ function friendlyApiError(message) {
   return detail;
 }
 async function requestJson(path, options = {}) { const response = await fetch(path, { method: options.method || "GET", headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}) }, body: options.body }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(friendlyApiError(payload.detail || `请求失败 (${response.status})`)); return payload; }
-function activatePage(pageId) { document.querySelectorAll(".page-section").forEach((section) => section.classList.toggle("is-active", section.id === `page-${pageId}`)); document.querySelectorAll(".nav-tab").forEach((button) => button.classList.toggle("is-active", button.dataset.page === pageId)); $("#page-title").textContent = pageTitles[pageId] || "SleeperCloudQuant"; updateStage75Url({ page: pageId }); }
+function navigationGroupFor(pageId) {
+  return pageNavigationGroups[pageId] || pageId;
+}
+function syncNavigationState(pageId, preferredGroup = "") {
+  const group = preferredGroup || navigationGroupFor(pageId);
+  currentNavigationGroup = group;
+  document.querySelectorAll(".nav-tab").forEach((button) => {
+    const active = (button.dataset.navGroup || button.dataset.page) === group;
+    button.classList.toggle("is-active", active);
+    if (button.hasAttribute("aria-expanded")) button.setAttribute("aria-expanded", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-nav-submenu]").forEach((submenu) => {
+    submenu.hidden = submenu.dataset.navSubmenu !== group;
+  });
+  document.querySelectorAll("[data-route-page]").forEach((button) => {
+    const samePage = button.dataset.routePage === pageId;
+    const sameAnchor = !button.dataset.configAnchor || button.dataset.configAnchor === currentConfigAnchor;
+    button.classList.toggle("is-active", samePage && sameAnchor);
+  });
+}
+function activatePage(pageId, replace = true, syncUrl = true, preferredGroup = "") {
+  document.querySelectorAll(".page-section").forEach((section) => {
+    section.classList.toggle("is-active", section.id === "page-" + pageId);
+  });
+  const focusedNavigation = document.activeElement?.matches?.(".nav-tab") && document.activeElement.dataset.page === pageId
+    ? document.activeElement.dataset.navGroup
+    : "";
+  syncNavigationState(pageId, preferredGroup || focusedNavigation);
+  $("#page-title").textContent = currentNavigationGroup === "market-data" ? "市场数据" : (pageTitles[pageId] || "SleeperCloudQuant");
+  if (pageId === "factor") window.syncFactorPageTitle?.();
+  if (syncUrl) updateStage75Url({ page: pageId }, replace);
+}
+function focusConfigAnchor(anchorId) {
+  const target = document.getElementById(anchorId);
+  if (!target) return;
+  requestAnimationFrame(() => target.scrollIntoView({ block: "start", behavior: "smooth" }));
+}
+function configureUnifiedNavigation() {
+  const dataSourceSummary = $("#config-data-sources-panel");
+  if (dataSourceSummary) dataSourceSummary.hidden = true;
+  document.querySelectorAll("[data-route-page]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.configAnchor) currentConfigAnchor = button.dataset.configAnchor;
+      const navigationGroup = button.dataset.navContext || button.closest("[data-nav-submenu]")?.dataset.navSubmenu || "";
+      activatePage(button.dataset.routePage, false, true, navigationGroup);
+      if (button.dataset.configAnchor) focusConfigAnchor(button.dataset.configAnchor);
+    });
+  });
+  document.querySelectorAll("[data-market-category]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const category = button.dataset.marketCategory;
+      activatePage("market", false, true, "market-data");
+      document.querySelectorAll("[data-market-category]").forEach((item) => item.classList.toggle("is-active", item === button));
+      const url = new URL(window.location.href);
+      url.searchParams.set("page", "market");
+      url.searchParams.set("dc_view", "assets");
+      url.searchParams.set("market_tab", category);
+      window.history.replaceState({}, "", url);
+      window.openMarketDataCategory?.(category);
+      window.requestAnimationFrame(() => {
+        activatePage("market", false, true, "market-data");
+        document.querySelectorAll("[data-market-category]").forEach((item) => item.classList.toggle("is-active", item === button));
+        window.openMarketDataCategory?.(category);
+      });
+    });
+  });
+  document.querySelector('.nav-tab[data-nav-group="market-data"]')?.addEventListener("click", () => {
+    const target = document.querySelector("[data-market-category].is-active") || document.querySelector("[data-market-category]");
+    target?.click();
+  });
+  window.addEventListener("popstate", () => {
+    const params = new URLSearchParams(window.location.search);
+    const pageId = params.get("page") || "dashboard";
+    const navigationGroup = pageId === "market" && params.get("dc_view") === "assets" ? "market-data" : "";
+    if (pageTitles[pageId]) activatePage(pageId, true, false, navigationGroup);
+    const factorView = params.get("factor_view");
+    if (pageId === "factor" && factorView && typeof window.activateFactorView === "function") {
+      window.activateFactorView(factorView, false);
+    }
+  });
+  const initialParams = new URLSearchParams(window.location.search);
+  const initialPage = initialParams.get("page") || "dashboard";
+  const initialGroup = initialPage === "market" && initialParams.get("dc_view") === "assets" ? "market-data" : "";
+  syncNavigationState(initialPage, initialGroup);
+}
 function financialToneForLabel(label, value) { const text = String(label || "").toLowerCase(); if (/(收益|回报|盈利|盈亏|年化|超额|return|profit|annual)/i.test(text)) return financialToneClass(value); if (/(回撤|亏损|损失|成本|drawdown|loss|cost)/i.test(text) && value !== "-" && value !== "--") return "market-fall"; return ""; }
 function renderSummaryGrid(target, items) { target.innerHTML = items.map((item) => '<div class="summary-item ' + (item.tone || financialToneForLabel(item.label, item.value)) + '"><strong>' + item.label + '</strong><span>' + item.value + '</span></div>').join(""); }
 function renderList(target, rows) { target.innerHTML = rows.length ? rows.map((item) => `<li>${item}</li>`).join("") : '<li class="empty-cell">暂无数据</li>'; }
@@ -313,7 +417,7 @@ async function repairMarketGaps() {
   await loadMarket(values);
   setFeedback(`缺口修复完成：${payload.result?.status || "unknown"}`, payload.result?.after?.status === "passed" ? "success" : "error");
 }
-async function loadFactors(params = { index_code: "000300.XSHG", trade_date: "2020-01-02", factor_id: "close_to_ma2_bias" }) {
+async function loadLegacyFactors(params = { index_code: "000300.XSHG", trade_date: "2020-01-02", factor_id: "close_to_ma2_bias" }) {
   const [definitions, pool, ranking, summary] = await Promise.all([requestJson("/api/factors/definitions"), requestJson(`/api/factors/pool-members?${buildQuery({ index_code: params.index_code, date: params.trade_date })}`), requestJson(`/api/factors/top-n?${buildQuery({ factor_id: params.factor_id, trade_date: params.trade_date, start_date: "2020-01-01", end_date: params.trade_date, limit: 5, descending: true })}`), requestJson(`/api/factors/cross-section-summary?${buildQuery({ index_code: params.index_code, date: params.trade_date, trade_date: params.trade_date, start_date: "2020-01-01", end_date: params.trade_date })}`)]);
   renderCards($("#factor-definitions-list"), definitions.definitions || [], "factor_id", "name", "version"); renderList($("#factor-pool-list"), pool.symbols || []);
   const rankingRows = ranking.ranking?.rows || []; renderBarChart($("#factor-ranking-chart"), rankingRows, "symbol", "value"); $("#factor-summary-output").textContent = JSON.stringify({ ranking: ranking.ranking, cross_section: summary.summaries }, null, 2);
@@ -701,8 +805,25 @@ function renderBacktestConfigPreview(form, target, mode) {
     { label: "复权", value: values.adjustment || "raw" },
   ];
   if (mode === "independent") items.push({ label: "执行资源", value: Number(values.max_workers || 0) ? `${values.max_workers} 并发` : "自动并发" });
-  else items.push({ label: "组合约束", value: `最多 ${values.max_positions || 10} 只 / 资金使用 ${Math.round(Number(values.portfolio_exposure || 0.95) * 100)}%` });
+  else {
+    items.push({ label: "组合约束", value: `最多 ${values.max_positions || 10} 只 / 资金使用 ${Math.round(Number(values.portfolio_exposure || 0.95) * 100)}%` });
+    items.push({ label: "调仓语义", value: values.rebalance_policy ? `${values.rebalance_policy === "event_driven" ? "仅成员事件" : "每日等权"} / ${values.capacity_replacement_policy === "incumbent_priority" ? "存量优先" : "强制 Top-N"}` : "按策略源码声明；未声明则兼容旧默认" });
+    items.push({ label: "单票上限", value: values.max_single_position_weight ? `${Math.round(Number(values.max_single_position_weight) * 100)}%` : "按策略源码声明；未声明则无上限" });
+  }
   renderSummaryGrid(target, items);
+}
+
+function setupPortfolioExecutionPolicyFields(form) {
+  if (!form || form.elements.rebalance_policy) return;
+  const workerLabel = form.elements.max_workers?.closest("label");
+  if (!workerLabel) return;
+  const rebalanceLabel = document.createElement("label");
+  rebalanceLabel.innerHTML = '<span>再平衡方式</span><select name="rebalance_policy"><option value="">按策略声明（推荐）</option><option value="daily_equal_weight">每日恢复等权</option><option value="event_driven">仅成员事件时交易</option></select>';
+  const capacityLabel = document.createElement("label");
+  capacityLabel.innerHTML = '<span>持仓替换方式</span><select name="capacity_replacement_policy"><option value="">按策略声明（推荐）</option><option value="force_top_n">强制保持当日 Top-N</option><option value="incumbent_priority">存量持仓优先</option></select>';
+  const positionCapLabel = document.createElement("label");
+  positionCapLabel.innerHTML = '<span>单票最大权重</span><input name="max_single_position_weight" type="number" min="0.01" max="1" step="0.01" placeholder="按策略声明">';
+  workerLabel.before(rebalanceLabel, capacityLabel, positionCapLabel);
 }
 
 function toggleAdvancedFields(form, button) {
@@ -848,6 +969,7 @@ function bindBacktestWorkspace() {
   const screeningForm = $("#screening-task-form");
   const portfolioForm = $("#portfolio-task-form");
   setupAdvancedFields(screeningForm, ["scheduler_batch_size", "retry_count", "initial_cash"]);
+  setupPortfolioExecutionPolicyFields(portfolioForm);
   setupAdvancedFields(portfolioForm, ["max_workers", "initial_cash"]);
   screeningForm.addEventListener("input", () => renderBacktestConfigPreview(screeningForm, $("#screening-config-preview"), "independent"));
   portfolioForm.addEventListener("input", () => renderBacktestConfigPreview(portfolioForm, $("#portfolio-config-preview"), "portfolio"));
@@ -1206,6 +1328,9 @@ async function createSharedPortfolioTask(event) {
       symbol_limit: Number(values.symbol_limit || 0),
       max_positions: Number(values.max_positions || 10),
       portfolio_exposure: Number(values.portfolio_exposure || 0.95),
+      rebalance_policy: values.rebalance_policy || null,
+      capacity_replacement_policy: values.capacity_replacement_policy || null,
+      max_single_position_weight: values.max_single_position_weight ? Number(values.max_single_position_weight) : null,
       commission_rate: Number(backtestForm.commission_rate || 0.0003),
       min_commission: Number(backtestForm.min_commission || 5),
       tax_rate: Number(backtestForm.tax_rate || 0.001),
@@ -1343,10 +1468,20 @@ function hideIndependentResultSelector() {
   if (target) target.hidden = true;
 }
 async function loadIndependentScreeningResultWorkspace(task, preferredRunId = "") {
+  const selection = ++backtestResultSelectionSequence;
   const target = independentResultSelector();
   target.hidden = false;
-  const payload = await requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(task.task_id)}/items?entered_only=true&limit=100`);
-  const items = (payload.result?.items || []).filter((item) => item.run_id);
+  const items = [];
+  let offset = 0;
+  while (true) {
+    const payload = await requestJson(`/api/backtest/independent-screening-tasks/${encodeURIComponent(task.task_id)}/items?entered_only=true&limit=100&offset=${offset}`);
+    if (selection !== backtestResultSelectionSequence) return null;
+    const page = payload.result || {};
+    const rows = page.items || [];
+    items.push(...rows.filter((item) => item.run_id));
+    offset += rows.length;
+    if (!rows.length || offset >= Number(page.total ?? offset)) break;
+  }
   if (!items.length) {
     currentBacktestResultRunId = "";
     currentBacktestRunIdPrefix = "";
@@ -1611,7 +1746,7 @@ function coerceParameterValue(value, spec = {}) {
   return value;
 }
 function collectStrategyParameters() {
-  const parameters = {};
+  const parameters = { ...(selectedStrategy?.parameters || {}) };
   document.querySelectorAll("[data-param-key]").forEach((input) => {
     const key = input.dataset.paramKey;
     const spec = selectedStrategy?.parameter_schema?.[key] || {};
@@ -1795,10 +1930,12 @@ function bindStrategyManager() {
 }
 async function loadBacktestResultPanel(runId) {
   if (!runId) return null;
+  const selection = ++backtestResultSelectionSequence;
   currentBacktestResultRunId = runId;
   openStage75ResultDock(runId);
   currentBacktestRunIdPrefix = runId.replace(/-\d+$/, "");
   const payload = await requestJson(`/api/backtest/results/${encodeURIComponent(runId)}/panel`);
+  if (selection !== backtestResultSelectionSequence || currentBacktestResultRunId !== runId) return null;
   const result = payload.result || {};
   const summary = result.summary || {};
   renderSummaryGrid($("#backtest-result-panel-summary"), [
@@ -1844,9 +1981,13 @@ async function loadBacktestResultPanel(runId) {
 }
 async function loadBacktestResultTable(offset = 0, exportFormat = "json") {
   if (!currentBacktestResultRunId) return null;
+  const runId = currentBacktestResultRunId;
+  const selection = backtestResultSelectionSequence;
+  const requestId = ++backtestTableRequestSequence;
   currentBacktestTableOffset = Math.max(0, offset);
   const query = buildQuery({ table: "trades", offset: currentBacktestTableOffset, limit: currentBacktestTableLimit, export_format: exportFormat });
-  const payload = await requestJson(`/api/backtest/results/${encodeURIComponent(currentBacktestResultRunId)}/table?${query}`);
+  const payload = await requestJson(`/api/backtest/results/${encodeURIComponent(runId)}/table?${query}`);
+  if (requestId !== backtestTableRequestSequence || selection !== backtestResultSelectionSequence || runId !== currentBacktestResultRunId) return null;
   const result = payload.result || {};
   $("#backtest-result-page-table").innerHTML = `<h4>分页交易明细 ${result.offset || 0} / ${result.total || 0}</h4>${renderTable(result.rows || [], [{key:"trade_time",label:"时间"},{key:"order_book_id",label:"标的"},{key:"side",label:"方向"},{key:"price",label:"价格"},{key:"quantity",label:"数量"},{key:"amount",label:"成交额"}])}`;
   if (exportFormat !== "json") $("#backtest-result-export-output").textContent = result.content || "";
@@ -1857,6 +1998,7 @@ async function loadBacktestResultTable(offset = 0, exportFormat = "json") {
 }
 async function exportBacktestResultTable(format) {
   const result = await loadBacktestResultTable(currentBacktestTableOffset, format);
+  if (!result) return;
   const content = format === "csv" ? (result?.content || "") : JSON.stringify(result?.content || result?.rows || [], null, 2);
   $("#backtest-result-export-output").textContent = content;
   const blob = new Blob([content], { type: format === "csv" ? "text/csv;charset=utf-8" : "application/json;charset=utf-8" });
@@ -2399,7 +2541,9 @@ function renderModeReportContext(report = {}) {
   const target = $("#mode-report-context");
   if (!target) return;
   const boundary = report.semantic_boundary || {};
-  target.innerHTML = `<strong>${report.report_mode === "shared_portfolio" ? "投资组合回测报告" : "独立账户批量回测双层报告"}</strong><span>任务 ${escapeHtml(report.task_id || "-")}</span><span>版本 ${escapeHtml(report.report_version || "-")}</span><span>${escapeHtml(boundary.account_scope || report.report_contract?.scope || "-")}</span>`;
+  const governance = report.credibility || report.professional_report?.advanced_analysis?.report_governance || {};
+  const credibility = $("#mode-report-credibility");
+  if (credibility) credibility.innerHTML = `<strong>历史回测证据</strong> · ${escapeHtml(governance.credibility_label || governance.evidence_level || "simulation_only")} · 市场冲击：${escapeHtml(governance.market_impact_model || "未建模")} · 模拟盘/实盘：${escapeHtml(governance.paper_or_live_validation || "未验证")}；不构成投资建议。`;  target.innerHTML = `<strong>${report.report_mode === "shared_portfolio" ? "投资组合回测报告" : "独立账户批量回测双层报告"}</strong><span>任务 ${escapeHtml(report.task_id || "-")}</span><span>版本 ${escapeHtml(report.report_version || "-")}</span><span>${escapeHtml(boundary.account_scope || report.report_contract?.scope || "-")}</span>`;
 }
 function configureModeReportTabs(mode) {
   const tabs = $("#mode-report-tabs");
@@ -2680,51 +2824,12 @@ async function loadConfig() {
   renderCards($("#config-data-sources"), cfg.data_sources || [], "name", "status", "mode");
   renderCards($("#config-llm"), cfg.llm_providers || [], "name", "status", "model");
   renderSummaryGrid($("#config-agents"), Object.entries(cfg.agent_settings || {}).map(([label, value]) => ({ label, value: Array.isArray(value) ? value.join(", ") : value })));
-  renderMarketProviderConfig(cfg);
   renderRqalphaRuntimeConfig(cfg);
-  await loadMarketProviderSyncTasks();
-  $("#config-output").textContent = JSON.stringify({ ai_workflow: cfg.runtime_settings?.ai_workflow, market_provider: cfg.runtime_settings?.market_provider, rqalpha_runtime: cfg.runtime_settings?.rqalpha_runtime, cache_policy: cfg.cache_policy, report_templates: cfg.report_templates, profiles: profiles.profiles, llm_provider_status: cfg.llm_provider_status, market_provider_status: cfg.market_provider_status, rqalpha_runtime_status: cfg.rqalpha_runtime_status, security_notes: cfg.security_notes }, null, 2);
+  $("#config-output").textContent = JSON.stringify({ ai_workflow: cfg.runtime_settings?.ai_workflow, rqalpha_runtime: cfg.runtime_settings?.rqalpha_runtime, cache_policy: cfg.cache_policy, report_templates: cfg.report_templates, profiles: profiles.profiles, llm_provider_status: cfg.llm_provider_status, rqalpha_runtime_status: cfg.rqalpha_runtime_status, security_notes: cfg.security_notes }, null, 2);
   const draftEditor = $("#config-draft-editor");
   if (draftEditor && !draftEditor.matches(":focus")) draftEditor.value = JSON.stringify(cfg.runtime_settings || {}, null, 2);
   return { status, profiles };
 }
-function renderMarketProviderConfig(cfg) {
-  const provider = cfg.runtime_settings?.market_provider || {};
-  const status = cfg.market_provider_status || {};
-  const spec = provider.endpoint_spec || status.endpoint_spec || {};
-  const pagination = spec.pagination || {};
-  const retry = spec.retry || {};
-  renderSummaryGrid($("#config-market-provider-status"), [
-    { label: "Provider", value: status.provider || provider.provider_name || "open-http-market-provider" },
-    { label: "状态", value: status.status || "unknown" },
-    { label: "Base URL", value: status.base_url_configured ? "已配置" : "未配置" },
-    { label: "API Key", value: status.api_key_configured ? "已配置（环境变量）" : "未配置（环境变量）" },
-    { label: "启用意图", value: status.enabled_intent ? "启用" : "关闭" },
-    { label: "Timeout", value: `${status.timeout_seconds ?? provider.timeout_seconds ?? 8}s` },
-    { label: "价格 Path", value: spec.price_history_path || "/price-history" },
-    { label: "Rows 路径", value: spec.price_history_rows_path || "rows" },
-    { label: "分页策略", value: pagination.enabled ? `${pagination.page_size || 200} x ${pagination.max_pages || 1}` : "关闭" },
-    { label: "重试", value: `${retry.max_attempts || 1} 次` },
-  ]);
-  const form = $("#config-market-provider-form");
-  if (form && !form.matches(":focus-within")) {
-    form.elements.enabled.value = String(Boolean(provider.enabled));
-    form.elements.provider_name.value = provider.provider_name || "open-http-market-provider";
-    form.elements.base_url.value = provider.base_url || "";
-    form.elements.timeout_seconds.value = provider.timeout_seconds ?? 8;
-    form.elements.price_history_path.value = spec.price_history_path || "/price-history";
-    form.elements.price_history_rows_path.value = spec.price_history_rows_path || "rows";
-    form.elements.trading_calendar_path.value = spec.trading_calendar_path || "/trading-calendar";
-    form.elements.trading_calendar_days_path.value = spec.trading_calendar_days_path || "days";
-    form.elements.pagination_enabled.value = String(Boolean(pagination.enabled));
-    form.elements.page_size.value = pagination.page_size ?? 200;
-    form.elements.max_pages.value = pagination.max_pages ?? 1;
-    form.elements.retry_max_attempts.value = retry.max_attempts ?? 1;
-    form.elements.field_mapping.value = JSON.stringify(spec.field_mapping || defaultMarketFieldMapping(), null, 2);
-  }
-}
-function defaultMarketFieldMapping() { return { date: ["date", "trade_date"], open: ["open", "open_price"], high: ["high", "high_price"], low: ["low", "low_price"], close: ["close", "close_price"], volume: ["volume", "vol"] }; }
-function readFieldMapping(value) { try { const parsed = JSON.parse(value || "{}"); return parsed && typeof parsed === "object" ? parsed : defaultMarketFieldMapping(); } catch (_) { return defaultMarketFieldMapping(); } }
 function renderRqalphaRuntimeConfig(cfg) {
   const runtime = cfg.runtime_settings?.rqalpha_runtime || {};
   const status = cfg.rqalpha_runtime_status || {};
@@ -2745,83 +2850,6 @@ function renderRqalphaRuntimeConfig(cfg) {
 }
 function readDraftSettings() { try { return JSON.parse($("#config-draft-editor").value || "{}"); } catch (_) { return null; } }
 function writeDraftSettings(settings) { $("#config-draft-editor").value = JSON.stringify(settings, null, 2); }
-function applyMarketProviderFormToDraft() {
-  const form = $("#config-market-provider-form");
-  const settings = readDraftSettings();
-  if (!settings) { setFeedback("配置草稿必须是有效 JSON", "error"); return; }
-  settings.market_provider = {
-    enabled: form.elements.enabled.value === "true",
-    provider_name: form.elements.provider_name.value.trim() || "open-http-market-provider",
-    base_url: form.elements.base_url.value.trim(),
-    timeout_seconds: Number(form.elements.timeout_seconds.value || 8),
-    api_key_policy: "env_only_SCQ_MARKET_PROVIDER_API_KEY",
-    endpoint_spec: {
-      price_history_path: form.elements.price_history_path.value.trim() || "/price-history",
-      price_history_rows_path: form.elements.price_history_rows_path.value.trim() || "rows",
-      trading_calendar_path: form.elements.trading_calendar_path.value.trim() || "/trading-calendar",
-      trading_calendar_days_path: form.elements.trading_calendar_days_path.value.trim() || "days",
-      field_mapping: readFieldMapping(form.elements.field_mapping.value),
-      pagination: { enabled: form.elements.pagination_enabled.value === "true", page_param: "page", page_size_param: "page_size", page_size: Number(form.elements.page_size.value || 200), next_cursor_path: "next_cursor", next_cursor_param: "cursor", max_pages: Number(form.elements.max_pages.value || 1) },
-      retry: { max_attempts: Number(form.elements.retry_max_attempts.value || 1) },
-    },
-  };
-  settings.rqalpha_runtime = settings.rqalpha_runtime || { execution_mode: "probe_then_local_fallback", prefer_real_package: false };
-  writeDraftSettings(settings);
-  setFeedback("外部行情 Provider endpoint、字段映射与分页策略已写入草稿，保存后生效", "success");
-}
-async function preflightMarketProvider() {
-  applyMarketProviderFormToDraft();
-  await saveConfigDraft();
-  const form = $("#market-query-form");
-  const marketValues = form ? Object.fromEntries(new FormData(form).entries()) : {};
-  const payload = await requestJson("/api/config/market-provider/preflight", { method: "POST", body: JSON.stringify({ symbol: marketValues.symbol || "000001.XSHE", start_date: marketValues.start_date || "2020-01-01", end_date: marketValues.end_date || marketValues.start_date || "2020-01-01" }) });
-  const target = $("#config-market-provider-preflight-output");
-  if (target) target.textContent = JSON.stringify(payload.result || {}, null, 2);
-  setFeedback(`Provider 预检完成：${payload.result?.status || "unknown"}`, payload.result?.status === "passed" ? "success" : "error");
-  await loadConfig();
-  return payload.result;
-}
-function renderMarketProviderSyncTasks(tasks = []) {
-  const target = $("#config-sync-task-list");
-  if (!target) return;
-  target.innerHTML = tasks.map((task) => `<article class="definition-item"><h4>${task.task_id} / ${task.status}</h4><p>${(task.symbols || []).join(", ")}；窗口 ${task.date_window?.start_date || "-"} 至 ${task.date_window?.end_date || "-"}；行数 ${task.row_count || 0}；游标 ${JSON.stringify(task.cursor_by_symbol || {})}</p><span>运行 ${task.run_count || 0} 次 / 重试 ${task.retry_count || 0} 次 / 最近 ${task.last_run_at || "未运行"}</span><div class="button-row"><button type="button" data-sync-run="${task.task_id}">运行</button><button type="button" data-sync-retry="${task.task_id}">重试</button></div></article>`).join("") || '<div class="empty-cell">暂无同步任务</div>';
-  target.querySelectorAll("[data-sync-run]").forEach((button) => button.addEventListener("click", () => runMarketProviderSyncTask(button.dataset.syncRun)));
-  target.querySelectorAll("[data-sync-retry]").forEach((button) => button.addEventListener("click", () => retryMarketProviderSyncTask(button.dataset.syncRetry)));
-}
-async function loadMarketProviderSyncTasks() {
-  const payload = await requestJson("/api/config/market-provider/sync-tasks");
-  renderMarketProviderSyncTasks(payload.tasks || []);
-  return payload.tasks || [];
-}
-function readSyncTaskFormValues(form) {
-  const values = Object.fromEntries(new FormData(form).entries());
-  return {
-    symbols: String(values.symbols || "000001.XSHE").split(",").map((item) => item.trim()).filter(Boolean),
-    start_date: values.start_date || "2020-06-01",
-    end_date: values.end_date || values.start_date || "2020-06-01",
-    interval_seconds: values.interval_seconds ? Number(values.interval_seconds) : null,
-  };
-}
-async function createMarketProviderSyncTask(event) {
-  event.preventDefault();
-  const taskPayload = readSyncTaskFormValues(event.currentTarget);
-  const payload = await requestJson("/api/config/market-provider/sync-tasks", { method: "POST", body: JSON.stringify(taskPayload) });
-  $("#config-sync-task-output").textContent = JSON.stringify(payload.task || {}, null, 2);
-  await loadMarketProviderSyncTasks();
-  setFeedback(`同步任务已创建：${payload.task?.task_id || "unknown"}`, "success");
-}
-async function runMarketProviderSyncTask(taskId) {
-  const payload = await requestJson(`/api/config/market-provider/sync-tasks/${encodeURIComponent(taskId)}/run`, { method: "POST", body: JSON.stringify({}) });
-  $("#config-sync-task-output").textContent = JSON.stringify(payload.task || {}, null, 2);
-  await loadMarketProviderSyncTasks();
-  setFeedback(`同步任务运行完成：${payload.task?.status || "unknown"}`, payload.task?.status === "completed" ? "success" : "error");
-}
-async function retryMarketProviderSyncTask(taskId) {
-  const payload = await requestJson(`/api/config/market-provider/sync-tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST", body: JSON.stringify({}) });
-  $("#config-sync-task-output").textContent = JSON.stringify(payload.task || {}, null, 2);
-  await loadMarketProviderSyncTasks();
-  setFeedback(`同步任务重试完成：${payload.task?.status || "unknown"}`, payload.task?.status === "completed" ? "success" : "error");
-}
 async function saveConfigDraft() { let settings; try { settings = JSON.parse($("#config-draft-editor").value || "{}"); } catch (error) { setFeedback("配置草稿必须是有效 JSON", "error"); return; } const payload = await requestJson("/api/config/runtime-draft", { method: "POST", body: JSON.stringify({ settings }) }); await loadConfig(); setFeedback(`配置草稿已保存：${payload.draft.saved_at || "local"}`, "success"); }
 async function loadDashboard() {
   const strategies = await loadStrategies();
@@ -2868,15 +2896,6 @@ function stage75RunLabel(run = {}) {
 }
 
 function configureStage75Shell() {
-  const nav = document.querySelector(".nav-tabs");
-  if (nav && !nav.querySelector('[data-page="report-management"]')) {
-    const button = document.createElement("button");
-    button.className = "nav-tab";
-    button.type = "button";
-    button.dataset.page = "report-management";
-    button.textContent = "报告管理";
-    nav.insertBefore(button, nav.querySelector('[data-page="config"]'));
-  }
   const workspace = document.querySelector("main.workspace");
   if (workspace && !$("#page-report-management")) {
     const section = document.createElement("section");
@@ -3050,15 +3069,33 @@ function fillStage75TaskForm(form, config = {}) {
   form.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+async function restoreClonedBacktestConfig(mode, config, universe = []) {
+  const payload = await requestJson(`/api/backtest/strategies/${encodeURIComponent(config.strategy_id)}/versions`);
+  const version = (payload.versions || []).find((item) => String(item.latest_version) === String(config.strategy_version));
+  if (!version) throw new Error("原任务的策略版本不可用，无法克隆");
+  await selectStrategy({ ...version, parameters: { ...(version.parameters || {}), ...(config.parameters || {}) } });
+  const form = $(mode === "single" ? "#backtest-run-form" : mode === "independent" ? "#screening-task-form" : "#portfolio-task-form");
+  const restored = { ...config, ...(config.extra_config?.rqalpha_local || {}) };
+  if (mode !== "single" && universe.length) restored.symbols = universe.map((item) => item.rqalpha_symbol || item.symbol);
+  fillStage75TaskForm(form, restored);
+  const dates = config.date_window || config;
+  const common = { start: dates.start_date, end: dates.end_date, adjustment: config.adjustment, cash: config.initial_cash ?? config.initial_cash_per_symbol };
+  Object.entries(common).forEach(([key,value]) => { const input=$("#backtest-common-"+key); if(input && value != null) input.value=value; });
+  if(form.elements.initial_cash && common.cash != null) form.elements.initial_cash.value=common.cash;
+  activateStage76Workspace("create", mode);
+  saveStage75Draft(mode);
+}
+
 async function cloneStage75SingleRun(runId) {
   if (!stage75RunCatalog.length) await loadStage75RunCatalog();
   const run=stage75RunCatalog.find((item)=>item.run_id===runId);
   if(!run) throw new Error("未找到单股 Run 配置");
-  const form=$("#backtest-run-form");
-  const values={ run_id:newTaskId("single"), strategy_name:run.strategy_name, strategy_id:run.strategy_id, strategy_version:run.extra_config?.strategy_version || "v1", symbol:run.universe, benchmark:run.benchmark, start_date:run.start_date, end_date:run.end_date };
-  Object.entries(values).forEach(([name,value])=>{if(form.elements[name] && value!=null) form.elements[name].value=value;});
-  const strategy=strategyCatalog.find((item)=>item.strategy_id===run.strategy_id); if(strategy) await selectStrategy(strategy);
-  await openBacktestWorkspaceView("single"); saveStage75Draft("single");
+  const payload=await requestJson(`/api/backtest/results/${encodeURIComponent(runId)}/panel`);
+  const detail=payload.result||{}, snapshot=detail.parameter_snapshot||{}, account=(detail.accounts||[])[0];
+  const extra=snapshot.extra_config||run.extra_config||{};
+  const initialCash=account?.unit_net_value?account.total_value/account.unit_net_value:null;
+  if(!initialCash || !extra.strategy_version) throw new Error("历史结果缺少资金或策略版本快照，无法可靠克隆");
+  await restoreClonedBacktestConfig("single", {run_id:newTaskId("single"),strategy_name:run.strategy_name,strategy_id:run.strategy_id,strategy_version:extra.strategy_version,symbol:run.universe,benchmark:run.benchmark,date_window:{start_date:run.start_date,end_date:run.end_date},initial_cash:initialCash,adjustment:snapshot.parameters?.adjustment||extra.adjustment||"raw",parameters:snapshot.parameters||{},extra_config:extra});
   setFeedback("已克隆单股配置并生成新回测编号，请确认后运行", "success");
 }
 async function cloneStage75Task(mode, taskId) {
@@ -3066,13 +3103,7 @@ async function cloneStage75Task(mode, taskId) {
   const resource = independent ? "independent-screening-tasks" : "shared-portfolio-tasks";
   const payload = await requestJson(`/api/backtest/${resource}/${encodeURIComponent(taskId)}`);
   const task = payload.task || {};
-  const form = independent ? $("#screening-task-form") : $("#portfolio-task-form");
-  fillStage75TaskForm(form, task.config || {});
-  const strategyId = task.config?.strategy_id;
-  const strategy = strategyCatalog.find((item) => item.strategy_id === strategyId);
-  if (strategy) await selectStrategy(strategy);
-  await openBacktestWorkspaceView(independent ? "independent" : "portfolio");
-  saveStage75Draft(independent ? "independent" : "portfolio");
+  await restoreClonedBacktestConfig(mode, task.config || {}, task.universe || []);
   setFeedback("已克隆任务配置，请确认范围后创建；不会自动启动", "success");
 }
 
@@ -3194,6 +3225,12 @@ let stage76Workspace = "strategy";
 let stage76CurrentResult = null;
 let stage76TaskPage = 1;
 let stage76TaskPageSize = 20;
+let stage76TaskTotal = 0;
+let stage76TaskRequestSequence = 0;
+let backtestResultSelectionSequence = 0;
+let backtestTableRequestSequence = 0;
+let stage76ActionSequence = 0;
+let stage76ReportRequestSequence = 0;
 function syncStage76CommonFields(mode=currentBacktestView) {
   const form=mode==="single"?$("#backtest-run-form"):mode==="independent"?$("#screening-task-form"):mode==="portfolio"?$("#portfolio-task-form"):null;
   if(!form)return;
@@ -3310,17 +3347,10 @@ async function handleStage76FormTaskAction(mode,action) {
 }
 function configureStage76InformationArchitecture() {
   const header = $("#backtest-workspace-header");
-  if (!header || $("#stage76-workspace-nav")) return;
+  if (!header) return;
   const oldTabs = header.querySelector(".backtest-view-tabs");
-  const nav = document.createElement("div");
-  nav.id = "stage76-workspace-nav";
-  nav.className = "stage76-workspace-nav stage76-sidebar-subnav";
-  nav.setAttribute("aria-label", "策略回测二级菜单");
-  nav.innerHTML = '<button type="button" data-stage76-workspace="strategy">策略工作台</button><button type="button" data-stage76-workspace="create">创建回测任务</button><button type="button" data-stage76-workspace="tasks">任务工作台</button><button type="button" data-stage76-workspace="research">其它工具</button>';
-  const sidebarNav = document.querySelector(".nav-tabs");
-  const backtestNavEntry = sidebarNav?.querySelector('[data-page="backtest"]');
-  if (backtestNavEntry) backtestNavEntry.after(nav);
-  else header.append(nav);
+  const nav = $("#stage76-workspace-nav");
+  if (!nav) throw new Error("策略与回测导航缺失");
   if (oldTabs) oldTabs.remove();
   const redundantHeader = header.querySelector(".panel-header");
   if (redundantHeader) redundantHeader.hidden = true;
@@ -3462,7 +3492,7 @@ function renderStage76ResultDetails(result={}) {
 function activateStage76Workspace(workspace, mode = "", updateUrl = true) {
   stage76Workspace = workspace;
   document.querySelectorAll("[data-stage76-workspace]").forEach((button)=>button.classList.toggle("is-active",button.dataset.stage76Workspace===workspace));
-  const taskPanel=$("#stage76-task-workbench"); if(taskPanel) taskPanel.hidden=workspace!=="tasks";
+  const taskPanel=$("#stage76-task-workbench"); if(taskPanel) taskPanel.hidden=!['tasks','results'].includes(workspace);
   const common=$("#backtest-common-config"); const modeTabs=$("#stage76-create-mode-tabs");
   if(common) common.hidden=workspace!=="create"; if(modeTabs) modeTabs.hidden=workspace!=="create";
   if(workspace==="strategy") activateBacktestView("strategy");
@@ -3471,6 +3501,20 @@ function activateStage76Workspace(workspace, mode = "", updateUrl = true) {
   else if(workspace==="tasks") {
     document.querySelectorAll("[data-backtest-view]").forEach((panel)=>panel.classList.remove("is-active"));
     loadStage76Tasks().catch((error)=>setFeedback(error.message,"error"));
+  }
+  else if(workspace==="results") {
+    document.querySelectorAll("[data-backtest-view]").forEach((panel)=>panel.classList.remove("is-active"));
+    loadStage76Tasks().then((tasks)=>{
+      const selected = tasks.find((task)=>task.task_id===stage76SelectedTask?.task_id && task.capabilities?.can_view_result)
+        || tasks.find((task)=>task.capabilities?.can_view_result || task.capabilities?.can_view_report);
+      if (!selected) {
+        openStage75ResultDock();
+        setFeedback("当前没有可查看的回测结果，请先完成回测任务", "error");
+        return;
+      }
+      stage76SelectedTask=selected;
+      return handleStage76TaskAction(selected,"analysis");
+    }).catch((error)=>setFeedback(error.message,"error"));
   }
   if (updateUrl) updateStage75Url({page:"backtest",workspace,view:workspace==="create"?(mode||currentBacktestView):workspace});
 }
@@ -3515,17 +3559,17 @@ async function submitSingleBacktestTask(event, onlyCreate = false) {
 
 function renderStage76TaskTable(tasks=[]) {
   const target=$("#stage76-task-table"); if(!target) return;
-  const totalPages=Math.max(1,Math.ceil(tasks.length/stage76TaskPageSize));
+  const totalPages=Math.max(1,Math.ceil(stage76TaskTotal/stage76TaskPageSize));
   stage76TaskPage=Math.min(Math.max(1,stage76TaskPage),totalPages);
   const start=(stage76TaskPage-1)*stage76TaskPageSize;
-  const pageTasks=tasks.slice(start,start+stage76TaskPageSize);
+  const pageTasks=tasks;
   const header='<div class="stage76-task-table-header"><span>任务</span><span>策略</span><span>模式与范围</span><span>进度</span><span>操作</span></div>';
   const rows=pageTasks.map((task)=>{
     const info=backtestStatusInfo(task.status); const p=task.progress||{}; const cap=task.capabilities||{};
     return `<article class="stage76-task-row ${stage76SelectedTask?.task_id===task.task_id?"is-selected":""}" data-stage76-task="${escapeHtml(task.task_id)}" data-stage76-mode-value="${escapeHtml(task.mode)}"><div class="stage76-task-main"><span class="task-status-badge is-${info.tone}">${escapeHtml(info.label)}</span><h4>${escapeHtml(task.name||task.task_id)}</h4><p title="${escapeHtml(task.task_id)}">${escapeHtml(shortTechnicalId(task.task_id))} · ${escapeHtml(formatTaskTimestamp(task.created_at))}</p></div><div class="stage76-task-cell"><strong>${escapeHtml(task.strategy_binding?.strategy_id||"-")}</strong><small>${escapeHtml(task.strategy_binding?.strategy_version||"-")}</small></div><div class="stage76-task-cell"><strong>${escapeHtml(task.mode_label||task.mode)}</strong><small>${task.symbol?escapeHtml(task.symbol):(task.universe_count||0)+" 只股票"}</small></div><div class="stage76-task-progress"><strong>${Math.round(Number(p.percent||0))}% · ${escapeHtml(p.phase||info.label)}</strong><div class="task-card-progress"><div><i style="width:${Math.max(0,Math.min(100,Number(p.percent||0)))}%"></i></div><span>${p.processed||0}/${p.total||0}</span></div></div><div class="stage76-task-actions">${cap.can_start?'<button type="button" data-stage76-action="start">执行</button>':''}${cap.can_pause?'<button type="button" data-stage76-action="pause">暂停</button>':''}${cap.can_cancel?'<button type="button" data-stage76-action="cancel">取消</button>':''}${cap.can_view_result||cap.can_view_report?'<button type="button" data-stage76-action="analysis">分析报告</button>':''}${cap.can_clone?'<button type="button" data-stage76-action="clone">克隆</button>':''}${cap.can_delete?'<button type="button" class="danger-button" data-stage76-action="delete">删除</button>':''}</div></article>`;
   }).join("");
   target.innerHTML=header+(rows||'<div class="empty-cell">没有符合条件的任务</div>');
-  const info=$("#stage76-task-page-info"); if(info) info.textContent=tasks.length?`${start+1}—${Math.min(start+stage76TaskPageSize,tasks.length)} / ${tasks.length} · 第 ${stage76TaskPage}/${totalPages} 页`:'0 条任务';
+  const info=$("#stage76-task-page-info"); if(info) info.textContent=stage76TaskTotal?`${start+1}—${Math.min(start+tasks.length,stage76TaskTotal)} / ${stage76TaskTotal} · 第 ${stage76TaskPage}/${totalPages} 页`:'0 条任务';
   const prev=$("#stage76-task-prev"), next=$("#stage76-task-next"); if(prev) prev.disabled=stage76TaskPage<=1; if(next) next.disabled=stage76TaskPage>=totalPages;
   target.querySelectorAll("[data-stage76-task]").forEach((row)=>row.addEventListener("click",(event)=>{
     const task=stage76TaskCatalog.find((item)=>item.task_id===row.dataset.stage76Task && item.mode===row.dataset.stage76ModeValue); if(!task)return;
@@ -3534,13 +3578,30 @@ function renderStage76TaskTable(tasks=[]) {
   }));
 }
 async function loadStage76Tasks(filters={}) {
+  const requestId = ++stage76TaskRequestSequence;
   const form=$("#stage76-task-filter"); const values=form?Object.fromEntries(new FormData(form).entries()):{};
-  const payload=await requestJson(`/api/backtest/mode-tasks?${buildQuery({...values,...filters,limit:values.limit||100})}`);
+  const payload=await requestJson(`/api/backtest/mode-tasks?${buildQuery({...values,...filters,limit:stage76TaskPageSize,offset:(stage76TaskPage-1)*stage76TaskPageSize})}`);
+  if(requestId !== stage76TaskRequestSequence) return stage76TaskCatalog;
+  stage76TaskTotal=Number(payload.summary?.task_count || 0);
+  if(stage76TaskPage > Math.max(1,Math.ceil(stage76TaskTotal/stage76TaskPageSize))) {
+    stage76TaskPage=Math.max(1,Math.ceil(stage76TaskTotal/stage76TaskPageSize));
+    return loadStage76Tasks(filters);
+  }
   stage76TaskCatalog=payload.tasks||[]; renderStage76TaskTable(stage76TaskCatalog);
+  // 运行中任务独立取详情，不依赖列表筛选结果。
+  const running = new Set(["running","pause_requested","cancel_requested"]);
+  const refreshed = new Map();
   const activeTasks=[["single",currentSingleTask],["independent",currentScreeningTask],["portfolio",currentPortfolioTask]];
+  await Promise.all(activeTasks.map(async ([mode,current])=>{
+    if(!current?.task_id || !running.has(current.status)) return;
+    const resource=mode==="single"?"single-backtest-tasks":mode==="independent"?"independent-screening-tasks":"shared-portfolio-tasks";
+    try { const detail=await requestJson(`/api/backtest/${resource}/${encodeURIComponent(current.task_id)}`); if(detail.task) refreshed.set(mode,detail.task); }
+    catch(error) { setFeedback(`任务状态刷新失败：${error.message}`,"error"); }
+  }));
+  if(requestId !== stage76TaskRequestSequence) return stage76TaskCatalog;
   activeTasks.forEach(([mode,current])=>{
     if(!current?.task_id)return;
-    const latest=stage76TaskCatalog.find((task)=>task.task_id===current.task_id); if(!latest)return;
+    const latest=refreshed.get(mode)||stage76TaskCatalog.find((task)=>task.task_id===current.task_id); if(!latest)return;
     if(mode==="single"){
       currentSingleTask=latest; setStage76ModeTaskState(mode,true,latest);
       renderTaskProgress("#single-run-progress",{status:latest.status||"ready",percent:Number(latest.progress?.percent||0),phase:latest.progress?.phase||backtestStatusInfo(latest.status||"ready").label,processed:latest.progress?.processed||0,total:latest.progress?.total||1});
@@ -3549,7 +3610,7 @@ async function loadStage76Tasks(filters={}) {
   });
   const summary=payload.summary||{}; renderSummaryGrid($("#stage76-task-summary"),[{label:"任务总数",value:summary.task_count||0},{label:"单品种测试",value:summary.mode_counts?.single||0},{label:"独立账户批量回测",value:summary.mode_counts?.["independent-screening"]||0},{label:"投资组合回测",value:summary.mode_counts?.["shared-portfolio"]||0}]);
   if(stage76TaskPollTimer) clearTimeout(stage76TaskPollTimer);
-  if(stage76TaskCatalog.some((task)=>["running","pause_requested","cancel_requested"].includes(task.status))) stage76TaskPollTimer=setTimeout(()=>loadStage76Tasks().catch(()=>{}),2000);
+  if([...stage76TaskCatalog,currentSingleTask,currentScreeningTask,currentPortfolioTask].some((task)=>running.has(task?.status))) stage76TaskPollTimer=setTimeout(()=>loadStage76Tasks().catch((error)=>setFeedback(error.message,"error")),2000);
   return stage76TaskCatalog;
 }
 
@@ -3558,15 +3619,18 @@ async function handleStage76TaskAction(task, action) {
   if(action==="pause"||action==="cancel") { await requestJson(task.links.detail+"/control",{method:"POST",body:JSON.stringify({action})}); await loadStage76Tasks(); return; }
   if(action==="delete") { if(!window.confirm(`确认删除任务 ${task.task_id}？`))return; await requestJson(task.links.delete||task.links.detail,{method:"DELETE"}); await loadStage76Tasks(); return; }
   if(action==="clone") {
-    if(task.mode==="single") { const payload=await requestJson(task.links.detail); fillStage75TaskForm($("#backtest-run-form"),payload.task.config||{}); $("#backtest-run-form").elements.run_id.value=newTaskId("single-run"); activateStage76Workspace("create","single"); }
-    else { const mode=task.mode==="independent-screening"?"independent":"portfolio"; await cloneStage75Task(mode,task.task_id); activateStage76Workspace("create",mode); }
+    if(task.mode==="single") { const payload=await requestJson(task.links.detail); await restoreClonedBacktestConfig("single",payload.task.config||{}); $("#backtest-run-form").elements.run_id.value=newTaskId("single-run"); }
+    else { const mode=task.mode==="independent-screening"?"independent":"portfolio"; await cloneStage75Task(mode,task.task_id); }
     return;
   }
   currentModeTask=task;
   if(action==="analysis" || action==="result" || action==="report") {
+    const actionId=++stage76ActionSequence;
+    ++stage76ReportRequestSequence;
     if(task.mode==="single") { hideIndependentResultSelector(); await loadBacktestResultPanel(task.run_id); }
     else if(task.mode==="independent-screening") await loadIndependentScreeningResultWorkspace(task);
     else { hideIndependentResultSelector(); await loadBacktestResultPanel(task.run_id); }
+    if(actionId !== stage76ActionSequence) return;
     openStage75ResultDock(task.run_id||"");
     activateStage76ResultTab("analysis");
     return;
@@ -3580,20 +3644,25 @@ function stage76ReportDimensions(professional={}, detail={}) {
 }
 
 async function loadStage76EmbeddedIndependentRun(task, runId) {
+  const requestId=++stage76ReportRequestSequence;
   const payload=await requestJson(`/api/reporting/backtest-modes/independent-screening/${encodeURIComponent(task.task_id)}/runs/${encodeURIComponent(runId)}`); const report=payload.report||{};
+  if(requestId !== stage76ReportRequestSequence) return;
   const target=$("#stage76-independent-single-report"); if(!target)return;
   window.ReportUI?.renderSingleAnalysis(target,task,report.professional_report||{},report.run_detail||{},stage76ReportDimensions(report.professional_report||{},report.run_detail||{}));
 }
 
 async function loadStage76EmbeddedReport(task) {
+  const requestId=++stage76ReportRequestSequence;
   const target=$("#report-result-overview"); if(!target||!task)return;
   target.innerHTML='<div class="empty-cell">正在加载专业报告...</div>';
   if(task.mode==="single") {
     const payload=await requestJson(`/api/reporting/strategy-evaluation/${encodeURIComponent(task.run_id)}`); const professional=payload.report||{};
+    if(requestId !== stage76ReportRequestSequence) return;
     window.ReportUI?.renderSingleAnalysis(target,task,professional,stage76CurrentResult||{},stage76ReportDimensions(professional,stage76CurrentResult||{}));
     return;
   }
   const payload=await requestJson(`/api/reporting/backtest-modes/${encodeURIComponent(task.mode)}/${encodeURIComponent(task.task_id)}`); const report=payload.report||{};
+  if(requestId !== stage76ReportRequestSequence) return;
   if(task.mode==="shared-portfolio") {
     const gate=report.data_quality_gate||{};
     window.ReportUI?.renderPortfolioAnalysis(target,task,report,stage76ReportDimensions(report.professional_report||{},report.run_detail||{}));
@@ -3627,12 +3696,12 @@ function bindStage76Events() {
   $("#single-task-create-only")?.addEventListener("click",(event)=>submitSingleBacktestTask(event,true).catch((error)=>setFeedback(error.message,"error")));
   $("#stage76-task-filter")?.addEventListener("submit",(event)=>{event.preventDefault();stage76TaskPage=1;loadStage76Tasks().catch((error)=>setFeedback(error.message,"error"));});
   $("#stage76-task-refresh")?.addEventListener("click",()=>loadStage76Tasks().catch((error)=>setFeedback(error.message,"error")));
-  $("#stage76-task-prev")?.addEventListener("click",()=>{stage76TaskPage=Math.max(1,stage76TaskPage-1);renderStage76TaskTable(stage76TaskCatalog);});
-  $("#stage76-task-next")?.addEventListener("click",()=>{stage76TaskPage+=1;renderStage76TaskTable(stage76TaskCatalog);});
-  $("#stage76-task-page-size")?.addEventListener("change",(event)=>{stage76TaskPageSize=Number(event.currentTarget.value)||20;stage76TaskPage=1;renderStage76TaskTable(stage76TaskCatalog);});
+  $("#stage76-task-prev")?.addEventListener("click",()=>{stage76TaskPage=Math.max(1,stage76TaskPage-1);loadStage76Tasks().catch((error)=>setFeedback(error.message,"error"));});
+  $("#stage76-task-next")?.addEventListener("click",()=>{stage76TaskPage+=1;loadStage76Tasks().catch((error)=>setFeedback(error.message,"error"));});
+  $("#stage76-task-page-size")?.addEventListener("change",(event)=>{stage76TaskPageSize=Number(event.currentTarget.value)||20;stage76TaskPage=1;loadStage76Tasks().catch((error)=>setFeedback(error.message,"error"));});
   activateStage76Workspace("strategy", "", false);
 }
-function bindEvents() { configureStage75Shell(); configureStage76InformationArchitecture(); bindBacktestWorkspace(); bindStrategyManager(); configureReportingWorkspace(); configureStage75Relocations(); bindStage75Events(); bindStage76Events(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareOverview().then(() => { aShareWorkspaceLoaded = true; setFeedback("A 股数据基座已加载", "success"); }).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump))); const marketQueryForm = $("#market-query-form"); if (marketQueryForm) marketQueryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", (event) => submitSingleBacktestTask(event, false).catch((error) => setFeedback(error.message, "error"))); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立账户批量回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("投资组合回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); const preflightButton = $("#config-market-provider-preflight"); if (preflightButton) preflightButton.addEventListener("click", preflightMarketProvider); const syncTaskForm = $("#config-sync-task-form"); if (syncTaskForm) syncTaskForm.addEventListener("submit", createMarketProviderSyncTask); const marketApply = $("#config-market-provider-apply"); if (marketApply) marketApply.addEventListener("click", applyMarketProviderFormToDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
+function bindEvents() { configureStage75Shell(); configureStage76InformationArchitecture(); bindBacktestWorkspace(); bindStrategyManager(); configureReportingWorkspace(); configureStage75Relocations(); configureUnifiedNavigation(); bindStage75Events(); bindStage76Events(); document.querySelectorAll(".nav-tab").forEach((button) => button.addEventListener("click", () => { activatePage(button.dataset.page, false); if (button.dataset.page === "market" && !aShareWorkspaceLoaded) { loadAShareOverview().then(() => { aShareWorkspaceLoaded = true; setFeedback("A 股数据基座已加载", "success"); }).catch((error) => setFeedback(error.message, "error")); } })); document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => activatePage(button.dataset.jump, false))); const marketQueryForm = $("#market-query-form"); if (marketQueryForm) marketQueryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadMarket(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("数据中心已刷新", "success"); }); const aShareSymbolForm = $("#a-share-symbol-form"); if (aShareSymbolForm) aShareSymbolForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareSymbols(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股股票目录已刷新", "success"); }); const aShareDailyForm = $("#a-share-daily-form"); if (aShareDailyForm) aShareDailyForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadAShareDaily(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("A 股真实日线已刷新", "success"); }); const aShareSymbolBody = $("#a-share-symbol-body"); if (aShareSymbolBody) aShareSymbolBody.addEventListener("click", async (event) => { const button = event.target.closest("[data-a-share-symbol]"); if (!button) return; aShareDailyForm.elements.symbol.value = button.dataset.aShareSymbol; await loadAShareDaily(Object.fromEntries(new FormData(aShareDailyForm).entries())); setFeedback("已加载 " + button.dataset.aShareSymbol + " 真实日线", "success"); }); const repairGapsButton = $("#market-repair-gaps"); if (repairGapsButton) repairGapsButton.addEventListener("click", repairMarketGaps); const assetDirectoryForm = $("#backtest-asset-directory-form"); if (assetDirectoryForm) assetDirectoryForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestAssetDirectory(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("回测资产目录已刷新", "success"); }); const migrationDryRun = $("#backtest-asset-migration-dry-run"); if (migrationDryRun) migrationDryRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(true); setFeedback("历史输入快照迁移预检完成", "success"); }); const migrationRun = $("#backtest-asset-migration-run"); if (migrationRun) migrationRun.addEventListener("click", async () => { await migrateBacktestInputSnapshots(false); setFeedback("历史输入快照迁移完成", "success"); }); $("#factor-query-form").addEventListener("submit", async (event) => { event.preventDefault(); await loadFactors(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("因子分析已刷新", "success"); }); $("#backtest-run-form").addEventListener("submit", (event) => submitSingleBacktestTask(event, false).catch((error) => setFeedback(error.message, "error"))); const resultsRefresh = $("#backtest-results-refresh"); if (resultsRefresh) resultsRefresh.addEventListener("click", () => refreshBacktestResults().then(() => setFeedback("回测结果已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const resultsReport = $("#backtest-results-report"); if (resultsReport) resultsReport.addEventListener("click", () => openSelectedBacktestReport().catch((error) => setFeedback(error.message, "error"))); const modeTaskForm = $("#mode-task-directory-form"); if (modeTaskForm) modeTaskForm.addEventListener("submit", async (event) => { event.preventDefault(); await loadBacktestModeTasks(Object.fromEntries(new FormData(event.currentTarget).entries())); setFeedback("双模式回测任务已筛选", "success"); }); const modeTaskRefresh = $("#mode-task-directory-refresh"); if (modeTaskRefresh) modeTaskRefresh.addEventListener("click", () => loadBacktestModeTasks().then(() => setFeedback("双模式回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const screeningForm = $("#screening-task-form"); if (screeningForm) screeningForm.addEventListener("submit", (event) => createIndependentScreeningTask(event).catch(() => {})); const screeningRun = $("#screening-task-run"); if (screeningRun) screeningRun.addEventListener("click", () => runIndependentScreeningTask().catch((error) => setFeedback(error.message, "error"))); const screeningPause = $("#screening-task-pause"); if (screeningPause) screeningPause.addEventListener("click", () => controlIndependentScreeningTask("pause").catch((error) => setFeedback(error.message, "error"))); const screeningCancel = $("#screening-task-cancel"); if (screeningCancel) screeningCancel.addEventListener("click", () => controlIndependentScreeningTask("cancel").catch((error) => setFeedback(error.message, "error"))); const screeningRefresh = $("#screening-task-refresh"); if (screeningRefresh) screeningRefresh.addEventListener("click", () => loadIndependentScreeningTasks().then(() => setFeedback("独立账户批量回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error")));  const portfolioForm = $("#portfolio-task-form"); if (portfolioForm) portfolioForm.addEventListener("submit", (event) => createSharedPortfolioTask(event).catch(() => {})); const portfolioRun = $("#portfolio-task-run"); if (portfolioRun) portfolioRun.addEventListener("click", () => runSharedPortfolioTask().catch((error) => setFeedback(error.message, "error"))); const portfolioRefresh = $("#portfolio-task-refresh"); if (portfolioRefresh) portfolioRefresh.addEventListener("click", () => loadSharedPortfolioTasks().then(() => setFeedback("投资组合回测任务已刷新", "success")).catch((error) => setFeedback(error.message, "error"))); const researchCreate = $("#strategy-research-create"); if (researchCreate) researchCreate.addEventListener("click", createStrategyResearchTask); const experimentCreate = $("#backtest-experiment-index-create"); if (experimentCreate) experimentCreate.addEventListener("click", createCurrentExperimentIndex); const experimentRefresh = $("#backtest-experiment-index-refresh"); if (experimentRefresh) experimentRefresh.addEventListener("click", loadExperimentIndex); const experimentCompare = $("#backtest-experiment-compare"); if (experimentCompare && typeof compareSelectedExperiments === "function") experimentCompare.addEventListener("click", compareSelectedExperiments); $("#strategy-parameter-scan").addEventListener("click", runParameterScan); const matrixCreate = $("#strategy-matrix-create"); if (matrixCreate) matrixCreate.addEventListener("click", createParameterMatrixTask); const matrixRun = $("#strategy-matrix-run"); if (matrixRun) matrixRun.addEventListener("click", runCurrentParameterMatrixTask); $("#strategy-scan-save-snapshot").addEventListener("click", saveCurrentScanComparisonSnapshot); $("#backtest-jump-reporting").addEventListener("click", async (event) => { const runId = event.currentTarget.dataset.runId; activatePage("reporting"); $('#reporting-query-form input[name="run_id"]').value = runId; try { await loadReports(runId, "phase1-batch-001"); } catch (_) { setFeedback("已跳转报告中心，请刷新 seeded run 或检查 run_id", "error"); } }); $("#ai-analysis-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await runAI(form.get("symbol"), form.get("analysis_date")); setFeedback("AI 摘要已生成", "success"); }); const modeReportForm = $("#mode-report-form"); if (modeReportForm) modeReportForm.addEventListener("submit", (event) => loadBacktestModeReport(event).catch((error) => setFeedback(error.message, "error"))); $("#reporting-query-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await loadReports(form.get("run_id"), form.get("experiment_id")); setFeedback("报告中心已刷新", "success"); }); $("#config-refresh").addEventListener("click", async () => { await loadConfig(); setFeedback("配置状态已刷新", "success"); }); $("#config-save-draft").addEventListener("click", saveConfigDraft); $("#report-save-snapshot").addEventListener("click", saveCurrentReportSnapshot); $("#report-package-create").addEventListener("click", createCurrentReportPackage); const comparisonPackageCreate = $("#report-comparison-package-create"); if (comparisonPackageCreate) comparisonPackageCreate.addEventListener("click", createExperimentComparisonPackage); const packageDirectoryRefresh = $("#report-package-directory-refresh"); if (packageDirectoryRefresh) packageDirectoryRefresh.addEventListener("click", async () => { await loadReportPackageDirectory(); setFeedback("报告包归档目录已刷新", "success"); }); const exportManifestCreate = $("#report-package-export-manifest-create"); if (exportManifestCreate) exportManifestCreate.addEventListener("click", createReportPackageExportManifest); const lifecycleActive = $("#report-package-lifecycle-active"); if (lifecycleActive) lifecycleActive.addEventListener("click", () => updateSelectedReportPackageLifecycle("active", { protected: false, reason: "恢复为活跃报告包" })); const lifecycleArchive = $("#report-package-lifecycle-archive"); if (lifecycleArchive) lifecycleArchive.addEventListener("click", () => updateSelectedReportPackageLifecycle("archived", { protected: false, reason: "阶段56 归档保留" })); const lifecycleProtect = $("#report-package-lifecycle-protect"); if (lifecycleProtect) lifecycleProtect.addEventListener("click", () => updateSelectedReportPackageLifecycle("protected", { protected: true, retention_policy: "retain-protected", reason: "阶段56 保护保留" })); $("#report-package-export-html").addEventListener("click", () => exportSelectedReportPackage("html")); $("#report-package-export-json").addEventListener("click", () => exportSelectedReportPackage("json")); $("#report-package-export-pdf").addEventListener("click", () => exportSelectedReportPackage("pdf")); $("#report-package-export-word").addEventListener("click", () => exportSelectedReportPackage("word")); }
 function bindBacktestResultControls() {
   const prev = $("#backtest-table-prev");
   const next = $("#backtest-table-next");
@@ -3653,8 +3722,9 @@ async function main() {
   const requestedView = params.get("view");
   const requestedWorkspace = params.get("workspace");
   if (requestedView && ["strategy", "single", "independent", "portfolio", "research"].includes(requestedView)) activateBacktestView(requestedView);
-  if (requestedPage && pageTitles[requestedPage]) activatePage(requestedPage);
-  if (requestedPage === "backtest" && ["strategy", "create", "tasks", "research"].includes(requestedWorkspace)) activateStage76Workspace(requestedWorkspace, requestedView);
+  const requestedNavigationGroup = requestedPage === "market" && params.get("dc_view") === "assets" ? "market-data" : "";
+  if (requestedPage && pageTitles[requestedPage]) activatePage(requestedPage, true, true, requestedNavigationGroup);
+  if (requestedPage === "backtest" && ["strategy", "create", "tasks", "research", "results"].includes(requestedWorkspace)) activateStage76Workspace(requestedWorkspace, requestedView);
   try {
     await loadDashboard();
     await loadBacktestModeTasks();
@@ -3675,23 +3745,6 @@ async function main() {
   }
 }
 main();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

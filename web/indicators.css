@@ -1,0 +1,30 @@
+#r2-indicator-library, .r2-indicator-browser {
+  min-width: 0;
+  display: grid;
+  gap: var(--q-space-3);
+  overflow-wrap: anywhere;
+}
+#r2-indicator-library form, .r2-indicator-browser form, #r2-parameters, .r2-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--q-space-3);
+}
+#r2-indicator-library label, .r2-indicator-browser label {
+  display: grid;
+  gap: var(--q-space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+#r2-indicator-library input, #r2-indicator-library select, #r2-indicator-library textarea,
+.r2-indicator-browser input, .r2-indicator-browser select {
+  min-width: 0;
+  max-width: 100%;
+}
+#r2-definition-info { flex-basis: 100%; color: var(--q-text-2); }
+#r2-result { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+#r2-config-table, #r2-values { min-width: 0; max-width: 100%; overflow-x: auto; }
+#r2-indicator-library h2, #r2-indicator-library p, .r2-indicator-browser h2, .r2-indicator-browser p { margin: 0; }
+#r2-indicator-library > button { justify-self: start; }
+#r2-status:empty, #r2-browser-status:empty, #r2-result:empty { display: none; }
+#r2-factor-flow > :not(summary) { margin-top: var(--q-space-3); }

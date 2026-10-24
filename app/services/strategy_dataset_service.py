@@ -23,6 +23,7 @@ class StrategyDatasetCatalogReader(Protocol):
 
 _STRATEGY_DATASETS = {
     "a_share_daily",
+    "factor_values",
     "trade_calendar",
     "a_share_catalog",
     "corporate_actions",
@@ -192,6 +193,15 @@ class StrategyDatasetService:
             for dataset_id in result["requirements"]["dataset_ids"]
         ]
         result["runtime"] = runtime
+        indicator_ids = result["requirements"].get("indicator_ids", [])
+        if indicator_ids:
+            try:
+                if self._runtime_resolver is None:
+                    raise ValueError("指标库未接入策略解析器")
+                self._runtime_resolver.validate_indicator_configs(indicator_ids)
+            except (ValueError, RuntimeError) as error:
+                result["issues"].append({"code":"indicator_config_unavailable", "message":str(error)})
+                result["ok"] = False
         result["runtime_ready"] = result["ok"] and all(
             item["strategy_access"] == "executable" for item in runtime
         )
@@ -219,7 +229,7 @@ class StrategyDatasetService:
                     "adjustment": "qfq" if required_dataset_id == "a_share_daily" else None,
                     "point_in_time_required": True,
                     "missing_data_policy": "unavailable",
-                    "version_policy": "latest_published",
+                    "version_policy": "global_default_or_explicit_immutable",
                 }
             )
         return {
@@ -249,6 +259,7 @@ class StrategyDatasetService:
         source = self._source_context(definition.dataset_id, record)
         scopes = self._consumer_scopes(definition.dataset_id)
         examples = list_dataset_examples(definition.dataset_id)
+        readiness = self._runtime_readiness(definition.dataset_id)
         product = DatasetProduct(
             dataset_id=definition.dataset_id,
             name=definition.name,
@@ -273,7 +284,7 @@ class StrategyDatasetService:
                 for field in definition.fields
             ),
             consumer_scopes=scopes,
-            strategy_access=self._strategy_access(definition.dataset_id, definition.availability_status),
+            strategy_access=self._strategy_access(definition.dataset_id, definition.availability_status, readiness),
             status=definition.availability_status,
             schema_version=definition.schema_version,
         )
@@ -288,6 +299,7 @@ class StrategyDatasetService:
                 "example_count": len(examples),
                 "published_version": self._version_context(definition.dataset_id),
                 "catalog_authority": "data_center",
+                "readiness": readiness,
             }
         )
         return view
@@ -352,14 +364,28 @@ class StrategyDatasetService:
             return ("governance", "data_browser")
         return ("strategy", "factor_research", "data_browser")
 
+    def _runtime_readiness(self, dataset_id: str) -> dict[str, Any]:
+        if self._runtime_resolver is not None and hasattr(self._runtime_resolver, "dataset_readiness"):
+            return dict(self._runtime_resolver.dataset_readiness(dataset_id))
+        return {
+            "integration_status": "connected",
+            "data_readiness": "unknown",
+            "consumer_access": "catalog_policy",
+            "reason": "runtime_readiness_not_configured",
+        }
+
     @staticmethod
-    def _strategy_access(dataset_id: str, availability_status: str) -> str:
+    def _strategy_access(
+        dataset_id: str, availability_status: str, readiness: Mapping[str, Any]
+    ) -> str:
+        resolved = str(readiness.get("consumer_access") or "")
+        if resolved in {"executable", "template_only", "not_available"}:
+            return resolved
         if dataset_id in SUPPORTED_RUNTIME_DATASETS and availability_status == "connected":
             return "executable"
         if dataset_id not in _GOVERNANCE_DATASETS and availability_status == "connected":
             return "template_only"
         return "not_available"
-
     @staticmethod
     def _about(product: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -392,7 +418,7 @@ class StrategyDatasetService:
                 "dataset_id": product.get("dataset_id"),
                 "fields": [item["name"] for item in product.get("fields") or []],
                 "supported_adjustments": product.get("supported_adjustments"),
-                "version_policy": "latest_published",
+                "version_policy": "global_default_or_explicit_immutable",
                 "missing_data_policy": "unavailable",
             },
             "execution_contract": "target-weights-v1",

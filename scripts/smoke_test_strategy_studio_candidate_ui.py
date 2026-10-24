@@ -14,7 +14,7 @@ def main() -> None:
 
     sections = ("overview", "datasets", "signals", "portfolio", "risk", "execution", "code", "validation")
     assert all(f'id="{section}"' in html for section in sections)
-    assert 'href="/?page=backtest"' in html
+    assert 'href="http://127.0.0.1:8010/?page=backtest"' in html
     assert 'data-vtable-mode="edit"' in html
     assert '/vendor/vtable/vtable.min.js' in html and '/vtable-adapter.js' in html
     assert '/api/datasets' in script and '/api/strategy-studio/manifests' in script

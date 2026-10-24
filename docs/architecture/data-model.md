@@ -1,5 +1,9 @@
 # 数据结构
 
+## R2 指标模型（2026-09-14）
+
+指标旁库保存 `indicator_definitions`（公式来源）、`indicator_configs`（固定参数/复权/定义哈希）、`indicator_cache`（当前实际输入哈希及结果）、`indicator_factor_links`（指标—因子关系）、`indicator_factor_approvals`（精确制品哈希和选用依据）。策略数据目录增加 `indicator_values`；不复制规范行情，不新增人工版本发布。完整边界见 [R2 契约](r2-indicator-library.md)。
+
 ## 总体分层
 
 当前数据模型分为五层：市场主数据与行情事实、策略定义与不可变版本、回测任务与执行状态、Run 结果与事实证据、分析报告与研究工作流。各层通过稳定 ID 关联，不以页面状态替代持久化实体。
@@ -123,3 +127,42 @@ Web Demo 运行结果库：`tmp/formal_http_demo.sqlite3`
 - `panorama_sync_jobs`、`panorama_sync_items`：数据集级任务与板块/证券级工作项、进度、错误和重试状态。
 
 全景查询不要求五个分区使用同一物理表，但必须逐分区声明请求日、有效日、状态和来源。行业本地回退按 `qfq` 横截面与 point-in-time 分类区间连接；分类标准证据保留，不静默混为单一标准。
+
+## 阶段 87 因子研究数据模型
+
+独立运行库：var/runtime/factor_research.sqlite3
+
+- factor_definitions：factor_id + factor_version 唯一的元数据和定义哈希。
+- factor_research_tasks：任务状态、配置、冻结上下文、版本、进度和结构化错误。
+- factor_research_snapshots：股票池等不可变证据快照及内容哈希。
+- factor_research_observations：交易日、标的、原始/处理/方向值、未来收益、点时行业和分组。
+- factor_research_reports：每任务唯一的不可变报告载荷、context_hash 和 payload_hash。
+- factor_index_component_intervals：指数、标的、valid_from/valid_to、来源、来源版本和证据。
+
+研究身份由因子版本、数据版本、请求/有效区间、股票池快照、复权、前瞻周期、预处理、分组、调仓与成本假设共同组成，并计算 canonical SHA-256。
+
+## 阶段 91 数据源与修复治理模型
+
+- `data_source_probes`：能力级探测、结构化错误、延迟、样本量、可重试性与零写入证据。
+- `market_incremental_sync_jobs.effective_config_json/actual_config_json`：创建时冻结策略与执行时实际策略。
+- `data_quality_issues.issue_category/workflow_status/block_release`：问题分类、闭环状态与发布门禁。
+- `data_quality_remediations`：重拉、历史补齐、纠错覆盖到版本与复检的统一工单。
+- `data_correction_overlays.status/data_version_id`：保留原始事实的覆盖层发布状态与不可变版本归属。
+
+## 拂经 v2 V7 点时证券状态候选模型
+
+- `security_master_intervals`：按证券保存 `valid_from/valid_to`、`listing_status`、显式 `risk_warning`、`available_at`、来源观察时间、载荷哈希和证据。
+- `is_active=1` 表示最新候选快照；无版本诊断读取只看活动行。较旧快照保留为非活动证据，显式版本回放可按冻结的快照引用读取旧行。
+- `security_master_intervals.evidence_json.job_id` 是快照引用；区间身份包含该引用，保证同一快照幂等、不同快照并存。
+- `data_version_members` 中 `dataset=security_master_intervals` 的成员通过 `details_json.snapshot_refs`（并兼容 `sync_run_ref`）冻结一个或多个快照；只有 `published/superseded` 且成员质量为 `passed` 的版本可回放。
+- Baostock 日频 `isST` 仅作为沪深历史风险警示候选事实；历史名称不由当前名称倒推。
+- 策略 resolver 通过 `fetch_symbol_history(..., data_version_id=...)` 按有效期和冻结快照读取；严格 `as_of_trade_date` 契约缺版本、缺成员、缺失、重叠、未来可得或风险警示值不明确时失败关闭。
+- 正式数据版本仍须通过全市场覆盖门禁；北交所历史风险警示事实未接入前，不得把沪深覆盖表述为点时全 A 股 ready。
+
+## 阶段 2 交易状态修正版消费账本
+
+- `trading_status_remediation_release_bindings`：追加式保存每个交易状态修复运行被哪个独立修正版消费，并绑定 change-set、质量报告、checkpoint、候选清单、写入键、候选指纹和物理行内容哈希。
+- `run_id` 全局唯一；表级触发器禁止更新和删除。完全相同的发布重试只允许幂等读取既有绑定，不同版本、change-set 或证据不能重新消费同一运行。
+- 专用修正版在同一 `BEGIN IMMEDIATE` 事务内完成父版本 CAS、版本/成员写入、旧发布状态切换和全部运行绑定；默认版本指针不随发布自动变化。
+- 闭环从独立账本判定已消费运行，不依赖当前父版本成员详情，因此普通增量版本重建 manifest 后不会让历史运行或旧封口任务复活。
+- 账本只冻结修复运行的消费与证据关系，不提供旧交易状态物理快照。旧版本严格隔离仍需追加式修正层、差异快照或等价的按版本解析能力。

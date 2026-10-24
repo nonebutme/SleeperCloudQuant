@@ -1,6 +1,7 @@
 """Persistent asynchronous task wrapper for one-symbol backtests."""
 
 from __future__ import annotations
+from data_platform.maintenance_transaction import guarded_research, require_current_input
 
 import json
 import sqlite3
@@ -20,8 +21,15 @@ class SingleBacktestTaskService:
         self,
         backtest_service: Any,
         database_path: str | Path = "var/runtime/single_backtest_tasks.sqlite3",
+        *,
+        market_data_service: Any | None = None,
+        strategy_service: Any | None = None,
+        dataset_resolver: Any | None = None,
     ) -> None:
         self._backtest_service = backtest_service
+        self._market_data_service = market_data_service
+        self._strategy_service = strategy_service
+        self._dataset_resolver = dataset_resolver
         self._database_path = Path(database_path)
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._threads: dict[str, threading.Thread] = {}
@@ -29,9 +37,37 @@ class SingleBacktestTaskService:
         self._ensure_schema()
         self._recover_interrupted_tasks()
 
+    @guarded_research
     def create_task(self, **config: Any) -> dict[str, Any]:
         if str(config["start_date"]) > str(config["end_date"]):
             raise ValueError("start_date must not be after end_date")
+        strategy = None
+        if self._strategy_service is not None:
+            strategy = self._strategy_service.resolve_version(
+                str(config.get("strategy_id") or config.get("strategy_name") or ""),
+                str(config.get("strategy_version") or "") or None,
+            )
+            owner = getattr(self._dataset_resolver, "__self__", None)
+            freezer = getattr(owner, "freeze_parameters", None)
+            if callable(freezer):
+                config["parameters"] = freezer(
+                    str(strategy.get("source_code") or ""),
+                    dict(config.get("parameters") or {}),
+                )
+        data_version_binding = {"status": "unsupported"}
+        if self._market_data_service is not None and hasattr(
+            self._market_data_service, "get_published_data_version"
+        ):
+            data_version_binding = dict(self._market_data_service.get_published_data_version(
+                symbol=str(config.get("symbol") or ""),
+                adjustment=str(config.get("adjustment") or config.get("extra_config", {}).get("adjustment") or "qfq"),
+                start_date=str(config["start_date"]), end_date=str(config["end_date"]),
+                benchmark=str(config.get("benchmark") or "000300.XSHG"),
+            ))
+            if data_version_binding.get("status") == "data_not_ready":
+                raise ValueError(
+                    "data_not_ready:" + str(data_version_binding.get("reason") or "governed_version_unavailable")
+                )
         task_id = _normalize_id(str(config.get("task_id") or f"single-{uuid4().hex[:12]}"))
         run_id = str(config.get("run_id") or f"{task_id}-run")
         now = _utc_now()
@@ -41,14 +77,18 @@ class SingleBacktestTaskService:
             "run_id": run_id,
             "strategy_name": str(config.get("strategy_name") or config.get("strategy_id") or "strategy"),
             "strategy_id": str(config.get("strategy_id") or config.get("strategy_name") or ""),
-            "strategy_version": str(config.get("strategy_version") or "v1"),
+            "strategy_version": str((strategy or {}).get("latest_version") or config.get("strategy_version") or "v1"),
+            "source_sha256": (strategy or {}).get("source_sha256"),
             "symbol": str(config.get("symbol") or ""),
             "benchmark": str(config.get("benchmark") or "000300.XSHG"),
             "date_window": {"start_date": str(config["start_date"]), "end_date": str(config["end_date"])},
             "initial_cash": float(config.get("initial_cash") or 1_000_000),
             "frequency": str(config.get("frequency") or "1d"),
             "parameters": dict(config.get("parameters") or {}),
-            "extra_config": dict(config.get("extra_config") or {}),
+            "extra_config": {
+                **dict(config.get("extra_config") or {}),
+                "data_version_binding": data_version_binding,
+            },
             "adjustment": str(config.get("adjustment") or config.get("extra_config", {}).get("adjustment") or "qfq"),
         }
         if not normalized["symbol"]:
@@ -82,11 +122,11 @@ class SingleBacktestTaskService:
             active.join()
         return self.get_task(task_id)
 
-    def list_tasks(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def list_tasks(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT task_id FROM single_backtest_tasks WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
-                (max(1, min(int(limit), 200)),),
+                (-1 if limit is None else max(1, min(int(limit), 200)),),
             ).fetchall()
         return [self.get_task(str(row["task_id"])) for row in rows]
 
@@ -136,12 +176,14 @@ class SingleBacktestTaskService:
             )
         return self.get_task(task_id)
 
+    @guarded_research
     def _execute_task(self, task_id: str) -> None:
         task = self.get_task(task_id)
         config = dict(task.get("config") or {})
         started_at = _utc_now()
         self._update(task_id, status="running", started_at=started_at, finished_at=None, error_message=None)
         try:
+            require_current_input(self, task)
             extra_config = dict(config.get("extra_config") or {})
             extra_config.update(
                 {
@@ -162,7 +204,7 @@ class SingleBacktestTaskService:
                     end_date=str(config["date_window"]["end_date"]),
                     initial_cash=float(config["initial_cash"]),
                     frequency=str(config["frequency"]),
-                    parameters=dict(config.get("parameters") or {}),
+                    parameters={**dict(config.get("parameters") or {}), "adjustment": config["adjustment"]},
                     extra_config=extra_config,
                     strategy_id=str(config.get("strategy_id") or ""),
                     strategy_version=str(config.get("strategy_version") or ""),

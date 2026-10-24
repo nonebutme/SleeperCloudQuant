@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 
 from collections.abc import Mapping, Sequence
+from datetime import date, timedelta
+from hashlib import sha256
 import os
 from pathlib import Path
 from typing import Any
 
 from app.main import AppServiceRegistry, SimpleApiApp, create_app
+from app.runtime.database_paths import backtest_runtime_database_path
 from app.runtime.sqlite_runtime_store import SqliteRuntimeStore
 from app.services import (
     AIAnalysisService,
@@ -18,6 +21,7 @@ from app.services import (
     BatchResearchService,
     ConfigCenterService,
     DataCenterService,
+    FactorAnalysisService,
     FactorResearchService,
     IndependentScreeningService,
     LLMProviderGateway,
@@ -34,18 +38,36 @@ from app.services import (
 from backtest_kernel import LocalSQLiteBacktestRuntime, RqalphaPackageRuntime, RqalphaRicequantGateway, RunSingleBacktest
 from config_center import UnifiedConfigManager
 from config_center.providers.ricequant_config import RicequantConfig
-from data_platform import AShareGovernanceStore, AShareSyncScheduler, ClassificationHistoryStore, DataCenterStore, MarketPanoramaStore, AShareMarketStore, AShareSQLiteRepository, CachedMarketDataRepository, ExternalMarketProviderRepository, LegacySQLiteMarketDataRepository, SqliteMetadataStore
+from data_platform import AShareGovernanceStore, AShareSyncScheduler, ClassificationHistoryStore, DataCenterStore, MarketPanoramaStore, AShareMarketStore, AShareSQLiteRepository, CachedMarketDataRepository, LegacySQLiteMarketDataRepository, SqliteMetadataStore
 from data_platform.providers.akshare_governance_provider import AkshareGovernanceProvider
 from factor_lab import FactorDefinition, FactorValue, SqliteFactorStore
+from factor_lab.storage import SqliteFactorResearchStore
 from reporting import BatchComparisonService, RunResultsReader
 
 
+_DEMO_GOVERNED_MARKET_SOURCE = "scq_demo_governed_seed_v1"
+_DEMO_GOVERNED_QUALITY_REPORT_ID = "scq-demo-governed-market-v1-quality"
+_DEMO_GOVERNED_START_DATE = "2020-01-01"
+_DEMO_GOVERNED_END_DATE = "2020-12-31"
+_DEMO_GOVERNED_SYMBOLS = (
+    ("000001.XSHE", "平安银行", 10.0),
+    ("000002.XSHE", "万科A", 12.0),
+    ("600000.XSHG", "浦发银行", 8.0),
+)
+
+
 def build_demo_service_registry() -> AppServiceRegistry:
-    database_path = Path("tmp") / "formal_http_demo.sqlite3"
+    database_path = backtest_runtime_database_path()
     upstream_market_repository = _build_market_repository()
     canonical_a_share_repository = AShareMarketStore(_resolve_a_share_canonical_database_path())
     governance_repository = AShareGovernanceStore(_resolve_a_share_canonical_database_path())
     governance_repository.ensure_schema()
+    demo_seed_enabled = os.environ.get("SCQ_ENABLE_DEMO_SEED") == "1"
+    if demo_seed_enabled:
+        _seed_demo_governed_market_data(
+            canonical_a_share_repository,
+            governance_repository,
+        )
     a_share_scheduler = AShareSyncScheduler(
         _resolve_a_share_canonical_database_path(),
         market_store=canonical_a_share_repository,
@@ -81,7 +103,8 @@ def build_demo_service_registry() -> AppServiceRegistry:
         classification_database=Path("var/runtime/a_share_classification_history.sqlite3"),
         max_workers=int(os.environ.get("SCQ_PANORAMA_WORKERS", "4")),
     )
-    market_service = MarketDataService(        CachedMarketDataRepository(upstream_market_repository, SqliteMetadataStore(database_path)),
+    market_service = MarketDataService(
+        CachedMarketDataRepository(upstream_market_repository, SqliteMetadataStore(database_path)),
         a_share_repository=a_share_repository,
         governance_repository=governance_repository,
         panorama_service=panorama_service,
@@ -91,24 +114,35 @@ def build_demo_service_registry() -> AppServiceRegistry:
         market_service,
         factor_store,
     )
-    factor_service.run_factor_for_symbols(
-        factor_id="close_to_close_return_1d",
-        symbols=["000001.XSHE", "600000.XSHG"],
-        start_date="2020-01-01",
-        end_date="2020-01-02",
-    )
-    factor_service.run_factor_for_symbols(
-        factor_id="close_to_ma2_bias",
-        symbols=["000001.XSHE", "600000.XSHG"],
-        start_date="2020-01-01",
-        end_date="2020-01-02",
-    )
-    _seed_tie_rank_factor(factor_store)
+    if demo_seed_enabled:
+        factor_service.run_factor_for_symbols(
+            factor_id="close_to_close_return_1d",
+            symbols=["000001.XSHE", "600000.XSHG"],
+            start_date="2020-01-01",
+            end_date="2020-01-02",
+        )
+        factor_service.run_factor_for_symbols(
+            factor_id="close_to_ma2_bias",
+            symbols=["000001.XSHE", "600000.XSHG"],
+            start_date="2020-01-01",
+            end_date="2020-01-02",
+        )
+        _seed_tie_rank_factor(factor_store)
     runtime_store = SqliteRuntimeStore(database_path)
     runtime_store.ensure_schema()
-    _seed_demo_reporting_data(runtime_store)
+    if demo_seed_enabled:
+        _seed_demo_reporting_data(runtime_store)
     strategy_service = StrategyService()
-    strategy_dataset_resolver = StrategyDatasetResolver(governance_repository, canonical_a_share_repository)
+    data_center_store = DataCenterStore(_resolve_a_share_canonical_database_path())
+    data_center_store.ensure_schema()
+    factor_research_store = SqliteFactorResearchStore(
+        Path("var/runtime/factor_research.sqlite3"), index_store=data_center_store
+    )
+    from app.services.indicator_service import IndicatorService
+    indicator_service = IndicatorService(_resolve_a_share_canonical_database_path())
+    strategy_dataset_resolver = StrategyDatasetResolver(
+        governance_repository, canonical_a_share_repository, factor_research_store, indicator_service
+    )
 
     base_backtest_service = BacktestService(
         RunSingleBacktest(
@@ -127,6 +161,12 @@ def build_demo_service_registry() -> AppServiceRegistry:
     backtest_service = PersistentBacktestService(base_backtest_service, runtime_store, market_service)
     batch_research_service = BatchResearchService(backtest_service, runtime_store)
     classification_store = ClassificationHistoryStore()
+    factor_analysis_service = FactorAnalysisService(
+        market_database_path=_resolve_a_share_canonical_database_path(),
+        research_store=factor_research_store,
+        classification_store=classification_store,
+    )
+    indicator_service.factors = factor_analysis_service
     independent_screening_service = IndependentScreeningService(
         backtest_service,
         market_service,
@@ -135,7 +175,10 @@ def build_demo_service_registry() -> AppServiceRegistry:
         classification_store=classification_store,
         dataset_resolver=strategy_dataset_resolver.resolve,
     )
-    single_backtest_task_service = SingleBacktestTaskService(backtest_service)
+    single_backtest_task_service = SingleBacktestTaskService(
+        backtest_service, market_data_service=market_service,
+        strategy_service=strategy_service, dataset_resolver=strategy_dataset_resolver.resolve,
+    )
     shared_portfolio_service = SharedPortfolioService(
         market_service,
         strategy_service,
@@ -159,12 +202,14 @@ def build_demo_service_registry() -> AppServiceRegistry:
         UnifiedConfigManager(),
         a_share_scheduler=a_share_scheduler,
     )
-    data_center_store = DataCenterStore(_resolve_a_share_canonical_database_path())
     data_center_service = DataCenterService(
         DataCenterStore(_resolve_a_share_canonical_database_path()),
         a_share_scheduler,
         governance_repository,
         panorama_service=panorama_service,
+        trading_status_remediation_dir=Path(
+            "var/runtime/trading_status_remediation"
+        ),
     )
     strategy_dataset_service = StrategyDatasetService(data_center_store, strategy_dataset_resolver)
     return AppServiceRegistry(
@@ -182,48 +227,20 @@ def build_demo_service_registry() -> AppServiceRegistry:
         config_center_service=config_center_service,
         data_center_service=data_center_service,
         strategy_dataset_service=strategy_dataset_service,
+        factor_analysis_service=factor_analysis_service,
+        indicator_service=indicator_service,
     )
 
 
 
 def _build_market_repository():
-    market_config = _load_market_provider_config()
-    external_repository = ExternalMarketProviderRepository(
-        base_url=market_config.get("base_url"),
-        provider_name=market_config.get("provider_name"),
-        timeout_seconds=market_config.get("timeout_seconds"),
-        enabled=market_config.get("enabled"),
-        endpoint_spec=market_config.get("endpoint_spec"),
-    )
     legacy_path = _resolve_legacy_market_database_path()
     fallback = FakeMarketDataRepository()
     if legacy_path is not None:
         legacy_repository = LegacySQLiteMarketDataRepository(legacy_path)
         if legacy_repository.is_available():
             fallback = FallbackMarketDataRepository(legacy_repository, fallback)
-    return FallbackMarketDataRepository(external_repository, fallback, prefer_primary_when_available=True)
-
-
-
-def _load_market_provider_config() -> dict[str, object]:
-    draft_path = Path("var/runtime/config_runtime_draft.json")
-    if not draft_path.is_file():
-        return {"enabled": False, "provider_name": "open-http-market-provider", "base_url": "", "timeout_seconds": 8}
-    try:
-        raw = json.loads(draft_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"enabled": False, "provider_name": "open-http-market-provider", "base_url": "", "timeout_seconds": 8}
-    settings = raw.get("settings") if isinstance(raw, dict) else {}
-    market_provider = settings.get("market_provider") if isinstance(settings, dict) else {}
-    if not isinstance(market_provider, dict):
-        return {"enabled": False, "provider_name": "open-http-market-provider", "base_url": "", "timeout_seconds": 8}
-    return {
-        "enabled": bool(market_provider.get("enabled", False)),
-        "provider_name": str(market_provider.get("provider_name") or "open-http-market-provider"),
-        "base_url": str(market_provider.get("base_url") or ""),
-        "timeout_seconds": market_provider.get("timeout_seconds", 8),
-        "endpoint_spec": market_provider.get("endpoint_spec", {}),
-    }
+    return fallback
 
 def _env_truthy(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
@@ -262,6 +279,234 @@ def _resolve_a_share_database_path() -> Path:
 
 def build_demo_app() -> SimpleApiApp:
     return create_app(build_demo_service_registry())
+
+
+
+def _seed_demo_governed_market_data(
+    market_store: AShareMarketStore,
+    governance_store: AShareGovernanceStore,
+) -> dict[str, Any]:
+    """Publish a deterministic governed fixture only for explicit demo runtimes."""
+
+    if os.environ.get("SCQ_ENABLE_DEMO_SEED") != "1":
+        return {"status": "disabled"}
+
+    market_store.ensure_schema()
+    governance_store.ensure_schema()
+    rows = _build_demo_governed_market_rows()
+    member = _demo_governed_market_member(rows)
+    current = governance_store.fetch_current_published_data_version()
+    if current.get("status") != "not_found":
+        if not _is_demo_governed_version(current, member):
+            return {
+                "status": "skipped_existing_governed_version",
+                "data_version_id": current.get("data_version_id"),
+            }
+        if not _demo_governed_physical_rows_match(market_store, member):
+            raise RuntimeError(
+                "demo governed market seed does not match its published physical rows"
+            )
+        return {
+            "status": "already_ready",
+            "data_version_id": current.get("data_version_id"),
+        }
+
+    if market_store.has_daily_data():
+        raise RuntimeError(
+            "demo governed market seed refuses to label an existing ungoverned market database"
+        )
+
+    market_store.upsert_symbols(
+        {
+            "symbol": symbol,
+            "name": name,
+            "listing_status": "current",
+            "source": _DEMO_GOVERNED_MARKET_SOURCE,
+        }
+        for symbol, name, _ in _DEMO_GOVERNED_SYMBOLS
+    )
+    market_store.upsert_daily_prices(
+        rows,
+        adjustment="raw",
+        source=_DEMO_GOVERNED_MARKET_SOURCE,
+    )
+    governance_store.save_quality_report(
+        quality_report_id=_DEMO_GOVERNED_QUALITY_REPORT_ID,
+        rule_version="demo-governed-market-v1",
+        status="passed",
+        payload={
+            "scope": "explicit_demo_fixture_only",
+            "source": _DEMO_GOVERNED_MARKET_SOURCE,
+            "dataset": "market_daily_prices",
+            "adjustment": "raw",
+            "symbols": [item[0] for item in _DEMO_GOVERNED_SYMBOLS],
+            "row_count": len(rows),
+            "min_date": _DEMO_GOVERNED_START_DATE,
+            "max_date": _DEMO_GOVERNED_END_DATE,
+            "content_hash": member["content_hash"],
+            "checks": {
+                "ohlc_valid": True,
+                "volume_non_negative": True,
+                "duplicate_primary_keys": 0,
+                "deterministic_fixture": True,
+            },
+        },
+    )
+    published = governance_store.publish_data_version(
+        as_of_trade_date=_DEMO_GOVERNED_END_DATE,
+        quality_report_id=_DEMO_GOVERNED_QUALITY_REPORT_ID,
+        members=[member],
+        notes="Explicit demo-only governed OHLCV fixture; never sourced from a formal database.",
+    )
+    if not _demo_governed_physical_rows_match(market_store, member):
+        raise RuntimeError("demo governed market seed physical verification failed")
+    return {
+        "status": "published",
+        "data_version_id": published.get("data_version_id"),
+    }
+
+
+def _build_demo_governed_market_rows() -> list[dict[str, Any]]:
+    start = date.fromisoformat(_DEMO_GOVERNED_START_DATE)
+    end = date.fromisoformat(_DEMO_GOVERNED_END_DATE)
+    trading_days: list[date] = []
+    current = start
+    while current <= end:
+        if current.weekday() < 5:
+            trading_days.append(current)
+        current += timedelta(days=1)
+
+    wave = (-0.025, -0.012, 0.0, 0.018, 0.035, 0.012, -0.01, -0.032, -0.008, 0.022)
+    rows: list[dict[str, Any]] = []
+    for symbol_index, (symbol, _, base_price) in enumerate(_DEMO_GOVERNED_SYMBOLS):
+        previous_close = base_price
+        for index, trade_day in enumerate(trading_days):
+            drift = index * 0.00015
+            close = round(base_price * (1.0 + drift + wave[(index + symbol_index) % len(wave)]), 4)
+            open_price = round(previous_close, 4)
+            high = round(max(open_price, close) * 1.008, 4)
+            low = round(min(open_price, close) * 0.992, 4)
+            volume = float(1_000_000 + symbol_index * 100_000 + index * 1_000)
+            change_amount = round(close - previous_close, 4)
+            change_pct = round(change_amount / previous_close * 100.0, 6) if previous_close else 0.0
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "date": trade_day.isoformat(),
+                    "open": open_price,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": volume,
+                    "amount": round(close * volume, 2),
+                    "amplitude": round((high - low) / previous_close * 100.0, 6),
+                    "change_pct": change_pct,
+                    "change_amount": change_amount,
+                    "turnover_rate": round(0.5 + (index % 10) * 0.05, 4),
+                }
+            )
+            previous_close = close
+    return rows
+
+
+def _demo_governed_market_member(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    serialized = json.dumps(
+        {"schema": "demo-governed-ohlcv-v1", "rows": list(rows)},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return {
+        "dataset": "market_daily_prices",
+        "adjustment": "raw",
+        "symbol_scope": "demo:" + ",".join(item[0] for item in _DEMO_GOVERNED_SYMBOLS),
+        "row_count": len(rows),
+        "symbol_count": len(_DEMO_GOVERNED_SYMBOLS),
+        "min_date": _DEMO_GOVERNED_START_DATE,
+        "max_date": _DEMO_GOVERNED_END_DATE,
+        "source": _DEMO_GOVERNED_MARKET_SOURCE,
+        "sync_run_ref": "explicit-demo-seed-v1",
+        "content_hash": sha256(serialized.encode("utf-8")).hexdigest(),
+        "quality_status": "passed",
+        "details": {
+            "fixture": True,
+            "demo_only": True,
+            "physical_adjustment": "raw",
+        },
+    }
+
+
+def _is_demo_governed_version(
+    version: Mapping[str, Any],
+    member: Mapping[str, Any],
+) -> bool:
+    raw_member = next(
+        (
+            item
+            for item in version.get("members") or []
+            if item.get("dataset") == "market_daily_prices"
+            and item.get("adjustment") == "raw"
+        ),
+        None,
+    )
+    return bool(
+        version.get("quality_report_id") == _DEMO_GOVERNED_QUALITY_REPORT_ID
+        and raw_member
+        and raw_member.get("source") == _DEMO_GOVERNED_MARKET_SOURCE
+        and raw_member.get("content_hash") == member.get("content_hash")
+        and int(raw_member.get("row_count") or 0) == int(member.get("row_count") or 0)
+    )
+
+
+def _demo_governed_physical_rows_match(
+    market_store: AShareMarketStore,
+    member: Mapping[str, Any],
+) -> bool:
+    overview = market_store.get_overview()
+    raw = dict((overview.get("adjustments") or {}).get("raw") or {})
+    if (
+        int(raw.get("row_count") or 0) != int(member.get("row_count") or 0)
+        or int(raw.get("symbol_count") or 0) != int(member.get("symbol_count") or 0)
+        or raw.get("min_date") != member.get("min_date")
+        or raw.get("max_date") != member.get("max_date")
+    ):
+        return False
+    expected_per_symbol = int(member.get("row_count") or 0) // len(_DEMO_GOVERNED_SYMBOLS)
+    physical_rows: list[dict[str, Any]] = []
+    for symbol, _, _ in _DEMO_GOVERNED_SYMBOLS:
+        page = market_store.fetch_daily_prices(
+            symbol=symbol,
+            adjustment="raw",
+            start_date=_DEMO_GOVERNED_START_DATE,
+            end_date=_DEMO_GOVERNED_END_DATE,
+            limit=2000,
+        )
+        if int(page.get("total") or 0) != expected_per_symbol:
+            return False
+        page_rows = list(page.get("rows") or [])
+        if any(row.get("source") != _DEMO_GOVERNED_MARKET_SOURCE for row in page_rows):
+            return False
+        for row in reversed(page_rows):
+            physical_rows.append(
+                {
+                    "symbol": symbol,
+                    "date": row.get("date"),
+                    "open": row.get("open"),
+                    "high": row.get("high"),
+                    "low": row.get("low"),
+                    "close": row.get("close"),
+                    "volume": row.get("volume"),
+                    "amount": row.get("amount"),
+                    "amplitude": row.get("amplitude"),
+                    "change_pct": row.get("change_pct"),
+                    "change_amount": row.get("change_amount"),
+                    "turnover_rate": row.get("turnover_rate"),
+                }
+            )
+    physical_member = _demo_governed_market_member(physical_rows)
+    return physical_member.get("content_hash") == member.get("content_hash")
 
 
 

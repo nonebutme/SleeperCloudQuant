@@ -149,10 +149,69 @@ def main() -> None:
             not item["route_required"] or item["dataset_id"] in route_dataset_ids
             for item in dataset_map.values()
         )
-        assert dataset_map["global_index_daily"]["availability_status"] == "disabled"
+        assert dataset_map["global_index_daily"]["availability_status"] == "connected"
+        assert dataset_map["global_index_daily"]["sync_enabled"]
         assert dataset_map["global_index_daily"]["route_required"]
+        assert dataset_map["global_index_daily"]["route_status"] == "ready"
+        global_routes = {
+            item["route_id"]: item for item in store.list_routes()
+            if item["dataset"] == "global_index_daily"
+        }
+        assert global_routes["global-index-us-sina"]["enabled"]
+        assert global_routes["global-index-international-sina"]["enabled"]
+        assert not global_routes["global-index-daily"]["enabled"]
+        assert global_routes["global-index-us-sina"]["partition_key"] == "US"
+        assert (
+            global_routes["global-index-international-sina"]["partition_key"]
+            == "INTERNATIONAL"
+        )
+        global_snapshot = store.freeze_route_snapshot(
+            "global_index_daily", task_id="stage86-global-partitions-smoke"
+        )
+        assert {
+            item["partition_key"] for item in global_snapshot["routes"]
+        } == {"US", "INTERNATIONAL"}
+        assert all(
+            item["requests_per_minute"] == 20
+            and item["timeout_seconds"] == 60
+            and item["retry_count"] == 2
+            for item in global_snapshot["routes"]
+        )
+        store.update_routes([{
+            "route_id": "global-index-international-sina", "enabled": False,
+        }])
+        blocked_global = next(
+            item for item in service.list_datasets()
+            if item["dataset_id"] == "global_index_daily"
+        )
+        assert blocked_global["route_status"] == "blocked"
+        assert blocked_global["missing_route_partitions"] == ["INTERNATIONAL"]
+        try:
+            store.freeze_route_snapshot(
+                "global_index_daily", task_id="stage86-global-incomplete"
+            )
+        except ValueError as error:
+            assert "INTERNATIONAL" in str(error)
+        else:
+            raise AssertionError("missing global-index partition must block freezing")
+        store.update_routes([{
+            "route_id": "global-index-international-sina", "enabled": True,
+        }])
         assert dataset_map["research_reports"]["producer_type"] == "disabled_candidate"
         assert not dataset_map["research_reports"]["route_required"]
+        assert dataset_map["research_reports"]["route_status"] == "disabled"
+        assert dataset_map["a_share_daily"]["route_status"] == "ready"
+        assert dataset_map["a_share_catalog"]["acquisition_mode"] == "unified_update"
+        assert dataset_map["concept_catalog"]["acquisition_mode"] == "coupled_sync"
+        assert dataset_map["index_components"]["acquisition_mode"] == "authorized_snapshot"
+        blocked_connected = {
+            item["dataset_id"]: item["route_status"]
+            for item in dataset_map.values()
+            if item["availability_status"] == "connected"
+            and item["route_required"]
+            and item["route_status"] != "ready"
+        }
+        assert not blocked_connected, blocked_connected
         assert {
             dataset_id: (dataset_map[dataset_id]["producer_type"], dataset_map[dataset_id]["producer_id"])
             for dataset_id in ("trading_status", "quality_issues", "data_versions")
@@ -218,17 +277,20 @@ def main() -> None:
                 "evidence": {"close": -1, "adjustment": "raw"},
             }
         )
-        corrected = service.disposition_quality_issue(
-            issue["issue_id"],
-            action="correct",
-            reason="fixture correction",
-            operator="qa-lead",
-            before={"close": -1},
-            after={"close": 1},
-        )
-        assert corrected["status"] == "corrected"
+        try:
+            service.disposition_quality_issue(
+                issue["issue_id"], action="correct", reason="fixture correction",
+                operator="qa-lead", before={"close": -1}, after={"close": 1},
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("correction without matching physical input must fail")
+        assert store.get_issue(issue["issue_id"])["status"] == "open"
         history = service.get_quality_issue_history(issue["issue_id"])
-        assert history["dispositions"][0]["reason"] == "fixture correction"
+        assert history["dispositions"] == []
+        assert history["overlays"] == []
+        assert history["remediations"] == []
         exported = service.export_quality_issues(source_task_id=background_job["job_id"])
         assert exported["row_count"] == 1 and "issue_id" in exported["content"]
 

@@ -1,6 +1,7 @@
 """Batch research orchestration backed by runtime persistence."""
 
 from __future__ import annotations
+from data_platform.maintenance_transaction import guarded_research
 
 from datetime import datetime, timezone
 from typing import Protocol
@@ -32,6 +33,7 @@ class BatchResearchService:
         self._single_run_service = single_run_service
         self._runtime_store = runtime_store
 
+    @guarded_research
     def run_batch(self, request: BatchBacktestRunRequest) -> BatchBacktestRunSummary:
         started_at = _utc_now()
         run_ids = [run.run_id for run in request.runs]

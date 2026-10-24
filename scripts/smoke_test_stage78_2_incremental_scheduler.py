@@ -181,13 +181,68 @@ def main() -> None:
             adjustments=["raw", "qfq", "hfq"],
         )
         first = scheduler.run_job(first["job_id"])
-        _require(first["status"] == "published", "transient retry did not publish")
+        _require(first["status"] == "published", f"transient retry did not publish: {first}")
+        with closing(sqlite3.connect(database)) as connection:
+            normal_status = connection.execute(
+                """SELECT status, is_tradable, source
+                   FROM security_trading_status_daily
+                   WHERE symbol='000001' AND trade_date='2026-01-05'"""
+            ).fetchone()
+        _require(
+            normal_status == (
+                "normal", 1, "canonical_market_daily_prices:positive_bar",
+            ),
+            "successful price rows did not materialize point-in-time tradability",
+        )
         _require(
             sum(1 for call in provider.calls if call[:2] == ("000001", "qfq")) == 2,
             "transient item was not retried exactly once",
         )
         first_version = first["data_version_id"]
         _require(first_version and first_version != initial, "new release was not published")
+        first_release = governance.fetch_data_version(first_version)
+        status_member = next(
+            member for member in first_release["members"]
+            if member["dataset"] == "security_trading_status_daily"
+        )
+        with closing(sqlite3.connect(database)) as connection:
+            physical_status = connection.execute(
+                """
+                SELECT COUNT(*), COUNT(DISTINCT symbol),
+                       MIN(trade_date), MAX(trade_date)
+                FROM security_trading_status_daily
+                """
+            ).fetchone()
+        _require(
+            (
+                status_member["row_count"], status_member["symbol_count"],
+                status_member["min_date"], status_member["max_date"],
+            ) == physical_status,
+            "published trading-status member differs from the physical table",
+        )
+        _require(
+            status_member["sync_run_ref"] == first["job_id"]
+            and status_member["source"]
+            == "stage78.2-incremental-status-materialization",
+            "trading-status member was carried instead of regenerated",
+        )
+        inconsistent_members = [dict(member) for member in first_release["members"]]
+        inconsistent_status = next(
+            member for member in inconsistent_members
+            if member["dataset"] == "security_trading_status_daily"
+        )
+        inconsistent_status["row_count"] += 1
+        try:
+            scheduler._validate_release_member_consistency(inconsistent_members)
+        except RuntimeError as exc:
+            _require(
+                "release member consistency blocked" in str(exc),
+                "inconsistent member failed without the expected gate evidence",
+            )
+        else:
+            raise SystemExit(
+                "stage78.2 smoke failed: inconsistent member was not blocked"
+            )
 
         provider.fail_always.add(("000001", "hfq"))
         second = scheduler.create_job(
@@ -196,8 +251,10 @@ def main() -> None:
             adjustments=["raw", "qfq", "hfq"],
         )
         second = scheduler.run_job(second["job_id"])
-        _require(second["status"] == "partial_failure", "failed item was not isolated")
-        _require(second["quarantined_items"] == 1, "failed item was not quarantined")
+        _require(second["status"] == "failed", "failed batch was not rolled back")
+        with closing(sqlite3.connect(database)) as connection:
+            _require(connection.execute("SELECT COUNT(*) FROM market_daily_prices WHERE trade_date='2026-01-06'").fetchone()[0] == 0,
+                     "failed batch leaked successful shards")
         _require(
             governance.get_overview()["published_version"]["data_version_id"]
             == first_version,
@@ -283,11 +340,112 @@ def main() -> None:
             all(member["max_date"] == "2026-01-08" for member in reference_members.values()),
             "published manifest retained stale reference-data bounds",
         )
+        _verify_suspended_increment_window(Path(directory))
+
         print(
             "stage78.2 incremental scheduler smoke passed "
             f"version={overview['published_version']['data_version_id']} "
             f"calls={len(provider.calls)}"
         )
+
+def _verify_suspended_increment_window(directory: Path) -> None:
+    from data_platform.a_share_sync_scheduler import AShareSyncScheduler
+    from data_platform.storage.a_share_governance_store import AShareGovernanceStore
+    from data_platform.storage.a_share_market_store import AShareMarketStore
+
+    database = directory / "suspended-window.sqlite3"
+    market = AShareMarketStore(database)
+    governance = AShareGovernanceStore(database)
+    market.ensure_schema()
+    governance.ensure_schema()
+    market.replace_current_symbols(
+        [{"symbol": "000001", "name": "sample", "source": "smoke"}]
+    )
+    for adjustment in ("raw", "qfq", "hfq"):
+        market.upsert_daily_prices(
+            [{
+                "symbol": "000001", "date": "2026-01-02", "open": 10,
+                "high": 10.5, "low": 9.5, "close": 10.2,
+                "volume": 1000, "amount": 10200,
+            }],
+            adjustment=adjustment,
+            source="smoke",
+        )
+    _seed_governance(governance)
+    governance.upsert_trade_calendar([{
+        "market": "CN", "trade_date": "2026-01-08", "is_open": True,
+        "source": "smoke", "source_observed_at": "2026-01-08T00:00:00+00:00",
+    }])
+    governance.upsert_index_prices([{
+        "index_symbol": "000300", "trade_date": "2026-01-08",
+        "open": 4000, "high": 4010, "low": 3990, "close": 4005,
+        "volume": 1, "amount": 1, "source": "smoke",
+        "source_observed_at": "2026-01-08T00:00:00+00:00",
+    }])
+    governance.upsert_trading_statuses([
+        {
+            "symbol": "000001", "trade_date": day,
+            "status": "suspended", "is_tradable": False,
+            "suspension_reason": "smoke suspension", "source": "smoke",
+            "source_observed_at": "2026-01-08T00:00:00+00:00",
+        }
+        for day in ("2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08")
+    ])
+    provider = FakeProvider()
+    provider.no_rows.add(("000001", "hfq"))
+    provider.suspended_dates.add("2026-01-08")
+    scheduler = AShareSyncScheduler(
+        database,
+        market_store=market,
+        governance_store=governance,
+        provider=provider,
+        requests_per_minute=1_000_000,
+        max_workers=1,
+        retry_count=1,
+        base_backoff_seconds=0,
+        sleep=lambda _: None,
+    )
+    scheduler.ensure_schema()
+    suspended_window = scheduler.create_job(
+        target_trade_date="2026-01-08",
+        symbols=["000001"],
+        adjustments=["hfq"],
+    )
+    suspended_window = scheduler.run_job(suspended_window["job_id"])
+    _require(
+        suspended_window["status"] == "published",
+        f"evidence-backed suspended increment window did not publish: {suspended_window}",
+    )
+    _require(
+        suspended_window["items"][0]["result"]["completion_reason"]
+        == "suspended_increment_window_without_any_prices",
+        "multi-day suspended zero-row completion lacks explicit evidence",
+    )
+
+    market.upsert_daily_prices(
+        [{
+            "symbol": "000001", "date": "2026-01-09", "open": 10,
+            "high": 10.5, "low": 9.5, "close": 10.2,
+            "volume": 1000, "amount": 10200,
+        }],
+        adjustment="raw",
+        source="smoke-adjustment-gap",
+    )
+    governance.upsert_trade_calendar([{
+        "market": "CN", "trade_date": "2026-01-09", "is_open": True,
+        "source": "smoke", "source_observed_at": "2026-01-09T00:00:00+00:00",
+    }])
+    provider.suspended_dates.add("2026-01-09")
+    adjustment_gap = scheduler.create_job(
+        target_trade_date="2026-01-09",
+        symbols=["000001"],
+        adjustments=["hfq"],
+    )
+    adjustment_gap = scheduler.run_job(adjustment_gap["job_id"])
+    _require(
+        adjustment_gap["status"] == "failed",
+        "multi-day zero rows hid an adjustment-specific data gap",
+    )
 
 
 def _seed_governance(governance) -> None:

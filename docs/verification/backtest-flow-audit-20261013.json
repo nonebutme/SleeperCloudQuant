@@ -1,0 +1,339 @@
+{
+  "task": "检查当前项目策略回测全流程是否有问题",
+  "date": "2026-10-13",
+  "scope": [
+    "页面任务创建与参数绑定",
+    "单标的及独立筛选运行时",
+    "共享资金撮合",
+    "账户与费用",
+    "绩效和报告统计",
+    "隔离统一验证"
+  ],
+  "status": "发现需修复缺陷；未修改业务源码",
+  "findings": [
+    {
+      "id": "F01",
+      "priority": "P1",
+      "title": "开盘撮合可读取当日收盘信号",
+      "files": [
+        "backtest_kernel/adapters/local_sqlite_runtime.py:149",
+        "backtest_kernel/adapters/local_sqlite_runtime.py:156",
+        "app/services/shared_portfolio_service.py:774"
+      ],
+      "confirmed": true,
+      "evidence": "两组行情当日开盘均为10，仅收盘改为11或9，使用close>open策略，前者在当日09:30买入，后者无成交。内置均线和突破策略也使用当日close。",
+      "impact": "未自行延迟信号的策略可获得未来信息；前缀稳定性不能证明开盘时信息可用。",
+      "recommendation": "明确信号可用时间与执行时间契约；对收盘信号延至下一可交易时点，并避免对已延迟策略重复延迟。"
+    },
+    {
+      "id": "F02",
+      "priority": "P1",
+      "title": "复权口径在任务、运行时及审计记录间不一致",
+      "files": [
+        "app/services/single_backtest_task_service.py:192",
+        "app/services/single_backtest_task_service.py:204",
+        "backtest_kernel/adapters/local_sqlite_runtime.py:44",
+        "app/services/persistent_backtest_service.py:148",
+        "app/services/independent_screening_service.py:794"
+      ],
+      "confirmed": true,
+      "evidence": "单股任务选择qfq，经真实任务执行、BacktestService和Gateway后，仓库收到raw且任务completed。独立筛选parameters为qfq，数据追踪从extra_config读取而记录raw。",
+      "impact": "回测价格与页面设置不符；数据证据不能准确说明实际输入。",
+      "recommendation": "以一个规范字段传递复权口径，创建、执行、版本校验和报告均使用同一值。"
+    },
+    {
+      "id": "F03",
+      "priority": "P1",
+      "title": "零成交量行情仍可成交",
+      "files": [
+        "backtest_kernel/adapters/local_sqlite_runtime.py:146",
+        "app/services/shared_portfolio_service.py:765",
+        "app/services/shared_portfolio_service.py:873"
+      ],
+      "confirmed": true,
+      "evidence": "两天close为10、11且volume均为0，买入持有策略在单标的和共享资金运行时均产生交易。",
+      "impact": "只要存在正价格bar就可撮合，停牌或不可交易状态不能仅靠缺失bar表达。",
+      "recommendation": "撮合前校验交易状态和成交条件，对持仓只估值而不成交；加入零量及明确不可交易状态回归。"
+    },
+    {
+      "id": "F04",
+      "priority": "P1",
+      "title": "卖出受阻后仍买入导致持仓数量超限",
+      "files": [
+        "app/services/shared_portfolio_service.py:798",
+        "app/services/shared_portfolio_service.py:848",
+        "app/services/shared_portfolio_service.py:873"
+      ],
+      "confirmed": true,
+      "evidence": "max_positions=1，A从10跌至9导致卖出被拒；随后仍买入B，最终同时持有A500股、B400股。",
+      "impact": "持仓数和资金暴露约束被突破；样例目标暴露50%，实际持仓8500/净值9500。",
+      "recommendation": "卖出后按实际剩余持仓重新计算可用名额、现金和暴露额度。"
+    },
+    {
+      "id": "F05",
+      "priority": "P1",
+      "title": "单标的满仓目标未预留滑点和手续费",
+      "files": [
+        "backtest_kernel/adapters/local_sqlite_runtime.py:160",
+        "backtest_kernel/adapters/local_sqlite_runtime.py:168"
+      ],
+      "confirmed": true,
+      "evidence": "初始10000元、价格10、目标权重1，按1000股下单，滑点后金额10005元加佣金5元，现金变为-10元。",
+      "impact": "无融资定义的账户被隐式加杠杆，独立筛选复用同一运行时。",
+      "recommendation": "按包含成本的可支付数量取整；与共享资金_affordable_quantity对齐并断言现金不为负。"
+    },
+    {
+      "id": "F06",
+      "priority": "P2",
+      "title": "首日损益未计入最大回撤及收益序列",
+      "files": [
+        "backtest_kernel/adapters/local_sqlite_runtime.py:307"
+      ],
+      "confirmed": true,
+      "evidence": "初始100，两个收盘净值均90，总收益-10%，但最大回撤返回0。",
+      "impact": "首日费用或亏损被风险指标遗漏，夏普收益序列亦漏首日。",
+      "recommendation": "以初始资金为首个估值基点，与总收益口径一致。"
+    },
+    {
+      "id": "F07",
+      "priority": "P2",
+      "title": "年度收益漏算跨年首日且年度基准固定为零",
+      "files": [
+        "backtest_kernel/adapters/local_sqlite_runtime.py:339",
+        "backtest_kernel/adapters/local_sqlite_runtime.py:346"
+      ],
+      "confirmed": true,
+      "evidence": "2019年末净值100，2020年首日110、年末121，2020收益返回10%而非21%；传入同样上涨的基准曲线仍返回年度基准0。",
+      "impact": "年度收益及年度超额错误，与总收益无法复算对齐。",
+      "recommendation": "每年从上年末或初始资金衔接；实际计算年度基准。"
+    },
+    {
+      "id": "F08",
+      "priority": "P2",
+      "title": "未显式指定版本的单股任务固定保存v1",
+      "files": [
+        "app/services/single_backtest_task_service.py:46",
+        "app/services/single_backtest_task_service.py:80"
+      ],
+      "confirmed": true,
+      "evidence": "解析器返回最新v7，任务config却保存v1；执行阶段按保存版本请求。",
+      "impact": "API调用者未传版本时可能运行旧策略，因子冻结参数可能来自不同版本。页面显式传版本时不触发。",
+      "recommendation": "冻结解析结果中的latest_version及source_sha256，而非默认v1。"
+    },
+    {
+      "id": "F09",
+      "priority": "P2",
+      "title": "交易盈亏归因遗漏买入佣金",
+      "files": [
+        "app/services/persistent_backtest_service.py:823",
+        "app/services/persistent_backtest_service.py:836"
+      ],
+      "confirmed": true,
+      "evidence": "买入1000佣金5，卖出1003佣金1，实际亏损3，归因却计算为盈利并报告胜率100%。",
+      "impact": "单标的无显式pnl的交易归因高估胜率与盈利。",
+      "recommendation": "买入费用进入持仓成本，卖出费用保持扣除；与资金流水独立核对。"
+    }
+  ],
+  "limitations": [
+    "本地运行时同标的买入持有基准属于界面已提供的模式；并非真的执行请求benchmark字段对应指数。此项作为解释边界，未列为撮合错误。",
+    "未重跑正式大规模策略收益研究，未进行实盘或外部券商撮合核对。",
+    "未逐页人工浏览器验收；统一入口中的自动交互验证另行记录。",
+    "当前工作区大量既有未提交成果保持不变。"
+  ],
+  "data_quality": {
+    "confirmed": true,
+    "as_of": "2026-10-13",
+    "max_date": "2026-08-17",
+    "stale_days": 57,
+    "quality_status": "needs_attention",
+    "duplicate_row_count": 0,
+    "fresh_coverage_pct": 99.8918,
+    "interpretation": "质量门禁含7天时效约束；两项原始行情质量断言失败不能直接等同历史数据损坏。"
+  },
+  "regression": {
+    "run_id": "formal-20261013T072236-11e9e5fc",
+    "status": "failed",
+    "suite_completed": true,
+    "script_count": 110,
+    "passed_script_count": 101,
+    "failed_script_count": 9,
+    "unattempted_script_count": 0,
+    "protected_storage_unchanged": true,
+    "guard_violation_count": 0,
+    "test_failures": [
+      {
+        "exit_code": 1,
+        "failure": {
+          "message": "formal verification script failed: smoke_test_a_share_source_database.py (exit=1)",
+          "type": "FormalVerificationTestFailure"
+        },
+        "log_path": "logs/007-smoke_test_a_share_source_database.py.log",
+        "script_name": "smoke_test_a_share_source_database.py",
+        "sequence": 7,
+        "status": "failed",
+        "writable_state_evidence": "writable-state/007-smoke_test_a_share_source_database.py.json",
+        "writable_state_reset": true
+      },
+      {
+        "exit_code": 1,
+        "failure": {
+          "message": "formal verification script failed: smoke_test_data_source_vtable_interaction.mjs (exit=1)",
+          "type": "FormalVerificationTestFailure"
+        },
+        "log_path": "logs/031-smoke_test_data_source_vtable_interaction.mjs.log",
+        "script_name": "smoke_test_data_source_vtable_interaction.mjs",
+        "sequence": 31,
+        "status": "failed",
+        "writable_state_evidence": "writable-state/031-smoke_test_data_source_vtable_interaction.mjs.json",
+        "writable_state_reset": true
+      },
+      {
+        "exit_code": 1,
+        "failure": {
+          "message": "formal verification script failed: smoke_test_a_share_full_market_quality.py (exit=1)",
+          "type": "FormalVerificationTestFailure"
+        },
+        "log_path": "logs/038-smoke_test_a_share_full_market_quality.py.log",
+        "script_name": "smoke_test_a_share_full_market_quality.py",
+        "sequence": 38,
+        "status": "failed",
+        "writable_state_evidence": "writable-state/038-smoke_test_a_share_full_market_quality.py.json",
+        "writable_state_reset": true
+      },
+      {
+        "exit_code": 1,
+        "failure": {
+          "message": "formal verification script failed: smoke_test_unified_web_entry.py (exit=1)",
+          "type": "FormalVerificationTestFailure"
+        },
+        "log_path": "logs/070-smoke_test_unified_web_entry.py.log",
+        "script_name": "smoke_test_unified_web_entry.py",
+        "sequence": 70,
+        "status": "failed",
+        "writable_state_evidence": "writable-state/070-smoke_test_unified_web_entry.py.json",
+        "writable_state_reset": true
+      },
+      {
+        "exit_code": 1,
+        "failure": {
+          "message": "formal verification script failed: smoke_test_real_provider_entry.py (exit=1)",
+          "type": "FormalVerificationTestFailure"
+        },
+        "log_path": "logs/076-smoke_test_real_provider_entry.py.log",
+        "script_name": "smoke_test_real_provider_entry.py",
+        "sequence": 76,
+        "status": "failed",
+        "writable_state_evidence": "writable-state/076-smoke_test_real_provider_entry.py.json",
+        "writable_state_reset": true
+      },
+      {
+        "exit_code": 1,
+        "failure": {
+          "message": "formal verification script failed: smoke_test_market_endpoint_mapping.py (exit=1)",
+          "type": "FormalVerificationTestFailure"
+        },
+        "log_path": "logs/078-smoke_test_market_endpoint_mapping.py.log",
+        "script_name": "smoke_test_market_endpoint_mapping.py",
+        "sequence": 78,
+        "status": "failed",
+        "writable_state_evidence": "writable-state/078-smoke_test_market_endpoint_mapping.py.json",
+        "writable_state_reset": true
+      },
+      {
+        "exit_code": 1,
+        "failure": {
+          "message": "formal verification script failed: smoke_test_market_data_quality.py (exit=1)",
+          "type": "FormalVerificationTestFailure"
+        },
+        "log_path": "logs/079-smoke_test_market_data_quality.py.log",
+        "script_name": "smoke_test_market_data_quality.py",
+        "sequence": 79,
+        "status": "failed",
+        "writable_state_evidence": "writable-state/079-smoke_test_market_data_quality.py.json",
+        "writable_state_reset": true
+      },
+      {
+        "exit_code": 1,
+        "failure": {
+          "message": "formal verification script failed: smoke_test_market_data_browser.py (exit=1)",
+          "type": "FormalVerificationTestFailure"
+        },
+        "log_path": "logs/080-smoke_test_market_data_browser.py.log",
+        "script_name": "smoke_test_market_data_browser.py",
+        "sequence": 80,
+        "status": "failed",
+        "writable_state_evidence": "writable-state/080-smoke_test_market_data_browser.py.json",
+        "writable_state_reset": true
+      },
+      {
+        "exit_code": 1,
+        "failure": {
+          "message": "formal verification script failed: smoke_test_stage73_backtest_history_selection_encoding.py (exit=1)",
+          "type": "FormalVerificationTestFailure"
+        },
+        "log_path": "logs/110-smoke_test_stage73_backtest_history_selection_encoding.py.log",
+        "script_name": "smoke_test_stage73_backtest_history_selection_encoding.py",
+        "sequence": 110,
+        "status": "failed",
+        "writable_state_evidence": "writable-state/110-smoke_test_stage73_backtest_history_selection_encoding.py.json",
+        "writable_state_reset": true
+      }
+    ],
+    "fatal_failure": null,
+    "failure_classification": [
+      {
+        "scripts": [
+          "smoke_test_a_share_source_database.py",
+          "smoke_test_a_share_full_market_quality.py"
+        ],
+        "status": "已确认时效门禁不满足",
+        "reason": "行情截止2026-08-17，stale_days=57；quality_status=needs_attention。"
+      },
+      {
+        "scripts": [
+          "smoke_test_data_source_vtable_interaction.mjs"
+        ],
+        "status": "已确认断言失败，根因待确认",
+        "reason": "页面错误提示未包含测试期待的已有启用的主源文案。"
+      },
+      {
+        "scripts": [
+          "smoke_test_unified_web_entry.py"
+        ],
+        "status": "已确认页面契约断言失败",
+        "reason": "测试期望data-page=factor和reporting；不据此直接判定服务无法启动。"
+      },
+      {
+        "scripts": [
+          "smoke_test_real_provider_entry.py",
+          "smoke_test_market_endpoint_mapping.py"
+        ],
+        "status": "已确认配置返回断言失败，根因待确认",
+        "reason": "Provider公开配置/endpoint spec未按旧测试期望返回。"
+      },
+      {
+        "scripts": [
+          "smoke_test_market_data_quality.py",
+          "smoke_test_market_data_browser.py"
+        ],
+        "status": "已确认断言失败，根因待确认",
+        "reason": "合成数据缺口及浏览结果未符合断言；可能与Provider配置链相关，尚未独立归因。"
+      },
+      {
+        "scripts": [
+          "smoke_test_stage73_backtest_history_selection_encoding.py"
+        ],
+        "status": "已确认静态资源版本断言失败",
+        "reason": "脚本要求CSS/JS版本号成对一致；此断言失败不能单独证明浏览器缓存失效。"
+      }
+    ],
+    "report_path": "tmp/formal-verification-reports/formal-20261013T072236-11e9e5fc/formal-verification-report.json"
+  },
+  "verification": {
+    "已验证项": "输入绑定、撮合约束、统计的合成数据复现；统一隔离验证110项全部执行；正式存储前后指纹一致。",
+    "未验证项": "正式大规模策略收益重算、全部页面人工业务验收、9项回归失败的全部根因。",
+    "阻塞原因": "已确认的业务缺陷与未通过的回归门禁；初次沙箱目录权限问题已通过批准的隔离验证执行解决。",
+    "潜在风险": "信号未来信息、实际输入不符、不可成交交易、资金及持仓超限、绩效失真。",
+    "发布判断": "应先返工；修复P1问题并补充数值回归后再验收。"
+  }
+}

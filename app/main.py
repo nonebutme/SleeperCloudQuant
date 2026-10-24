@@ -11,11 +11,14 @@ from app.api import (
     build_config_routes,
     build_data_center_routes,
     build_factor_routes,
+    build_factor_research_routes,
     build_market_routes,
     build_reporting_routes,
 )
 from app.api.strategy_datasets import build_strategy_dataset_routes
 from app.services.strategy_dataset_service import StrategyDatasetService
+from app.services.indicator_service import IndicatorService
+from app.api.indicators import build_indicator_routes
 from app.services import (
     AIAnalysisService,
     BacktestService,
@@ -23,6 +26,7 @@ from app.services import (
     BatchResearchService,
     ConfigCenterService,
     DataCenterService,
+    FactorAnalysisService,
     FactorResearchService,
     IndependentScreeningService,
     MarketDataService,
@@ -52,6 +56,8 @@ class AppServiceRegistry:
     config_center_service: ConfigCenterService | None = None
     data_center_service: DataCenterService | None = None
     strategy_dataset_service: StrategyDatasetService | None = None
+    factor_analysis_service: FactorAnalysisService | None = None
+    indicator_service: IndicatorService | None = None
 
 
 @dataclass
@@ -86,4 +92,18 @@ def create_app(services: AppServiceRegistry) -> SimpleApiApp:
         routes.extend(build_config_routes(services.config_center_service))
     if services.strategy_dataset_service is not None:
         routes.extend(build_strategy_dataset_routes(services.strategy_dataset_service))
+    if services.factor_analysis_service is not None:
+        routes.extend(build_factor_research_routes(services.factor_analysis_service))
+    if services.indicator_service is not None:
+        routes.extend(build_indicator_routes(services.indicator_service))
+    if services.data_center_service is not None:
+        from data_platform.maintenance_transaction import ensure_research_guard
+        path = services.data_center_service.scheduler.database_path
+        ensure_research_guard(path)
+        for consumer in (services.single_backtest_task_service,
+                         services.independent_screening_service,
+                         services.shared_portfolio_service, services.factor_analysis_service,
+                         services.backtest_service, services.batch_research_service):
+            if consumer is not None:
+                consumer._maintenance_database_path = path
     return SimpleApiApp(title="SleeperCloudQuant Formal API", routes=routes)

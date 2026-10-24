@@ -99,11 +99,20 @@ def main() -> None:
         market.upsert_daily_prices([
             _price("000001", "2026-07-23")
         ], adjustment="qfq", source="repair")
+        for issue in issues:
+            remediation = control.create_remediation(
+                issue["issue_id"], method="refetch", executor_type="quality_scan_smoke",
+                executor_id="quality-scan-repair", reason="fixture data repaired",
+                operator="smoke",
+            )
+            control.update_remediation(
+                remediation["remediation_id"], status="awaiting_recheck",
+            )
         recheck = engine.recheck(scan["scan_id"])
         verified = engine.run_scan(recheck["scan_id"])
         assert verified["status"] == "passed"
         assert verified["issues_found"] == 0
-        assert verified["corrected_by_recheck"] == 6
+        assert verified["corrected_by_recheck"] == 6, verified
         assert all(
             issue["status"] == "corrected"
             for issue in control.list_issues(source_task_id=scan["scan_id"], limit=100)
@@ -140,6 +149,60 @@ def main() -> None:
         suspended_completed = engine.run_scan(suspended_scan["scan_id"])
         assert suspended_completed["status"] == "passed", suspended_completed
         assert suspended_completed["issues_found"] == 0, suspended_completed
+
+        # M3 必须显式发现未知可交易性，以及停牌状态与正成交量相冲突的事实。
+        market.upsert_symbols([{
+            "symbol": "000003", "name": "status semantics fixture", "source": "smoke",
+        }, {
+            "symbol": "000004", "name": "status without bar fixture", "source": "smoke",
+        }])
+        governance.upsert_lifecycle_events([{
+            "symbol": "000003", "event_type": "listed",
+            "effective_from": "2026-07-21", "source": "smoke",
+        }, {
+            "symbol": "000004", "event_type": "listed",
+            "effective_from": "2026-07-21", "source": "smoke",
+        }])
+        market.upsert_daily_prices([
+            _price("000003", "2026-07-23"),
+            _price("000003", "2026-07-24"),
+        ], adjustment="qfq", source="smoke")
+        governance.upsert_trading_statuses([
+            {
+                "symbol": "000003", "trade_date": "2026-07-23",
+                "status": "unknown", "is_tradable": None, "source": "smoke",
+            },
+            {
+                "symbol": "000003", "trade_date": "2026-07-24",
+                "status": "suspended", "is_tradable": False, "source": "smoke",
+            },
+            {
+                "symbol": "000004", "trade_date": "2026-07-24",
+                "status": "unknown", "is_tradable": None, "source": "smoke",
+            },
+        ])
+        status_scan = engine.create_scan(
+            dataset="a_share_daily", date_from="2026-07-23", date_to="2026-07-24",
+            scope="symbols", symbols=["000003.XSHE", "000004.XSHE"], adjustments=["qfq"],
+            rules=["trading_status_semantics"],
+        )
+        status_completed = engine.run_scan(status_scan["scan_id"])
+        status_issues = control.list_issues(
+            source_task_id=status_scan["scan_id"], limit=100,
+        )
+        assert status_completed["status"] == "issues_found", status_completed
+        assert status_completed["issues_found"] == 3, status_issues
+        assert any(
+            issue["symbol"] == "000004"
+            and issue["evidence"]["bar_count"] == 0
+            for issue in status_issues
+        ), status_issues
+        assert {issue["rule_id"] for issue in status_issues} == {
+            "trading_status_semantics",
+        }
+        assert {
+            issue["evidence"]["issue_type"] for issue in status_issues
+        } == {"unknown_tradability", "suspended_with_positive_volume"}
 
         entered = threading.Event()
         release = threading.Event()

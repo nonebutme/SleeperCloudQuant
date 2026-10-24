@@ -16,7 +16,7 @@ def main() -> None:
     from app.services.shared_portfolio_service import SharedPortfolioService
     from app.services.strategy_service import StrategyService
 
-    suffix = str(os.getpid())
+    suffix = f"{os.getpid()}_{time.time_ns()}"
     runtime_store = SqliteRuntimeStore(Path("tmp") / f"shared_portfolio_runtime_{suffix}.sqlite3")
     strategy_service = StrategyService(Path("tmp") / f"shared_portfolio_strategies_{suffix}.sqlite3")
     strategy = strategy_service.save_version(

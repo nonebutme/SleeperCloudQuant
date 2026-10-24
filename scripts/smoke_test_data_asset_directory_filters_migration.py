@@ -47,16 +47,47 @@ def main() -> None:
     status, payload = _dispatch(app, "GET", f"/api/backtest/results/{run_id}/input-snapshot")
     snapshot = payload.get("snapshot", {})
     data_version = snapshot.get("data_version")
-    if status != 200 or snapshot.get("status") != "found" or not data_version:
+    asset_key = snapshot.get("asset_key")
+    snapshot_payload = snapshot.get("payload") or {}
+    snapshot_asset = snapshot_payload.get("asset") or {}
+    dataset = snapshot.get("dataset")
+    quality_status = snapshot_asset.get("quality_status")
+    if (
+        status != 200
+        or snapshot.get("status") != "found"
+        or not data_version
+        or not asset_key
+        or not dataset
+        or not quality_status
+    ):
         raise SystemExit("stage49 smoke failed: snapshot missing data_version")
 
-    status, payload = _dispatch(app, "GET", "/api/backtest/data-assets", query_string=f"symbol={symbol}&dataset=price_history&quality_status=needs_attention&limit=20")
+    status, payload = _dispatch(
+        app,
+        "GET",
+        "/api/backtest/data-assets",
+        query_string=(
+            f"symbol={symbol}&dataset={dataset}"
+            f"&quality_status={quality_status}&limit=20"
+        ),
+    )
     assets = payload.get("assets", [])
     summary = payload.get("summary", {})
-    if status != 200 or not assets or summary.get("filters", {}).get("dataset") != "price_history":
+    filters = summary.get("filters", {})
+    if (
+        status != 200
+        or not assets
+        or filters.get("dataset") != dataset
+        or filters.get("quality_status") != quality_status
+        or not any(item.get("asset_key") == asset_key for item in assets)
+    ):
         raise SystemExit("stage49 smoke failed: filtered asset directory did not return expected assets")
-    if any(item.get("quality_status") != "needs_attention" for item in assets):
-        raise SystemExit("stage49 smoke failed: quality_status filter returned mismatched assets")
+    if any(
+        item.get("dataset") != dataset
+        or item.get("quality_status") != quality_status
+        for item in assets
+    ):
+        raise SystemExit("stage49 smoke failed: governed asset filters returned mismatched assets")
 
     status, payload = _dispatch(app, "GET", "/api/backtest/data-assets", query_string=f"data_version={data_version}&limit=5")
     if status != 200 or payload.get("summary", {}).get("asset_count", 0) < 1:

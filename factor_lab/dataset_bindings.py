@@ -9,10 +9,12 @@ from typing import Any, Callable
 @dataclass(frozen=True, slots=True)
 class FactorDatasetBinding:
     factor_id: str
-    dataset_id: str = "a_share_daily"
-    required_fields: tuple[str, ...] = ("symbol", "trade_date", "close")
-    point_in_time_policy: str = "as_of_trade_date"
-    adjustment: str = "raw"
+    dataset_id: str = "factor_values"
+    required_fields: tuple[str, ...] = (
+        "symbol", "trade_date", "artifact_id", "aligned_value"
+    )
+    point_in_time_policy: str = "same_trade_date_immutable_artifact"
+    adjustment: str = "artifact_defined"
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,10 +34,9 @@ BUILTIN_FACTOR_DATASET_BINDINGS: tuple[FactorDatasetBinding, ...] = (
 
 def get_factor_dataset_binding(factor_id: str) -> FactorDatasetBinding:
     normalized = str(factor_id).strip().lower()
-    for binding in BUILTIN_FACTOR_DATASET_BINDINGS:
-        if binding.factor_id == normalized:
-            return binding
-    raise KeyError(f"no dataset binding for factor_id: {factor_id}")
+    if not normalized or not normalized.replace("_", "").isalnum():
+        raise KeyError(f"invalid factor_id: {factor_id}")
+    return FactorDatasetBinding(normalized)
 
 
 def resolve_factor_input_provenance(

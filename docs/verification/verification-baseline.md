@@ -1,5 +1,23 @@
 # 验证基线
 
+## R3 三项标准因子研究（2026-09-14）
+
+R2 暂缓验收。R3 以预先冻结的 [研究协议](../requirements/r3-standard-factor-protocol.md) 为准：独立报告正负结果，不以接口通过或重叠收益累乘代替投资价值证据。2025 年后行情不读取；历史股票池完整性、退市与成交约束未验证前不得宣称已发现可实盘规律。
+
+首轮 600 只历史抽样、三因子研究及冻结输入独立复算完成；专项测试 6/6 通过。留出期收益不完整，0/3 规律通过验收；详见 [R3 实证报告](r3-standard-factor-research.md)。
+
+## R2 指标库候选（2026-09-14）
+
+`smoke_test_r2_indicators.py` 纳入统一隔离验证，覆盖 8 个内置指标、受控自定义、前缀计算、缓存纠错失效、策略真实消费、因子实际研究与精确制品选用。`smoke_test_r2_indicators_ui.mjs` 使用模拟接口和独立浏览器；`smoke_test_r2_live_browser.mjs` 只读核对正式页面，必须在隔离回归结束后运行，避免正式服务 SQLite 旁文件干扰保护区指纹。结果见 [R2 验收](r2-indicator-library-acceptance.md)。
+
+## 统一 Web 入口（2026-09-14）
+
+用户入口为 `启动系统.cmd`，正式 Web/API 地址为 `http://127.0.0.1:8010/`。`smoke_test_unified_web_entry.py` 纳入统一验证，覆盖同源服务、健康检查、候选页跳转和开发模式限制；本轮专项及实际启动结果见 [入口验收](unified-web-entry-acceptance.md)。
+
+## R1 当前候选（2026-09-13）
+
+用户已批准简明维护整改，新增 `smoke_test_data_maintenance.py` 纳入统一验证。常规更新与单项纠错改为检查后自动生效；历史阶段“手动设置默认”断言不再适用于新流程。候选能力及未完成验收见 [R1 整改记录](../architecture/r1-data-maintenance-simplification.md)。
+
 ## 统一自动化入口
 
 ```powershell
@@ -80,3 +98,21 @@
 
 - 候选基线：`通过`。
 - 阶段 86：`可进入实现，不可提前宣称发布完成`。
+
+## 阶段 88 完整性桥接验证
+
+- 统一版本解析必须优先使用显式版本或全局默认版本，并验证质量报告及必需成员。
+- 指数成分只能由数据中心写入；连续快照必须闭合旧成员有效区间，缺少授权事实时返回 unavailable。
+- 因子任务完成后必须发布内容寻址、不可覆盖的制品，并通过 API 查询。
+- 策略声明 `factor_values` 与 `FACTOR_REQUIREMENTS` 后，任务创建时必须冻结精确制品 ID，运行时按证券和交易日注入。
+- 因子和回测报告必须持续显示历史模拟边界、版本证据、市场冲击模型状态、模拟盘/实盘验证状态及免责声明。
+- 专项入口：`python scripts/smoke_test_stage88_integrity_bridge.py`。
+- 完整入口：`python scripts/run_formal_verifications.py`。
+
+## 阶段 91.0—91.3 数据源与质量闭环验证
+
+- 专项入口：`python scripts/smoke_test_stage91_source_quality_governance.py`。
+- 验证能力级零业务写入探测、密钥值不出环境变量、任务冻结配置与实际配置证据一致。
+- 验证重拉、历史补齐、纠错覆盖、版本发布、定向复检与问题关闭的统一工单状态机。
+- 验证未解决阻断项会阻止发布，且只允许当前执行器或当前纠错工单的窄范围豁免。
+- 阶段 91.4 不在本验证范围。

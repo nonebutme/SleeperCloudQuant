@@ -73,6 +73,8 @@ class ReportingService:
             strategy_name=str(run.get("strategy_name") or "--"),
             status=str(run.get("status") or "--"),
             benchmark=_optional_str(run.get("benchmark")),
+            benchmark_alignment=dict(raw_result.get("benchmark_alignment") or {}),
+            benchmark_status=_optional_str(raw_result.get("benchmark_status")),
             start_date=_optional_str(run.get("start_date")),
             end_date=_optional_str(run.get("end_date")),
             strategy_id=_optional_str(run.get("strategy_id")),
@@ -1241,7 +1243,6 @@ def _build_report_package_manifest(
             "title": title,
         },
         "data_sources": [
-            _report_market_provider_manifest_source(),
             {
                 "source_id": "legacy_sqlite_market_data",
                 "label": "SleeperCloudQuant-old local SQLite A-share data",
@@ -1315,49 +1316,6 @@ def _build_report_package_manifest(
     }
 
 
-
-def _report_market_provider_manifest_source() -> dict[str, Any]:
-    config = _load_report_market_provider_config()
-    base_url_configured = bool(config.get("base_url"))
-    api_key_configured = bool(os.environ.get("SCQ_MARKET_PROVIDER_API_KEY"))
-    enabled_intent = bool(config.get("enabled"))
-    enabled = enabled_intent and base_url_configured and api_key_configured
-    missing = []
-    if enabled_intent and not base_url_configured:
-        missing.append("market_provider.base_url")
-    if enabled_intent and not api_key_configured:
-        missing.append("SCQ_MARKET_PROVIDER_API_KEY")
-    return {
-        "source_id": "external_market_provider",
-        "label": str(config.get("provider_name") or "open-http-market-provider"),
-        "mode": "open_http_market_provider",
-        "status": "configured" if enabled else ("fallback_to_local_sqlite" if enabled_intent else "disabled_by_config"),
-        "enabled": enabled,
-        "enabled_intent": enabled_intent,
-        "base_url_configured": base_url_configured,
-        "api_key_configured": api_key_configured,
-        "missing": missing,
-        "secret_policy": "API keys are read from environment variables and are never persisted in report packages.",
-    }
-
-
-def _load_report_market_provider_config() -> dict[str, Any]:
-    draft_path = Path("var/runtime/config_runtime_draft.json")
-    if not draft_path.is_file():
-        return {"enabled": False, "provider_name": "open-http-market-provider", "base_url": ""}
-    try:
-        raw = json.loads(draft_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"enabled": False, "provider_name": "open-http-market-provider", "base_url": ""}
-    settings = raw.get("settings") if isinstance(raw, dict) else {}
-    provider = settings.get("market_provider") if isinstance(settings, dict) else {}
-    if not isinstance(provider, dict):
-        return {"enabled": False, "provider_name": "open-http-market-provider", "base_url": ""}
-    return {
-        "enabled": bool(provider.get("enabled")),
-        "provider_name": str(provider.get("provider_name") or "open-http-market-provider"),
-        "base_url": str(provider.get("base_url") or ""),
-    }
 def _render_manifest_cards(manifest: Mapping[str, Any]) -> str:
     bindings = dict(manifest.get("bindings") or {})
     runtime = dict(manifest.get("runtime") or {})
@@ -1995,6 +1953,11 @@ def _to_batch_row_model(row: Any) -> BatchExperimentRowModel:
 
 def _account_drawdown_curve(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     peak: float | None = None
+    if rows:
+        first_value = _optional_float(rows[0].get("total_value"))
+        first_nav = _optional_float(rows[0].get("unit_net_value"))
+        if first_value is not None and first_nav is not None and first_nav > 0:
+            peak = first_value / first_nav
     points: list[dict[str, Any]] = []
     for row in rows:
         value = _optional_float(row.get("total_value"))

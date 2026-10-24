@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 from _project_bootstrap import ensure_project_root_on_sys_path
@@ -20,7 +22,7 @@ def main() -> None:
     from data_platform import CachedMarketDataRepository, SqliteMetadataStore
     from factor_lab import SqliteFactorStore
 
-    database_path = Path("tmp") / "factor_lab_smoke.sqlite3"
+    database_path = Path(tempfile.gettempdir()) / f"factor_lab_smoke_{os.getpid()}.sqlite3"
     metadata_store = SqliteMetadataStore(database_path)
     market_service = MarketDataService(
         CachedMarketDataRepository(FakeMarketDataRepository(), metadata_store)
@@ -29,7 +31,7 @@ def main() -> None:
     factor_service = FactorResearchService(market_service, factor_store)
 
     definitions = factor_service.list_factor_definitions()
-    if len(definitions) != 2:
+    if len(definitions) != 7:
         raise SystemExit("factor lab smoke test failed: factor definitions count mismatch")
 
     result = factor_service.run_factor(

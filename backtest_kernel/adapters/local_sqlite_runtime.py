@@ -6,7 +6,9 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from backtest_kernel.strategy_execution import execute_strategy_evidence
+from backtest_kernel.strategy_execution import (
+    affordable_quantity, bar_is_tradable, execute_strategy_evidence, open_signal_lag,
+)
 from data_platform.repository.contracts import MarketDataRepository
 
 
@@ -18,27 +20,56 @@ class LocalSQLiteBacktestRuntime:
         market_repository: MarketDataRepository,
         *,
         strategy_resolver: Callable[[str, str | None], Mapping[str, Any]] | None = None,
-        dataset_resolver: Callable[[str, Sequence[Mapping[str, Any]], Mapping[str, Any]], Mapping[str, Any]] | None = None,
+        dataset_resolver: Callable[
+            [str, Sequence[Mapping[str, Any]], Mapping[str, Any], Mapping[str, Any]],
+            Mapping[str, Any],
+        ] | None = None,
     ) -> None:
         self._market_repository = market_repository
         self._strategy_resolver = strategy_resolver
         self._dataset_resolver = dataset_resolver
 
     def run(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        # Deferred imports preserve the backtest-kernel -> application dependency
+        # boundary while still allowing governed preflight at execution time.
+        from app.services.strategy_causality_gate import verify_strategy_prefix_stability
+        from app.services.strategy_research_preflight import (
+            parse_strategy_dataset_contracts,
+            require_strategy_runtime_adjustment,
+            research_fetch_start_date,
+        )
+
         parameters = dict(payload.get("parameters") or {})
         symbol = str(parameters.get("symbol") or payload.get("symbol") or "000001.XSHE")
         start_date = str(payload.get("start_date") or "")
         end_date = str(payload.get("end_date") or "")
-        adjustment = str(parameters.get("adjustment") or "raw")
+        extra_config = dict(payload.get("extra_config") or {})
+        adjustment = str(parameters.get("adjustment") or extra_config.get("adjustment") or "raw")
+        if extra_config.get("adjustment") and extra_config["adjustment"] != adjustment:
+            raise ValueError("conflicting adjustment settings")
+        strategy_id = str(extra_config.get("strategy_id") or "")
+        strategy_version = str(extra_config.get("strategy_version") or "") or None
+        strategy_snapshot: Mapping[str, Any] | None = None
+        if self._strategy_resolver is not None and strategy_id:
+            strategy_snapshot = self._strategy_resolver(strategy_id, strategy_version)
+        if strategy_snapshot is not None:
+            require_strategy_runtime_adjustment(
+                str(strategy_snapshot.get("source_code") or ""), adjustment
+            )
+        fetch_start_date = (
+            research_fetch_start_date(str(strategy_snapshot.get("source_code") or ""), start_date)
+            if strategy_snapshot is not None
+            else start_date
+        )
         try:
             history = self._market_repository.fetch_price_history(
                 symbol,
-                start_date,
+                fetch_start_date,
                 end_date,
                 adjustment=adjustment,
             )
         except TypeError:
-            history = self._market_repository.fetch_price_history(symbol, start_date, end_date)
+            history = self._market_repository.fetch_price_history(symbol, fetch_start_date, end_date)
         rows = [dict(row) for row in history]
         for row in rows:
             row.setdefault("symbol", symbol)
@@ -48,7 +79,6 @@ class LocalSQLiteBacktestRuntime:
 
         initial_cash = float(payload.get("initial_cash") or 1_000_000)
         strategy_name = str(payload.get("strategy_name") or "local_sqlite_strategy")
-        extra_config = dict(payload.get("extra_config") or {})
         rqalpha_config = _normalize_rqalpha_local_config(extra_config.get("rqalpha_local"))
         short_window = _positive_int(parameters.get("short_window"), default=5)
         long_window = _positive_int(parameters.get("long_window"), default=max(short_window + 1, 20))
@@ -56,18 +86,30 @@ class LocalSQLiteBacktestRuntime:
         if long_window <= short_window:
             long_window = short_window + 1
 
-        strategy_snapshot: Mapping[str, Any] | None = None
         target_weights: list[float] | None = None
         raw_scores: list[float | None] | None = None
         score_contract = "unavailable_legacy_strategy"
+        causality_evidence: dict[str, Any] | None = None
         dataset_evidence: list[dict[str, Any]] = []
-        strategy_id = str(extra_config.get("strategy_id") or "")
-        strategy_version = str(extra_config.get("strategy_version") or "") or None
-        if self._strategy_resolver is not None and strategy_id:
-            strategy_snapshot = self._strategy_resolver(strategy_id, strategy_version)
+        if strategy_snapshot is not None:
             if self._dataset_resolver is not None:
                 resolved_datasets = self._dataset_resolver(
-                    str(strategy_snapshot.get("source_code") or ""), rows, parameters
+                    str(strategy_snapshot.get("source_code") or ""),
+                    rows,
+                    parameters,
+                    {
+                        "evaluation_start_date": start_date,
+                        "evaluation_end_date": end_date,
+                        "adjustment": adjustment,
+                        "data_version_id": str(
+                            extra_config.get("data_version_id")
+                            or dict(extra_config.get("data_version_binding") or {}).get("data_version_id")
+                            or dict(extra_config.get("data_version_binding") or {}).get("data_version")
+                            or dict(dict(extra_config.get("data_asset_trace") or {}).get("asset") or {}).get("data_version_id")
+                            or dict(dict(extra_config.get("data_asset_trace") or {}).get("asset") or {}).get("data_version")
+                            or ""
+                        ),
+                    },
                 )
                 rows = [dict(row) for row in resolved_datasets.get("bars") or rows]
                 dataset_evidence = [dict(item) for item in resolved_datasets.get("evidence") or []]
@@ -79,6 +121,20 @@ class LocalSQLiteBacktestRuntime:
             target_weights = list(strategy_evidence["weights"])
             raw_scores = strategy_evidence.get("raw_scores")
             score_contract = str(strategy_evidence.get("score_contract") or "")
+            if (
+                parse_strategy_dataset_contracts(str(strategy_snapshot.get("source_code") or ""))
+                and not extra_config.get("screening_mode")
+            ):
+                causality_evidence = verify_strategy_prefix_stability(
+                    str(strategy_snapshot.get("source_code") or ""),
+                    rows,
+                    parameters,
+                    executor=execute_strategy_evidence,
+                )
+                if not causality_evidence["ok"]:
+                    raise RuntimeError(
+                        f"strategy causality preflight failed: {causality_evidence['issues']}"
+                    )
 
         close_values = [float(row.get("close") or 0.0) for row in rows]
         cash = initial_cash
@@ -87,24 +143,38 @@ class LocalSQLiteBacktestRuntime:
         positions: list[dict[str, Any]] = []
         accounts: list[dict[str, Any]] = []
         equity_curve: list[tuple[str, float]] = []
+        execution_mode = "open" if str(parameters.get("execution_price") or "close").lower() == "open" else "close"
+        signal_lag = open_signal_lag(
+            str((strategy_snapshot or {}).get("source_code") or ""),
+            str((strategy_snapshot or {}).get("execution_contract") or ""),
+        ) if execution_mode == "open" else 0
 
         for index, row in enumerate(rows):
             date = str(row.get("date") or "")[:10]
+            if date < start_date or date > end_date:
+                continue
             close = float(row.get("close") or 0.0)
             if close <= 0:
                 continue
-            execution_mode = "open" if str(parameters.get("execution_price") or "close").lower() == "open" else "close"
             reference_price = float(row.get("open") or close) if execution_mode == "open" else close
             total_value = cash + quantity * reference_price
-            short_ma = _mean(close_values[max(0, index - short_window + 1) : index + 1])
-            long_ma = _mean(close_values[max(0, index - long_window + 1) : index + 1])
+            signal_index = index - signal_lag
+            short_ma = _mean(close_values[max(0, signal_index - short_window + 1) : signal_index + 1])
+            long_ma = _mean(close_values[max(0, signal_index - long_window + 1) : signal_index + 1])
             target_weight = (
-                target_weights[index]
+                (target_weights[signal_index] if signal_index >= 0 else 0.0)
                 if target_weights is not None
-                else (position_size if index + 1 >= long_window and short_ma >= long_ma else 0.0)
+                else (position_size if signal_index + 1 >= long_window and short_ma >= long_ma else 0.0)
             )
             target_quantity = math.floor((total_value * target_weight) / reference_price / 100.0) * 100.0
             delta = target_quantity - quantity
+            if not bar_is_tradable(row):
+                delta = 0.0
+            if delta > 0:
+                delta = affordable_quantity(
+                    int(delta), cash, reference_price * (1.0 + rqalpha_config["slippage_rate"]),
+                    rqalpha_config["commission_rate"], rqalpha_config["min_commission"],
+                )
             if abs(delta) >= 1:
                 side = "BUY" if delta > 0 else "SELL"
                 execution_price = reference_price * (1.0 + rqalpha_config["slippage_rate"] if side == "BUY" else 1.0 - rqalpha_config["slippage_rate"])
@@ -113,7 +183,7 @@ class LocalSQLiteBacktestRuntime:
                 tax = amount * rqalpha_config["tax_rate"] if side == "SELL" else 0.0
                 cash -= delta * execution_price
                 cash -= commission + tax
-                quantity = target_quantity
+                quantity += delta
                 trades.append(
                     {
                         "trade_time": f"{date}T{'09:30:00' if execution_mode == 'open' else '15:00:00'}+08:00",
@@ -128,7 +198,8 @@ class LocalSQLiteBacktestRuntime:
                         "notes": {
                             "runtime": "local_sqlite_backtest",
                             "target_weight": target_weight,
-                            "raw_signal_score": raw_scores[index] if raw_scores is not None else None,
+                            "raw_signal_score": raw_scores[signal_index] if raw_scores is not None and signal_index >= 0 else None,
+                            "signal_lag_bars": signal_lag,
                             "execution_price_mode": execution_mode,
                             "market_vwap": _market_vwap(row, close),
                             "market_volume": _positive_float(row.get("volume")),
@@ -161,9 +232,13 @@ class LocalSQLiteBacktestRuntime:
                 }
             )
 
-        benchmark_curve = _build_benchmark_curve(rows, rqalpha_config)
+        evaluation_rows = [
+            row for row in rows
+            if start_date <= str(row.get("date") or row.get("trade_date") or "")[:10] <= end_date
+        ]
+        benchmark_curve = _build_benchmark_curve(evaluation_rows, rqalpha_config)
         metrics = _build_metrics(equity_curve, initial_cash, benchmark_curve=benchmark_curve)
-        yearly_returns = _build_yearly_returns(equity_curve, benchmark_curve=benchmark_curve)
+        yearly_returns = _build_yearly_returns(equity_curve, initial_cash=initial_cash, benchmark_curve=benchmark_curve)
         logs = [
             {
                 "recorded_at": f"{equity_curve[-1][0]}T15:00:00+08:00",
@@ -185,7 +260,8 @@ class LocalSQLiteBacktestRuntime:
                 "data_source": "local_sqlite_market_data",
                 "adjustment": adjustment,
                 "symbol": symbol,
-                "bar_count": len(rows),
+                "bar_count": len(evaluation_rows),
+                "warmup_bar_count": len(rows) - len(evaluation_rows),
                 "rqalpha_local": rqalpha_config,
                 "strategy_template": _build_strategy_template(strategy_name, symbol, parameters, rqalpha_config),
                 "strategy_binding": {
@@ -194,6 +270,7 @@ class LocalSQLiteBacktestRuntime:
                     "source_sha256": strategy_snapshot.get("source_sha256") if strategy_snapshot else None,
                     "execution_contract": strategy_snapshot.get("execution_contract") if strategy_snapshot else "legacy-ma-fallback",
                     "datasets": dataset_evidence,
+                    "causality": causality_evidence,
                 },
                 "signal_evidence": {
                     "version": "stage80-point-in-time-signal-v1",
@@ -212,6 +289,7 @@ class LocalSQLiteBacktestRuntime:
                             target_weights[index] if target_weights is not None else None,
                         ]
                         for index, row in enumerate(rows)
+                        if start_date <= str(row.get("date") or row.get("trade_date") or "")[:10] <= end_date
                     ] if raw_scores is not None else [],
                 },
                 "price_bars": [
@@ -225,7 +303,7 @@ class LocalSQLiteBacktestRuntime:
                         "volume": row.get("volume"),
                         "amount": row.get("amount"),
                     }
-                    for row in rows
+                    for row in evaluation_rows
                 ] if str(extra_config.get("mode") or "") == "single" else [],
                 "benchmark_alignment": {"mode": rqalpha_config["benchmark_alignment"], "rows": len(benchmark_curve)},
                 "logs": logs,
@@ -243,10 +321,10 @@ def _build_metrics(equity_curve: Sequence[tuple[str, float]], initial_cash: floa
     days = max(len(equity_curve), 1)
     annualized_returns = (1.0 + total_returns) ** (252.0 / days) - 1.0 if total_returns > -1 else -1.0
     returns = []
-    previous = equity_curve[0][1]
+    previous = initial_cash
     peak = previous
     max_drawdown = 0.0
-    for _, value in equity_curve[1:]:
+    for _, value in equity_curve:
         if previous:
             returns.append(value / previous - 1.0)
         peak = max(peak, value)
@@ -266,7 +344,7 @@ def _build_metrics(equity_curve: Sequence[tuple[str, float]], initial_cash: floa
     }
 
 
-def _build_yearly_returns(equity_curve: Sequence[tuple[str, float]], *, benchmark_curve: Sequence[tuple[str, float]] | None = None) -> list[dict[str, Any]]:
+def _build_yearly_returns(equity_curve: Sequence[tuple[str, float]], *, initial_cash: float | None = None, benchmark_curve: Sequence[tuple[str, float]] | None = None) -> list[dict[str, Any]]:
     by_year: dict[str, list[tuple[str, float]]] = {}
     benchmark_by_year: dict[str, list[tuple[str, float]]] = {}
     for date, value in benchmark_curve or []:
@@ -274,19 +352,29 @@ def _build_yearly_returns(equity_curve: Sequence[tuple[str, float]], *, benchmar
     for date, value in equity_curve:
         by_year.setdefault(date[:4], []).append((date, value))
     rows: list[dict[str, Any]] = []
+    previous_value = initial_cash if initial_cash is not None else equity_curve[0][1]
+    previous_benchmark = benchmark_curve[0][1] if benchmark_curve else None
     for year, values in sorted(by_year.items()):
-        start_value = values[0][1]
+        start_value = previous_value
         end_value = values[-1][1]
         portfolio_return = end_value / start_value - 1.0 if start_value else 0.0
+        benchmark_values = benchmark_by_year.get(year, [])
+        benchmark_return = (
+            benchmark_values[-1][1] / previous_benchmark - 1.0
+            if benchmark_values and previous_benchmark else 0.0
+        )
         rows.append(
             {
                 "year": year,
                 "portfolio_return": round(portfolio_return, 6),
-                "benchmark_return": 0.0,
-                "excess_return": round(portfolio_return, 6),
+                "benchmark_return": round(benchmark_return, 6),
+                "excess_return": round(portfolio_return - benchmark_return, 6),
                 "notes": {"runtime": "local_sqlite_backtest"},
             }
         )
+        previous_value = end_value
+        if benchmark_values:
+            previous_benchmark = benchmark_values[-1][1]
     return rows
 
 

@@ -1,0 +1,26 @@
+{
+  "apply_supported": false,
+  "candidate_count": 195544,
+  "candidate_set_hash": "30c7788b50b3717618bb60ac10dc92e3b2b4c1013180e9cb10cbe0acb0221439",
+  "database": "var/market/a_share_market.sqlite3",
+  "generated_at": "2026-08-21T11:37:27+00:00",
+  "mode": "read_only_preview",
+  "reason_counts": {
+    "explicit_suspension_conflicts_with_positive_bar": 1032,
+    "positive_bar_evidence_required": 10,
+    "positive_bar_resolves_unknown_tradability": 193631,
+    "source_suspension_interval_excludes_trade_date": 871
+  },
+  "repairability_counts": {
+    "auto_repairable": 194502,
+    "manual_evidence_required": 1042
+  },
+  "scope": "current_symbols",
+  "source_counts": {
+    "akshare:stock_tfp_em:eastmoney": 1903,
+    "stage78.3:evidence_gap": 193641
+  },
+  "writes": 0,
+  "formal_database_mutated": false,
+  "next_authorization_required": "explicit approval is required before implementing or running batch writes"
+}

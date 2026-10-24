@@ -29,13 +29,13 @@
       card: cssToken("--q-bg-card", "#ffffff"),
       zebra: cssToken("--q-bg-zebra", "#f7f8fa"),
       border: cssToken("--q-border", "#e5e6eb"),
-      selected: cssToken("--q-primary-light", "#e8f3f8"),
+      selected: cssToken("--q-primary-soft", "#e8f3ff"),
     };
   }
 
   function tableMode(table) {
     const explicit = table.dataset.vtableMode;
-    if (["market", "backtest", "factor", "edit"].includes(explicit)) return explicit;
+    if (["market", "backtest", "factor", "edit", "governance"].includes(explicit)) return explicit;
     if (table.closest("#page-market")) return "market";
     if (table.closest("#page-factor")) return "factor";
     if (table.closest("#page-backtest, #page-reporting, #page-report-management")) return "backtest";
@@ -45,6 +45,7 @@
   function modeRowHeight(mode) {
     if (mode === "market") return 32;
     if (mode === "edit") return 48;
+    if (mode === "governance") return 44;
     return 40;
   }
 
@@ -67,7 +68,16 @@
 
   function tableSignature(table) {
     const rows = Array.from(table.rows)
-      .map((row) => `${row.hidden ? "1" : "0"}:${Array.from(row.cells).map((cell) => normalizeText(cell.textContent)).join("\u001f")}`)
+      .map((row) => {
+        const state = `${row.hidden ? "1" : "0"}:${row.className}:${row.getAttribute("aria-selected") || ""}`;
+        const cells = Array.from(row.cells).map((cell) => {
+          const controls = Array.from(cell.querySelectorAll("button, a[href]"))
+            .map((control) => `${control.disabled ? "1" : "0"}:${normalizeText(control.textContent)}`)
+            .join("\u001d");
+          return `${normalizeText(cell.textContent)}:${controls}`;
+        }).join("\u001f");
+        return `${state}:${cells}`;
+      })
       .join("\u001e");
     return `${document.documentElement.dataset.theme || "light"}:${rows}`;
   }
@@ -84,12 +94,33 @@
     const tokens = designTokens();
     const columns = headerCells.map((cell, index) => {
       const title = normalizeText(cell.textContent) || `列 ${index + 1}`;
+      const cellType = cell.dataset.vtableCellType || "text";
+      const buttonKind = cell.dataset.vtableButtonKind || "primary";
       return {
         field: `column_${index}`,
         title,
         minWidth: Math.max(88, Math.min(240, integer(cell.dataset.vtableWidth, 112))),
         sort: collectActions(cell).length === 0,
+        ...(cellType === "button" ? { cellType: "button" } : {}),
         style: ({ value }) => {
+          if (cellType === "button") {
+            const primary = buttonKind === "primary";
+            return {
+              color: primary ? "#ffffff" : tokens.primary,
+              fontWeight: 700,
+              textAlign: "center",
+              buttonStyle: {
+                buttonColor: primary ? tokens.primary : tokens.card,
+                buttonBorderColor: tokens.primary,
+                buttonLineWidth: 1,
+                buttonBorderRadius: 6,
+                buttonHoverColor: primary ? cssToken("--q-primary-hover", "#4096ff") : tokens.selected,
+                buttonHoverBorderColor: cssToken("--q-primary-hover", "#4096ff"),
+                buttonTextHoverColor: primary ? "#ffffff" : tokens.primary,
+                buttonPadding: 8,
+              },
+            };
+          }
           const direction = financialDirection(title, value);
           return direction
             ? { color: direction > 0 ? tokens.profit : tokens.loss, fontWeight: 600 }
@@ -132,6 +163,8 @@
 
   function showActionMenu(event, actions) {
     closeActionMenu();
+    const point = event?.nativeEvent || event?.event || event;
+    point?.stopPropagation?.();
     const menu = document.createElement("div");
     menu.className = "app-vtable-action-menu";
     menu.setAttribute("role", "menu");
@@ -142,7 +175,6 @@
       button.addEventListener("click", () => invokeAction(action));
       menu.append(button);
     });
-    const point = event?.nativeEvent || event?.event || event;
     menu.style.left = `${Math.max(8, integer(point?.clientX, 24))}px`;
     menu.style.top = `${Math.max(8, integer(point?.clientY, 24))}px`;
     document.body.append(menu);
@@ -247,7 +279,13 @@
         handleActions(parsed.headerActions[col], event);
         return;
       }
-      handleActions(parsed.actionMap[row - 1]?.[col], event);
+      const actions = parsed.actionMap[row - 1]?.[col];
+      if (actions?.length) {
+        handleActions(actions, event);
+        return;
+      }
+      const sourceRow = parsed.records[row - 1]?.__sourceRow;
+      if (sourceRow?.dataset?.vtableRowAction === "true") sourceRow.click();
     });
     instances.set(table, { instance, host, signature });
   }

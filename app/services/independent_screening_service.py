@@ -1,6 +1,7 @@
 """Independent-capital concurrent stock screening backtests."""
 
 from __future__ import annotations
+from data_platform.maintenance_transaction import guarded_research, require_current_input
 
 import itertools
 import json
@@ -16,6 +17,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.services.strategy_causality_gate import verify_strategy_prefix_stability
+from app.services.strategy_research_preflight import research_fetch_start_date
+from app.services.strategy_research_preflight import parse_strategy_dataset_contracts
+from app.services.strategy_research_preflight import require_strategy_runtime_adjustment
+from backtest_kernel.strategy_execution import execute_strategy_evidence
 from domain.backtest import BacktestRunRequest
 from app.services.cross_section_context import (
     build_industry_analysis as _build_industry_analysis,
@@ -52,6 +58,7 @@ class IndependentScreeningService:
         self._ensure_schema()
         self._recover_interrupted_tasks()
 
+    @guarded_research
     def create_task(
         self,
         *,
@@ -77,9 +84,27 @@ class IndependentScreeningService:
         if adjustment not in {"raw", "qfq", "hfq"}:
             raise ValueError("adjustment must be raw, qfq, or hfq")
         strategy = self._strategy_service.resolve_version(strategy_id, strategy_version)
+        require_strategy_runtime_adjustment(
+            str(strategy.get("source_code") or ""), adjustment
+        )
+        if self._dataset_resolver is not None:
+            owner = getattr(self._dataset_resolver, "__self__", None)
+            freezer = getattr(owner, "freeze_parameters", None)
+            if callable(freezer):
+                parameters = freezer(str(strategy.get("source_code") or ""), parameters)
         universe = self._freeze_universe(symbols=symbols or [], market=market, limit=symbol_limit)
         if not universe:
             raise ValueError("selected A-share universe is empty")
+        data_version_binding = {"status": "unsupported"}
+        if hasattr(self._market_data_service, "get_published_data_version"):
+            data_version_binding = dict(self._market_data_service.get_published_data_version(
+                symbol=str(universe[0]["symbol"]), adjustment=adjustment,
+                start_date=start_date, end_date=end_date, benchmark=benchmark,
+            ))
+            if data_version_binding.get("status") == "data_not_ready":
+                raise ValueError(
+                    "data_not_ready:" + str(data_version_binding.get("reason") or "governed_version_unavailable")
+                )
         normalized_task_id = _normalize_id(task_id or f"screen-{uuid4().hex[:12]}")
         now = _utc_now()
         config = {
@@ -99,6 +124,7 @@ class IndependentScreeningService:
             "retry_count": max(0, min(int(retry_count), 3)),
             "scheduler_batch_size": max(0, min(int(scheduler_batch_size), 256)),
             "universe_source": "canonical_a_share_sqlite",
+            "data_version_binding": data_version_binding,
             "entry_definition": "at_least_one_effective_buy_trade",
         }
         with self._connect() as connection:
@@ -190,7 +216,10 @@ class IndependentScreeningService:
             rows = self._market_data_service.get_a_share_price_history(
                 symbol=symbol,
                 adjustment=str(config.get("adjustment") or "raw"),
-                start_date=str(config.get("date_window", {}).get("start_date") or ""),
+                start_date=research_fetch_start_date(
+                    str(strategy.get("source_code") or ""),
+                    str(config.get("date_window", {}).get("start_date") or ""),
+                ),
                 end_date=str(config.get("date_window", {}).get("end_date") or ""),
             )
             normalized = [dict(row) for row in rows]
@@ -201,11 +230,33 @@ class IndependentScreeningService:
             if len(normalized) < 2:
                 raise RuntimeError("not enough local bars")
             if self._dataset_resolver is not None:
-                self._dataset_resolver(
+                resolved = self._dataset_resolver(
                     str(strategy.get("source_code") or ""),
                     normalized,
                     dict(config.get("parameters") or {}),
+                    {
+                        "evaluation_start_date": str(config.get("date_window", {}).get("start_date") or ""),
+                        "evaluation_end_date": str(config.get("date_window", {}).get("end_date") or ""),
+                        "adjustment": str(config.get("adjustment") or "raw"),
+                        "data_version_id": str(
+                            dict(config.get("data_version_binding") or {}).get("data_version_id")
+                            or dict(config.get("data_version_binding") or {}).get("data_version")
+                            or ""
+                        ),
+                    },
                 )
+                normalized = [dict(row) for row in resolved.get("bars") or normalized]
+            if parse_strategy_dataset_contracts(str(strategy.get("source_code") or "")):
+                causality = verify_strategy_prefix_stability(
+                    str(strategy.get("source_code") or ""),
+                    normalized,
+                    dict(config.get("parameters") or {}),
+                    executor=execute_strategy_evidence,
+                )
+                if not causality["ok"]:
+                    raise RuntimeError(
+                        f"strategy causality preflight failed: {causality['issues']}"
+                    )
             return None
         except Exception as exc:
             return _classify_screening_error(exc, symbol=symbol, config=config)
@@ -289,11 +340,11 @@ class IndependentScreeningService:
             )
         return self.get_task(task_id)
 
-    def list_tasks(self, *, limit: int = 30) -> list[dict[str, Any]]:
+    def list_tasks(self, *, limit: int | None = 30) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT task_id FROM screening_tasks WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
-                (max(1, min(int(limit), 200)),),
+                (-1 if limit is None else max(1, min(int(limit), 200)),),
             ).fetchall()
         return [self.get_task(str(row["task_id"])) for row in rows]
 
@@ -677,8 +728,17 @@ class IndependentScreeningService:
             if not batch or offset >= int(page.get("total") or 0):
                 break
         return sorted(rows, key=lambda row: str(row.get("date") or ""))
+    @guarded_research
     def _execute_task(self, task_id: str) -> None:
         task = self.get_task(task_id)
+        try:
+            require_current_input(self, task)
+        except ValueError as error:
+            self._record_preflight_failure(task_id, {
+                "message": str(error), "code": "historical_input_not_retained",
+                "stage": "input_binding", "type": "ValueError", "retryable": False,
+            })
+            return
         config = dict(task.get("config") or {})
         now = _utc_now()
         with self._connect() as connection:

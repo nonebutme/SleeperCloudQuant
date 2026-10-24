@@ -12,6 +12,7 @@ from _project_bootstrap import ensure_project_root_on_sys_path
 
 def main() -> None:
     ensure_project_root_on_sys_path()
+    from data_platform.storage.a_share_governance_store import AShareGovernanceStore
     from data_platform.storage.a_share_market_store import AShareMarketStore
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -20,6 +21,7 @@ def main() -> None:
         target_path = root / "canonical.sqlite3"
         _build_legacy_fixture(legacy_path)
 
+        AShareGovernanceStore(target_path).ensure_schema()
         store = AShareMarketStore(target_path)
         first = store.import_legacy(
             legacy_path,

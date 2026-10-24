@@ -39,6 +39,8 @@ class BacktestRunDetailModel:
     robustness: dict[str, Any] = field(default_factory=dict)
     parameter_sensitivity: dict[str, Any] = field(default_factory=dict)
     report_governance: dict[str, Any] = field(default_factory=dict)
+    benchmark_alignment: dict[str, Any] = field(default_factory=dict)
+    benchmark_status: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class BatchExperimentRowModel:

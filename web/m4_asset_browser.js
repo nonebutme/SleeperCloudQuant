@@ -179,6 +179,25 @@
     }
   }
 
+  const marketCategoryTargets = {
+    "个股行情": "沪深 A 股",
+    "行业板块": "行业板块",
+    "概念板块": "概念板块",
+    "新闻公告": "新闻公告",
+  };
+
+  function openMarketDataCategory(category) {
+    const targetTitle = marketCategoryTargets[category] || marketCategoryTargets["个股行情"];
+    const target = $$('[data-m4-node]').find((button) => button.dataset.m4Title === targetTitle);
+    if (!target) return false;
+    selectNode(target);
+    $$('[data-market-category]').forEach((button) => button.classList.toggle("is-active", button.dataset.marketCategory === category));
+    const pageTitle = $("#page-title");
+    if (pageTitle) pageTitle.textContent = `市场数据 · ${category}`;
+    return true;
+  }
+  window.openMarketDataCategory = openMarketDataCategory;
+
   function filterTree(value) {
     const term = String(value || "").trim().toLowerCase();
     $$("[data-m4-node]").forEach((button) => {
@@ -338,12 +357,16 @@
     });
     bindKlineDrilldown();
     bindSymbolSelection();
+    const initialCategory = new URLSearchParams(window.location.search).get("market_tab");
+    const categoryRestored = Boolean(initialCategory && openMarketDataCategory(initialCategory));
     try {
       await loadIndexCatalog();
     } catch (error) {
       feedback(`指数目录读取失败：${error.message}`, "error");
     }
-    selectNode($("[data-m4-node].is-active", root) || $("[data-m4-node]", root));
+    if (!categoryRestored) {
+      selectNode($("[data-m4-node].is-active", root) || $("[data-m4-node]", root));
+    }
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bind);

@@ -61,6 +61,7 @@ class BacktestModeReportService:
             },
             "portfolio_sections": _shared_portfolio_sections(run_detail),
             "data_quality_gate": _shared_data_quality_gate(professional_report, run_detail),
+            "credibility": _report_credibility(task),
             "semantic_boundary": {
                 "account_scope": "single_shared_account",
                 "equity_curve": "one_portfolio_curve",
@@ -217,6 +218,7 @@ class BacktestModeReportService:
                 "strategy_exposure_ic": "end-of-day position weight at t versus next-trading-day adjusted close return; Pearson IC, Spearman Rank IC, Newey-West HAC t-statistic",
             },
             "data_quality_notes": _data_quality_notes(returns, coverage),
+            "credibility": _report_credibility(task),
         }
         self._independent_report_cache[task_id] = (cache_version, report)
         return dict(report)
@@ -252,6 +254,7 @@ class BacktestModeReportService:
                 "selected_index": selected_index,
                 "total": len(entered),
             },
+            "credibility": _report_credibility(task),
             "semantic_boundary": {
                 "account_scope": "one_independent_virtual_account",
                 "evaluation_subject": "strategy_on_selected_symbol",
@@ -313,6 +316,27 @@ class BacktestModeReportService:
         }
 
 
+
+def _report_credibility(task: dict[str, Any]) -> dict[str, Any]:
+    config = dict(task.get("config") or {})
+    binding = dict(config.get("data_version_binding") or {})
+    parameters = dict(config.get("parameters") or {})
+    return {
+        "credibility_label": "historical_simulation_only",
+        "conclusion_scope": "research evidence; not a trading recommendation",
+        "data_version_id": binding.get("data_version") or binding.get("data_version_id"),
+        "quality_report_id": binding.get("quality_report_id"),
+        "factor_artifacts": dict(parameters.get("factor_artifacts") or {}),
+        "execution_model": "configured historical execution assumptions",
+        "market_impact_model": "not modeled",
+        "paper_or_live_validation": "not performed",
+        "limitations": [
+            "historical performance does not establish future performance",
+            "liquidity, queue priority and market impact may be understated",
+            "failed or unavailable samples are disclosed rather than imputed as zero",
+        ],
+        "disclaimer": "本报告仅用于本地量化研究，不构成投资建议、收益承诺或实盘交易指令。",
+    }
 def _infer_market_board(symbol: str) -> str:
     code = symbol.split(".", 1)[0]
     suffix = symbol.split(".", 1)[1].upper() if "." in symbol else ""

@@ -14,7 +14,7 @@ def main() -> None:
 
     for section in ("overview", "datasets", "signals", "portfolio", "risk", "execution", "code", "validation"):
         assert f'id="{section}"' in html
-    assert 'href="/?page=backtest"' in html
+    assert 'href="http://127.0.0.1:8010/?page=backtest"' in html
     assert 'data-vtable-mode="edit"' in html
     assert '/vendor/vtable/vtable.min.js' in html
     assert '/vtable-adapter.js' in html

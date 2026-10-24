@@ -2,12 +2,48 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+
+def open_signal_lag(source_code: str = "", execution_contract: str = "") -> int:
+    """开盘默认消费前一根信号；已延迟策略必须显式声明。"""
+    timing = "before_open" if execution_contract == "next_trade_date_open" else "bar_close"
+    for node in ast.parse(source_code or "").body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "SIGNAL_TIMING"
+            for target in node.targets
+        ):
+            timing = ast.literal_eval(node.value)
+    if timing not in {"bar_close", "before_open"}:
+        raise ValueError("SIGNAL_TIMING must be bar_close or before_open")
+    return 0 if timing == "before_open" else 1
+
+
+def bar_is_tradable(row: Mapping[str, Any]) -> bool:
+    """显式不可交易或无正成交量的 bar 仅用于估值。"""
+    status = row.get("trading_status") or (row.get("datasets") or {}).get("trading_status") or {}
+    if row.get("is_tradable") is False or (
+        isinstance(status, Mapping) and status.get("is_tradable") is False
+    ):
+        return False
+    try:
+        return float(row.get("volume") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def affordable_quantity(requested: int, cash: float, price: float, rate: float, minimum: float) -> int:
+    """按含佣金的实际成交价计算可支付的整手数量。"""
+    quantity = min(requested, max(0, int(cash / (price * (1 + rate)) / 100) * 100))
+    while quantity > 0 and quantity * price + max(quantity * price * rate, minimum) > cash:
+        quantity -= 100
+    return quantity
 
 
 def execute_target_weights(

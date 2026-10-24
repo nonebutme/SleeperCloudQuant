@@ -1,0 +1,156 @@
+{
+  "task": "处理回测审计9项及业务交互6项问题",
+  "date": "2026-10-13",
+  "status": "15项已修复并通过定向自动化验证；全项目仍有既有验证失败",
+  "findings": [
+    {
+      "id": "F01",
+      "fix": "开盘撮合默认使用上一根bar的权重与评分，预热区间保留；自行延迟的策略可显式声明SIGNAL_TIMING=before_open"
+    },
+    {
+      "id": "F02",
+      "fix": "统一复权参数、运行时读取与数据资产追踪；冲突输入显式拒绝"
+    },
+    {
+      "id": "F03",
+      "fix": "零成交量和显式不可交易bar不成交，保留估值；开盘交易不提前使用当日收盘估值"
+    },
+    {
+      "id": "F04",
+      "fix": "未成功卖出的持仓继续占用持仓名额和资金敞口"
+    },
+    {
+      "id": "F05",
+      "fix": "按含滑点、佣金及最低佣金的实际支付金额限制买入整手数量"
+    },
+    {
+      "id": "F06",
+      "fix": "回撤及日收益从初始资金计算，结果页和分析报告回撤曲线包含首日亏损"
+    },
+    {
+      "id": "F07",
+      "fix": "年度收益使用初始资金及上一年末净值衔接，基准年度收益按真实曲线计算；共享组合保留首日收益"
+    },
+    {
+      "id": "F08",
+      "fix": "未指定版本时保存实际解析出的版本和源码哈希"
+    },
+    {
+      "id": "F09",
+      "fix": "买入费用计入持仓成本及平仓盈亏归因"
+    },
+    {
+      "id": "UI01",
+      "fix": "克隆恢复精确策略版本、参数、冻结参数、日期、复权、资金及费用，缺失历史版本时明确报错"
+    },
+    {
+      "id": "UI02",
+      "fix": "结果、明细及嵌入报告使用请求序号与当前选择校验，拒绝过时响应覆盖"
+    },
+    {
+      "id": "UI03",
+      "fix": "当前运行任务独立读取详情，筛选列表不再决定其轮询生命周期"
+    },
+    {
+      "id": "UI04",
+      "fix": "按返回总数逐页读取全部已建仓股票，验证150条结果及最后一条选择"
+    },
+    {
+      "id": "UI05",
+      "fix": "同标的买入持有和零收益对照明确标注非指数；真实基准需要状态与曲线证据，报告服务保留证据"
+    },
+    {
+      "id": "UI06",
+      "fix": "任务目录先检索完整历史再分页，前端发送offset并显示真实总数，验证第201条历史任务"
+    }
+  ],
+  "files": [
+    "backtest_kernel/strategy_execution.py",
+    "backtest_kernel/adapters/local_sqlite_runtime.py",
+    "app/services/single_backtest_task_service.py",
+    "app/services/independent_screening_service.py",
+    "app/services/shared_portfolio_service.py",
+    "app/services/persistent_backtest_service.py",
+    "app/services/reporting_service.py",
+    "domain/report/models.py",
+    "app/api/backtest.py",
+    "app/schemas/backtest.py",
+    "web/app.js",
+    "web/report-ui.js",
+    "web/index.html",
+    "scripts/fujing_v2_v7_candidate.py",
+    "scripts/smoke_test_backtest_audit_regressions.py",
+    "scripts/smoke_test_backtest_ui_audit.mjs",
+    "scripts/run_formal_verifications.py"
+  ],
+  "已验证项": {
+    "numerical_and_service_regressions": "16个用例通过，含内存SQLite任务版本与复权执行链路",
+    "frontend": "执行当前页面函数的Node VM自动化，覆盖六类交互与展示缺陷；JS语法检查通过",
+    "full_suite": {
+      "report": "tmp/formal-verification-reports/formal-20261013T103208-a05c0e07/formal-verification-report.json",
+      "executed": 112,
+      "passed": 102,
+      "failed": 10,
+      "interpretation": "包含修复前9项失败及新增测试入口不兼容1项；随后修复入口及静态资源版本，定向复测通过。此处保留原始运行结果，不回写为全量通过。",
+      "protected_storage_unchanged": true,
+      "guard_violation_count": 0
+    },
+    "targeted_isolated_suite": {
+      "report": "tmp/formal-verification/formal-audit-final-20261013T105821/evidence/audit-final-report.json",
+      "passed": 15,
+      "failed": 0,
+      "protected_storage_unchanged": true,
+      "guard_violation_count": 0
+    },
+    "final_yearly_isolated_recheck": {
+      "report": "tmp/formal-verification/formal-audit-yearly-20261013T110314/evidence/audit-final-report.json",
+      "passed": 3,
+      "failed": 0,
+      "protected_storage_unchanged": true,
+      "guard_violation_count": 0
+    }
+  },
+  "未验证项": [
+    "本轮六类交互未在真实浏览器中逐项人工点击验收；使用实际页面函数及模拟DOM/接口验证",
+    "未对正式策略和历史报告批量重算，未更新正式行情数据",
+    "未开展海量历史任务目录性能压测"
+  ],
+  "阻塞原因": {
+    "requested_fixes": "无",
+    "remaining_baseline_failures": [
+      "smoke_test_a_share_source_database.py",
+      "smoke_test_data_source_vtable_interaction.mjs",
+      "smoke_test_a_share_full_market_quality.py",
+      "smoke_test_unified_web_entry.py",
+      "smoke_test_real_provider_entry.py",
+      "smoke_test_market_endpoint_mapping.py",
+      "smoke_test_market_data_quality.py",
+      "smoke_test_market_data_browser.py"
+    ]
+  },
+  "潜在风险": [
+    "开盘信号时点、交易约束和费用口径修正会改变重新运行的绩效；已保存的历史报告不会自动改写",
+    "历史自带一根bar延迟但未声明时点的源码，需要在新版本中显式声明before_open，避免额外延迟；本轮未改写已发布版本",
+    "全历史任务检索当前先读取目录再分页，海量任务下仍需单独评估性能"
+  ],
+  "发布判断": "本次15项修复通过定向验证；由于仍有8项既有验证失败，不宣称全项目通过发布验收。",
+  "source_sha256": {
+    "backtest_kernel/strategy_execution.py": "ccc4157f3a82c2d78e241984aee4ff15631d51bb8573ad1b03f298b116cb2ef6",
+    "backtest_kernel/adapters/local_sqlite_runtime.py": "ff380aee82dded868375721b6201fdc56467fbac7ba68876007323439ec92453",
+    "app/services/single_backtest_task_service.py": "1b46cdf86facea6009fa341920ad723cc7536818bab037d69f99cca900f1b566",
+    "app/services/independent_screening_service.py": "e82686a48bca58b55abd4b48807b5234a081762f4623f8201d94fb7c0373dfd2",
+    "app/services/shared_portfolio_service.py": "d7e96770cd023043442052a0624c13b17a10f602eeb016b70c41496f2beacb66",
+    "app/services/persistent_backtest_service.py": "58601f7652236a5481f3e5be654430f6943e6f40dcfd18b76d62ef183c1344d3",
+    "app/services/reporting_service.py": "e2cb943af92d9226cfd12e7b258f83779f4aa4a325fc0ee47ea11b8a3620295b",
+    "domain/report/models.py": "d5fc58a19f32107908f0a0a1cd0b93ebfece9093e515907f019b53a36119737c",
+    "app/api/backtest.py": "fe58c456a4aafeb1006bada97ea3b11751ceba47621eee4a0f69016c8ca58dfe",
+    "app/schemas/backtest.py": "53a840cb3c493d701e87884beadded5778206ab5cfa91a37e9b3d9ecec00b60a",
+    "web/app.js": "a4604f3885cd79e38fee5e5ae731224cb8ccf10fb2298bcf365328dd867304d8",
+    "web/report-ui.js": "bd7e3fcf14a582ad240d6d1b60553c67b196ccb5a13f24afd3dc5e8c5d7fff78",
+    "web/index.html": "1ac30984aa6dae656bd7de952cd5a4baa0cadd1b867a227c2ea444954c197595",
+    "scripts/fujing_v2_v7_candidate.py": "463119c74083515eda0d6486d075bbeb8daec6e28608adaeedf4e84f7b6e6e32",
+    "scripts/smoke_test_backtest_audit_regressions.py": "d9b5032c21214aa5b4db602082c87a7b7a7e41c352eae3d1d5059cb5fd402e87",
+    "scripts/smoke_test_backtest_ui_audit.mjs": "338e0b83ae81d054a68c3154189376deef4a540b577872e529a12648ac94290d",
+    "scripts/run_formal_verifications.py": "b018dc7f6a5173328b82ec67fdbeb75553616c22c44f0b399b6ca433de7fb064"
+  }
+}

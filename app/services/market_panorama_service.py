@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import queue
 import sqlite3
 import shutil
 import subprocess
@@ -11,13 +12,14 @@ import statistics
 import threading
 import time
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from data_platform.providers.akshare_governance_provider import AkshareGovernanceProvider
+from data_platform.providers.akshare_a_share_provider import discover_proxy_url
 from data_platform.providers.akshare_ths_board_provider import AkshareThsBoardProvider
 from data_platform.task_ids import new_task_id
 from data_platform.providers.cninfo_controlled_provider import CninfoControlledProvider
@@ -30,6 +32,16 @@ CORE_INDICES = (
     ("000300", "沪深300"), ("399006", "创业板指"), ("000688", "科创50"),
 )
 
+GLOBAL_INDICES = (
+    {"code": "SPX", "label": "标普500", "market": "US", "partition": "US", "endpoint": "index_us_stock_sina", "coverage": "较完整历史（上游当前可回溯至2004年）"},
+    {"code": "IXIC", "label": "纳斯达克综合指数", "market": "US", "partition": "US", "endpoint": "index_us_stock_sina", "coverage": "较完整历史（上游当前可回溯至2004年）"},
+    {"code": "DJI", "label": "道琼斯工业指数", "market": "US", "partition": "US", "endpoint": "index_us_stock_sina", "coverage": "较完整历史（上游当前可回溯至2004年）"},
+    {"code": "NDX", "label": "纳斯达克100指数", "market": "US", "partition": "US", "endpoint": "index_us_stock_sina", "coverage": "较完整历史（上游当前可回溯至2014年）"},
+    {"code": "FTSE", "label": "英国富时100指数", "market": "GB", "partition": "INTERNATIONAL", "endpoint": "index_global_hist_sina", "coverage": "仅上游最近1000条日线"},
+    {"code": "GDAXI", "label": "德国DAX指数", "market": "DE", "partition": "INTERNATIONAL", "endpoint": "index_global_hist_sina", "coverage": "仅上游最近1000条日线"},
+    {"code": "N225", "label": "日经225指数", "market": "JP", "partition": "INTERNATIONAL", "endpoint": "index_global_hist_sina", "coverage": "仅上游最近1000条日线"},
+)
+
 PANORAMA_DATASETS = (
     "index_daily",
     "industry_board",
@@ -38,6 +50,7 @@ PANORAMA_DATASETS = (
     "concept_flow",
     "events",
     "industry_classification_repair",
+    "global_index_daily",
 )
 
 
@@ -64,6 +77,8 @@ class MarketPanoramaService:
         self.governance_provider = AkshareGovernanceProvider(retry_count=3)
         self._threads: dict[str, threading.Thread] = {}
         self._thread_lock = threading.Lock()
+        self._global_route_rate_lock = threading.Lock()
+        self._global_route_last_request: dict[str, float] = {}
 
     def get_panorama(self, *, trade_date: str, symbol: str = "", asset_type: str = "stock") -> dict[str, Any]:
         requested = str(trade_date or "")[:10]
@@ -118,11 +133,16 @@ class MarketPanoramaService:
         if start > target:
             raise ValueError("start_trade_date must not be later than target_trade_date")
         historical = mode == "historical_gap"
-        expected_dates = self._open_dates(start, target) if historical else [target]
         symbol_list = _symbols(symbols)
         selected = {str(item).strip() for item in selected_shards if str(item).strip()}
         shards: list[dict[str, Any]] = []
-        exact_gap_scan = dataset not in {"events", "industry_classification_repair"}
+        exact_gap_scan = dataset not in {
+            "events", "industry_classification_repair", "global_index_daily",
+        }
+        coverage_strategy = (
+            "exact_trading_day_gap" if exact_gap_scan else "range_backfill"
+        )
+        expected_dates = self._open_dates(start, target) if historical and exact_gap_scan else [target]
         if dataset == "index_daily":
             items = [{"code": code, "label": name} for code, name in CORE_INDICES]
             for item in items:
@@ -132,6 +152,54 @@ class MarketPanoramaService:
                 missing = [day for day in expected_dates if day not in covered]
                 if missing:
                     shards.append(self._gap_shard(item["code"], item["label"], missing))
+        elif dataset == "global_index_daily":
+            global_calendar_modes: list[str] = []
+            for item in GLOBAL_INDICES:
+                if selected and item["code"] not in selected:
+                    continue
+                calendar_ready = historical and self.governance_store.global_index_calendar_covers(
+                    market=str(item["market"]), start_trade_date=start,
+                    target_trade_date=target,
+                )
+                if calendar_ready:
+                    global_calendar_modes.append("market_session_gap")
+                    expected = self.governance_store.global_index_calendar_dates(
+                        market=str(item["market"]), start_trade_date=start,
+                        target_trade_date=target,
+                    )
+                    covered = self._index_covered_dates(
+                        str(item["code"]), start, target,
+                    )
+                    missing = [day for day in expected if day not in covered]
+                    if missing:
+                        shard = self._gap_shard(
+                            str(item["code"]), str(item["label"]), missing,
+                        )
+                        shard.update({
+                            "market": item["market"],
+                            "partition": item["partition"],
+                            "endpoint": item["endpoint"],
+                            "coverage": item["coverage"],
+                            "coverage_strategy": "market_session_gap",
+                        })
+                        shards.append(shard)
+                else:
+                    global_calendar_modes.append("range_backfill")
+                    shards.append({
+                        "shard_id": item["code"], "label": item["label"],
+                        "market": item["market"],
+                        "partition": item["partition"],
+                        "start_date": start, "end_date": target,
+                        "endpoint": item["endpoint"], "coverage": item["coverage"],
+                        "coverage_strategy": "range_backfill",
+                    })
+            if global_calendar_modes and all(
+                mode == "market_session_gap" for mode in global_calendar_modes
+            ):
+                exact_gap_scan = True
+                coverage_strategy = "market_session_gap"
+            elif any(mode == "market_session_gap" for mode in global_calendar_modes):
+                coverage_strategy = "hybrid_market_calendar"
         elif dataset in {"industry_board", "industry_flow", "concept_board", "concept_flow"}:
             dimension = "industry" if dataset.startswith("industry") else "concept"
             catalog = self.store.list_board_catalog(dimension)
@@ -168,7 +236,7 @@ class MarketPanoramaService:
             "mode": mode, "start_trade_date": start, "target_trade_date": target,
             "symbols": symbol_list, "symbol_scope": symbol_list or "all_items",
             "request_count": len(shards), "missing_date_count": missing_date_count,
-            "coverage_strategy": "exact_trading_day_gap" if exact_gap_scan else "range_backfill",
+            "coverage_strategy": coverage_strategy,
             "estimated_seconds": max(1, math.ceil(len(shards) / max(self.max_workers, 1) * 1.2)),
             "writes": 0, "shards": shards[:500], "shards_truncated": len(shards) > 500,
         }
@@ -225,10 +293,89 @@ class MarketPanoramaService:
     def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
         return self.store.list_jobs(limit)
 
-    def get_job(self, job_id: str) -> dict[str, Any]:
-        return self.store.get_job(job_id)
+    def get_job_items(self, job_id: str) -> list[dict[str, Any]]:
+        return self.store.list_job_items(job_id)
 
-    def start_job(self, job_id: str) -> dict[str, Any]:
+    def get_job(self, job_id: str) -> dict[str, Any]:
+        job = self.store.get_job(job_id)
+        if job.get("status") == "not_found":
+            return job
+        failed_items = self.store.list_job_items(job_id, status="failed")
+        payload = {**job, **self._failure_diagnostics(failed_items)}
+        if "global_index_daily" in job.get("datasets", []):
+            payload["global_index_release"] = (
+                self.governance_store.get_global_index_release(job_id=job_id)
+            )
+        return payload
+
+    @staticmethod
+    def _failure_diagnostics(items: list[dict[str, Any]]) -> dict[str, Any]:
+        if not items:
+            return {"failure_summary": {"failed_item_count": 0, "groups": []}, "resolution": None}
+        counts = Counter(str(item.get("error_message") or "unknown item failure") for item in items)
+        groups = [
+            {"error": message, "count": count}
+            for message, count in counts.most_common(10)
+        ]
+        combined = " ".join(counts).lower()
+        if "curl transport failed (56)" in combined or "failure when receiving data from the peer" in combined:
+            resolution = {
+                "code": "upstream_connection_interrupted",
+                "title": "上游连接在接收数据时中断",
+                "cause": "免费上游或当前网络在响应过程中断开连接；本地尚未写入这些失败分片。",
+                "retryable": True,
+                "retry_scope": "failed_items_only",
+                "steps": [
+                    "确认当前网络可访问数据源，并等待 1—3 分钟避开上游限流或短暂抖动。",
+                    "点击“仅重试失败项”；系统只恢复失败分片，不重跑已经成功的分片。",
+                    "若连续三次仍全部失败，到“数据源与路由”执行只读探测，再检查代理、防火墙或切换可用数据源。",
+                ],
+            }
+        elif "timed out" in combined or "timeout" in combined:
+            resolution = {
+                "code": "upstream_timeout",
+                "title": "上游响应超时",
+                "cause": "上游响应速度低于当前任务等待窗口。",
+                "retryable": True,
+                "retry_scope": "failed_items_only",
+                "steps": [
+                    "等待上游恢复后点击“仅重试失败项”。",
+                    "若重复超时，减少单次分片范围或到“数据源与路由”执行只读探测。",
+                ],
+            }
+        elif "no fund-flow rows" in combined or "no board rows" in combined:
+            resolution = {
+                "code": "target_date_has_no_upstream_rows",
+                "title": "目标日期没有可用上游记录",
+                "cause": "目标日期可能不是开放交易日，或上游尚未发布对应板块数据。",
+                "retryable": False,
+                "retry_scope": "new_task_required",
+                "steps": [
+                    "核对目标日期是否为开放交易日。",
+                    "改用最近开放交易日重新预检并创建任务；不要反复重试同一无数据日期。",
+                ],
+            }
+        else:
+            resolution = {
+                "code": "inspect_failed_items",
+                "title": "需要根据失败项处理",
+                "cause": "任务包含可定位的分片错误，请先查看下方失败项和错误分组。",
+                "retryable": True,
+                "retry_scope": "failed_items_only",
+                "steps": [
+                    "查看失败原因分组和具体分片。",
+                    "确认配置或数据源恢复后点击“仅重试失败项”。",
+                    "若同一错误连续出现三次，到“数据源与路由”执行只读探测。",
+                ],
+            }
+        return {
+            "failure_summary": {"failed_item_count": len(items), "groups": groups},
+            "resolution": resolution,
+        }
+
+    def start_job(
+        self, job_id: str, *, routes: Iterable[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         job = self.store.get_job(job_id)
         if job.get("status") == "not_found":
             return job
@@ -236,7 +383,11 @@ class MarketPanoramaService:
             existing = self._threads.get(job_id)
             if existing and existing.is_alive():
                 return job
-            thread = threading.Thread(target=self.run_job, args=(job_id,), name=f"panorama-{job_id[-8:]}", daemon=True)
+            frozen_routes = None if routes is None else [dict(item) for item in routes]
+            thread = threading.Thread(
+                target=self.run_job, args=(job_id,), kwargs={"routes": frozen_routes},
+                name=f"panorama-{job_id[-8:]}", daemon=True,
+            )
             self._threads[job_id] = thread
             thread.start()
         return {**self.store.get_job(job_id), "launch": {"status": "background_started", "thread": thread.name}}
@@ -250,29 +401,53 @@ class MarketPanoramaService:
             if active is not None and active.is_alive():
                 raise ValueError("running panorama task cannot be deleted")
         return self.store.delete_job(job_id)
-    def retry_job(self, job_id: str, *, run_now: bool = False) -> dict[str, Any]:
-        job = self.store.reset_job(job_id)
-        return self.start_job(job_id) if run_now else job
+    def retry_job(
+        self, job_id: str, *, run_now: bool = False,
+        routes: Iterable[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        self.store.reset_job(job_id)
+        return self.start_job(job_id, routes=routes) if run_now else self.get_job(job_id)
 
-    def run_job(self, job_id: str) -> dict[str, Any]:
+    def run_job(
+        self, job_id: str, *, routes: Iterable[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Run one persisted panorama job synchronously for worker processes."""
 
-        self._run_job(job_id)
-        return self.store.get_job(job_id)
-    def _run_job(self, job_id: str) -> None:
+        self._run_job(job_id, routes=routes)
+        return self.get_job(job_id)
+    def _run_job(
+        self, job_id: str, *, routes: Iterable[Mapping[str, Any]] | None = None,
+    ) -> None:
         self.store.start_job(job_id)
         job = self.store.get_job(job_id)
+        release_id = f"global-index-release-{job_id}"
+        has_global_index = "global_index_daily" in job.get("datasets", [])
+        route_plan = None if routes is None else sorted(
+            (dict(item) for item in routes),
+            key=lambda item: (int(item.get("priority") or 0), str(item.get("route_id") or "")),
+        )
         try:
+            if has_global_index:
+                self.governance_store.begin_global_index_release(
+                    release_id=release_id, job_id=job_id,
+                    start_trade_date=job["start_trade_date"],
+                    target_trade_date=job["target_trade_date"],
+                )
             for dataset in job["datasets"]:
                 if self.store.should_stop(job_id):
                     break
                 try:
                     if dataset == "index_daily":
                         self._sync_index_daily(job_id, job["start_trade_date"], job["target_trade_date"], job["symbols"])
+                    elif dataset == "global_index_daily":
+                        self._sync_global_index_daily(
+                            job_id, job["start_trade_date"], job["target_trade_date"],
+                            job["symbols"], routes=route_plan,
+                        )
                     elif dataset == "industry_board":
-                        self._sync_board_dimension(job_id, "industry", job["start_trade_date"], job["target_trade_date"], job["symbols"])
+                        self._sync_board_dimension(job_id, "industry", job["start_trade_date"], job["target_trade_date"], job["symbols"], routes=route_plan)
                     elif dataset == "concept_board":
-                        self._sync_board_dimension(job_id, "concept", job["start_trade_date"], job["target_trade_date"], job["symbols"])
+                        self._sync_board_dimension(job_id, "concept", job["start_trade_date"], job["target_trade_date"], job["symbols"], routes=route_plan)
                     elif dataset == "industry_flow":
                         self._sync_flow_dimension(job_id, "industry", job["start_trade_date"], job["target_trade_date"], job["symbols"])
                     elif dataset == "concept_flow":
@@ -286,16 +461,31 @@ class MarketPanoramaService:
                         job_id, dataset, "__dataset__", status="failed",
                         error=f"{type(dataset_error).__name__}: {dataset_error}",
                     )
-            self.store.finish_job(job_id)
+            finished = self.store.finish_job(job_id)
+            if has_global_index:
+                self.governance_store.finalize_global_index_release(
+                    release_id=release_id, status=str(finished["status"]),
+                )
         except Exception as error:  # keep background task observable
-            self.store.finish_job(job_id, error=f"{type(error).__name__}: {error}")
+            finished = self.store.finish_job(
+                job_id, error=f"{type(error).__name__}: {error}"
+            )
+            if has_global_index:
+                release = self.governance_store.get_global_index_release(
+                    job_id=job_id
+                )
+                if release.get("status") != "not_found":
+                    self.governance_store.finalize_global_index_release(
+                        release_id=release_id, status=str(finished["status"]),
+                    )
 
     def _sync_index_daily(
         self, job_id: str, start_date: str, target_date: str,
         selected_shards: Iterable[str] = (),
     ) -> None:
         selected = {str(item) for item in selected_shards if str(item)}
-        items = [(code, name) for code, name in CORE_INDICES if not selected or code in selected]
+        completed = self.store.completed_item_keys(job_id, "index_daily")
+        items = [(code, name) for code, name in CORE_INDICES if (not selected or code in selected) and code not in completed]
         for code, _name in items:
             if self.store.should_stop(job_id):
                 return
@@ -310,8 +500,192 @@ class MarketPanoramaService:
                     job_id, "index_daily", code, status="failed",
                     error=f"{type(error).__name__}: {error}",
                 )
-    def _sync_board_dimension(self, job_id: str, dimension: str, start_date: str, target_date: str, selected_shards: Iterable[str] = ()) -> None:
-        catalog = self._fetch_catalog(dimension)
+
+    def _sync_global_index_daily(
+        self, job_id: str, start_date: str, target_date: str,
+        selected_shards: Iterable[str] = (),
+        *, routes: list[dict[str, Any]] | None = None,
+    ) -> None:
+        selected = {str(item) for item in selected_shards if str(item)}
+        completed = self.store.completed_item_keys(job_id, "global_index_daily")
+        route_plan = list(routes or self._default_global_index_routes())
+        items = [
+            item for item in GLOBAL_INDICES
+            if (not selected or item["code"] in selected)
+            and item["code"] not in completed
+        ]
+        for item in items:
+            code = str(item["code"])
+            if self.store.should_stop(job_id):
+                return
+            try:
+                endpoint = str(item["endpoint"])
+                route = next((
+                    route for route in route_plan
+                    if str(route.get("endpoint") or "") == endpoint
+                    and str(route.get("partition_key") or item["partition"])
+                    == str(item["partition"])
+                ), None)
+                if route is None:
+                    raise RuntimeError(
+                        "frozen route snapshot does not include required partition: "
+                        f"{item['partition']} / {endpoint}"
+                    )
+                rows, runtime = self._fetch_global_index_with_controls(
+                    item=item, route=route,
+                    start_date=start_date, target_date=target_date,
+                )
+                calendar_start = start_date
+                returned_dates = sorted(
+                    str(row.get("trade_date") or "") for row in rows
+                    if row.get("trade_date")
+                )
+                if (
+                    endpoint == "index_global_hist_sina"
+                    and len(returned_dates) >= 990
+                    and returned_dates[0] > start_date
+                ):
+                    calendar_start = returned_dates[0]
+                runtime["calendar_range_start"] = calendar_start
+                runtime["calendar_range_end"] = target_date
+                appended = self.governance_store.append_global_index_prices(
+                    rows,
+                    release_id=f"global-index-release-{job_id}",
+                    index_symbol=code, market=str(item["market"]),
+                    start_trade_date=start_date,
+                    target_trade_date=target_date,
+                    runtime_config=runtime,
+                    calendar_range_start=calendar_start,
+                    calendar_range_end=target_date,
+                )
+                self.store.mark_item(
+                    job_id, "global_index_daily", code,
+                    status="completed",
+                    row_count=int(appended["inserted_rows"]),
+                )
+            except Exception as error:
+                self.store.mark_item(
+                    job_id, "global_index_daily", code, status="failed",
+                    error=f"{type(error).__name__}: {error}",
+                )
+
+    @staticmethod
+    def _default_global_index_routes() -> list[dict[str, Any]]:
+        return [
+            {
+                "route_id": "global-index-us-sina",
+                "partition_key": "US", "endpoint": "index_us_stock_sina",
+                "requests_per_minute": 20, "timeout_seconds": 60,
+                "retry_count": 2, "backoff_seconds": 3.0,
+            },
+            {
+                "route_id": "global-index-international-sina",
+                "partition_key": "INTERNATIONAL",
+                "endpoint": "index_global_hist_sina",
+                "requests_per_minute": 20, "timeout_seconds": 60,
+                "retry_count": 2, "backoff_seconds": 3.0,
+            },
+        ]
+
+    def _fetch_global_index_with_controls(
+        self, *, item: Mapping[str, Any], route: Mapping[str, Any],
+        start_date: str, target_date: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        route_id = str(route.get("route_id") or route.get("endpoint") or "global")
+        requests_per_minute = max(1, int(route.get("requests_per_minute") or 1))
+        timeout_seconds = max(1, int(route.get("timeout_seconds") or 60))
+        retry_count = max(0, int(route.get("retry_count") or 0))
+        backoff_seconds = max(0.0, float(route.get("backoff_seconds") or 0))
+        method = self.governance_provider.fetch_global_index_daily_prices
+        native_method = (
+            getattr(method, "__func__", None)
+            is AkshareGovernanceProvider.fetch_global_index_daily_prices
+        )
+        attempts = 0
+        previous_errors: list[str] = []
+        for attempt in range(1, retry_count + 2):
+            attempts = attempt
+            self._acquire_global_route_slot(route_id, requests_per_minute)
+
+            def operation() -> list[dict[str, Any]]:
+                kwargs = {
+                    "index_symbol": str(item["code"]),
+                    "endpoint": str(item["endpoint"]),
+                    "start_date": start_date,
+                    "end_date": target_date,
+                }
+                if native_method:
+                    return method(
+                        **kwargs, retry_count=1, retry_delay_seconds=0,
+                        request_gate=lambda: None,
+                    )
+                return method(**kwargs)
+
+            try:
+                rows = self._call_with_timeout(operation, timeout_seconds)
+                runtime = {
+                    "route_id": route_id,
+                    "partition_key": str(route.get("partition_key") or ""),
+                    "requests_per_minute": requests_per_minute,
+                    "timeout_seconds": timeout_seconds,
+                    "retry_count": retry_count,
+                    "backoff_seconds": backoff_seconds,
+                    "attempts": attempts,
+                    "previous_errors": previous_errors,
+                }
+                return list(rows), runtime
+            except Exception as error:
+                previous_errors.append(f"{type(error).__name__}: {error}")
+                if attempt > retry_count:
+                    raise RuntimeError(
+                        f"route {route_id} failed after {attempts} attempt(s): "
+                        + previous_errors[-1]
+                    ) from error
+                if backoff_seconds:
+                    time.sleep(backoff_seconds * attempt)
+        raise AssertionError("unreachable global-index retry loop")
+
+    def _acquire_global_route_slot(
+        self, route_id: str, requests_per_minute: int,
+    ) -> None:
+        interval = 60.0 / max(1, int(requests_per_minute))
+        with self._global_route_rate_lock:
+            now = time.monotonic()
+            previous = self._global_route_last_request.get(route_id)
+            if previous is not None:
+                remaining = interval - (now - previous)
+                if remaining > 0:
+                    time.sleep(remaining)
+            self._global_route_last_request[route_id] = time.monotonic()
+
+    @staticmethod
+    def _call_with_timeout(
+        operation: Callable[[], list[dict[str, Any]]], timeout_seconds: float,
+    ) -> list[dict[str, Any]]:
+        result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+        def invoke() -> None:
+            try:
+                result_queue.put(("result", operation()))
+            except BaseException as error:
+                result_queue.put(("error", error))
+
+        worker = threading.Thread(
+            target=invoke, name="global-index-read", daemon=True,
+        )
+        worker.start()
+        worker.join(max(0.01, float(timeout_seconds)))
+        if worker.is_alive():
+            raise TimeoutError(
+                f"global-index read exceeded {float(timeout_seconds):g}s"
+            )
+        kind, value = result_queue.get_nowait()
+        if kind == "error":
+            raise value
+        return list(value)
+
+    def _sync_board_dimension(self, job_id: str, dimension: str, start_date: str, target_date: str, selected_shards: Iterable[str] = (), *, routes: list[dict[str, Any]] | None = None) -> None:
+        catalog = self._fetch_catalog(dimension) if routes is None else self._fetch_catalog_routed(dimension, routes)
         self.store.upsert_board_catalog(dimension, catalog)
         self.store.mark_item(job_id, f"{dimension}_catalog", "catalog", status="completed", row_count=len(catalog))
         self._parallel_items(
@@ -319,7 +693,11 @@ class MarketPanoramaService:
             f"{dimension}_board",
             self._selected_boards(dimension, selected_shards),
             lambda item: self.store.upsert_board_daily(
-                dimension, item["board_code"], self._fetch_board_daily_range(dimension, item, start_date, target_date)
+                dimension, item["board_code"],
+                self._fetch_board_daily_range(dimension, item, start_date, target_date)
+                if routes is None else self._fetch_board_daily_routed(
+                    dimension, item, start_date, target_date, routes,
+                )
             ),
         )
 
@@ -349,8 +727,10 @@ class MarketPanoramaService:
         return [item for item in items if str(item["board_code"]) in selected] if selected else items
 
     def _parallel_items(self, job_id: str, dataset: str, items: list[dict[str, Any]], loader: Callable[[dict[str, Any]], int]) -> None:
+        completed = self.store.completed_item_keys(job_id, dataset)
+        pending_items = [item for item in items if str(item["board_code"]) not in completed]
         with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=dataset) as executor:
-            futures = {executor.submit(_retry, loader, item): item for item in items}
+            futures = {executor.submit(_retry, loader, item): item for item in pending_items}
             for future in as_completed(futures):
                 item = futures[future]
                 key = str(item["board_code"])
@@ -365,7 +745,8 @@ class MarketPanoramaService:
                     self.store.mark_item(job_id, dataset, key, status="failed", error=f"{type(error).__name__}: {error}")
 
     def _sync_events(self, job_id: str, symbols: list[str], start_date: str, target_date: str) -> None:
-        for symbol in symbols:
+        completed = self.store.completed_item_keys(job_id, "events")
+        for symbol in (item for item in symbols if item not in completed):
             if self.store.should_stop(job_id):
                 return
             try:
@@ -527,6 +908,56 @@ class MarketPanoramaService:
                 {**row, "source": f"akshare.stock_board_{dimension}_name_ths"}
                 for row in self.ths_board_provider.fetch_catalog(dimension)
             ]
+
+    def _fetch_catalog_routed(
+        self, dimension: str, routes: Iterable[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        errors: list[str] = []
+        for route in routes:
+            endpoint = str(route.get("endpoint") or "")
+            try:
+                if endpoint.endswith("_hist_em"):
+                    return self._fetch_catalog_curl(dimension)
+                if endpoint.endswith("_index_ths"):
+                    rows = list(self.ths_board_provider.fetch_catalog(dimension))
+                    if rows:
+                        return [
+                            {**row, "source": f"akshare.stock_board_{dimension}_name_ths"}
+                            for row in rows
+                        ]
+                    raise RuntimeError(f"empty THS {dimension} board catalog")
+                errors.append(f"unsupported route endpoint: {endpoint}")
+            except Exception as error:
+                errors.append(f"{route.get('route_id')}: {type(error).__name__}: {error}")
+        raise RuntimeError("; ".join(errors) or f"no usable {dimension} board route")
+
+    def _fetch_board_daily_routed(
+        self, dimension: str, item: Mapping[str, Any], start_date: str,
+        target_date: str, routes: Iterable[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        errors: list[str] = []
+        for route in routes:
+            endpoint = str(route.get("endpoint") or "")
+            try:
+                if endpoint.endswith("_hist_em"):
+                    rows = self._fetch_board_daily_range(
+                        dimension, item, start_date, target_date,
+                        allow_fallback=False,
+                    )
+                elif endpoint.endswith("_index_ths"):
+                    rows = self._fetch_board_daily_range_ths(
+                        dimension, item, start_date, target_date,
+                    )
+                else:
+                    errors.append(f"unsupported route endpoint: {endpoint}")
+                    continue
+                if rows:
+                    return rows
+                errors.append(f"{route.get('route_id')}: empty response")
+            except Exception as error:
+                errors.append(f"{route.get('route_id')}: {type(error).__name__}: {error}")
+        raise RuntimeError("; ".join(errors) or f"no usable {dimension} board route")
+
     def _fetch_catalog_curl(self, dimension: str) -> list[dict[str, Any]]:
         url = "https://17.push2.eastmoney.com/api/qt/clist/get" if dimension == "industry" else "https://79.push2.eastmoney.com/api/qt/clist/get"
         sector_filter = "m:90 t:2 f:!50" if dimension == "industry" else "m:90 t:3 f:!50"
@@ -550,9 +981,12 @@ class MarketPanoramaService:
 
     def _fetch_board_daily_range(
         self, dimension: str, item: Mapping[str, Any], start_date: str, target_date: str,
+        *, allow_fallback: bool = True,
     ) -> list[dict[str, Any]]:
         if start_date == target_date:
-            return self._fetch_board_daily(dimension, item, target_date)
+            return self._fetch_board_daily(
+                dimension, item, target_date, allow_fallback=allow_fallback,
+            )
         code = str(item["board_code"])
         try:
             payload = _curl_json("https://91.push2his.eastmoney.com/api/qt/stock/kline/get", {
@@ -573,7 +1007,19 @@ class MarketPanoramaService:
             if rows:
                 return rows
         except Exception:
-            pass
+            if not allow_fallback:
+                raise
+        if not allow_fallback:
+            raise RuntimeError(f"empty {dimension} board history response")
+        return self._fetch_board_daily_range_ths(
+            dimension, item, start_date, target_date,
+        )
+
+    def _fetch_board_daily_range_ths(
+        self, dimension: str, item: Mapping[str, Any], start_date: str,
+        target_date: str,
+    ) -> list[dict[str, Any]]:
+        code = str(item["board_code"])
         frame = self.ths_board_provider.fetch_index(
             dimension, board_name=str(item["board_name"]), board_code=code,
             start_date=start_date.replace("-", ""), end_date=target_date.replace("-", ""),
@@ -592,7 +1038,10 @@ class MarketPanoramaService:
                          "change_pct": ((close / previous - 1) * 100) if close is not None and previous not in {None, 0} else None,
                          "source": f"akshare.stock_board_{dimension}_index_ths"})
         return rows
-    def _fetch_board_daily(self, dimension: str, item: Mapping[str, Any], target_date: str) -> list[dict[str, Any]]:
+    def _fetch_board_daily(
+        self, dimension: str, item: Mapping[str, Any], target_date: str,
+        *, allow_fallback: bool = True,
+    ) -> list[dict[str, Any]]:
         code = str(item["board_code"])
         compact = target_date.replace("-", "")
         try:
@@ -612,6 +1061,8 @@ class MarketPanoramaService:
                 raise RuntimeError("empty board daily response")
             return rows
         except Exception:
+            if not allow_fallback:
+                raise
             return self._fetch_board_daily_ths(dimension, item, target_date)
 
     def _fetch_board_daily_ths(self, dimension: str, item: Mapping[str, Any], target_date: str) -> list[dict[str, Any]]:
@@ -691,6 +1142,11 @@ def _curl_json(url: str, params: Mapping[str, Any], *, method: str = "GET") -> d
     if not executable:
         raise RuntimeError("system curl is unavailable")
     command = [executable, "-sS", "--fail", "--max-time", "30"]
+    proxy_url = discover_proxy_url()
+    if proxy_url:
+        command.extend(["--proxy", proxy_url])
+    else:
+        command.extend(["--noproxy", "*"])
     command.extend(["--get"] if method.upper() == "GET" else ["--request", "POST"])
     for key, value in params.items():
         command.extend(["--data-urlencode", f"{key}={value}"])

@@ -13,6 +13,26 @@ from _project_bootstrap import ensure_project_root_on_sys_path
 class FakeProvider:
     request_gate = None
 
+    def fetch_daily_security_states(
+        self, *, symbol: str, start_date: str, end_date: str,
+    ):
+        if self.request_gate:
+            self.request_gate()
+        return [
+            {
+                "symbol": symbol,
+                "trade_date": trade_date,
+                "risk_warning": symbol == "000002" and trade_date == "2026-01-05",
+                "listing_status": "listed",
+                "available_at": trade_date,
+                "source": "fake:daily-security-state",
+                "source_observed_at": "2026-01-07T00:00:00+00:00",
+                "evidence": {"test": True},
+            }
+            for trade_date in ("2026-01-02", "2026-01-05", "2026-01-06")
+            if start_date <= trade_date <= end_date
+        ]
+
     def fetch_security_lifecycle_events(self, *, symbol: str):
         if self.request_gate:
             self.request_gate()
@@ -94,9 +114,13 @@ def main() -> None:
             published = int(connection.execute(
                 "SELECT COUNT(*) FROM data_versions WHERE status='published'"
             ).fetchone()[0])
+            security_intervals = int(connection.execute(
+                "SELECT COUNT(*) FROM security_master_intervals"
+            ).fetchone()[0])
         assert dict(status) == {"status": "suspended", "is_tradable": 0}, status
         assert factors == 8, factors
         assert published == 1, published
+        assert security_intervals == 4, security_intervals
         print({
             "status": "passed",
             "job_id": result["job_id"],

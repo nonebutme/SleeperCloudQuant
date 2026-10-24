@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from backtest_kernel import RqalphaPackageRuntime
-from data_platform import ExternalMarketProviderRepository, SqliteMetadataStore
 
 from config_center import UnifiedConfigManager
 
@@ -26,10 +25,6 @@ class ConfigCenterService:
     ) -> None:
         self._manager = manager or UnifiedConfigManager()
         self._draft_path = draft_path or Path("var/runtime/config_runtime_draft.json")
-        self._sync_task_path = sync_task_path or Path("var/runtime/market_provider_sync_tasks.json")
-        self._market_bar_store = SqliteMetadataStore(Path("tmp") / "formal_http_demo.sqlite3")
-        self._market_sync_tasks: dict[str, dict[str, Any]] = {}
-        self._market_sync_task_counter = 0
         self._a_share_scheduler = a_share_scheduler
 
     def get_status(self) -> dict[str, Any]:
@@ -50,12 +45,6 @@ class ConfigCenterService:
                 "llm_provider_mode": "local-demo",
                 "default_backtest_profile": "default_a_share",
                 "report_template_mode": "structured-demo",
-                "market_provider": {
-                    "enabled": False,
-                    "provider_name": "open-http-market-provider",
-                    "base_url": "",
-                    "timeout_seconds": 8,
-                },
                 "rqalpha_runtime": {
                     "execution_mode": "probe_then_local_fallback",
                     "prefer_real_package": False,
@@ -68,19 +57,10 @@ class ConfigCenterService:
         effective["ai_workflow"] = ai_workflow
         effective["rqalpha_runtime"] = _normalize_rqalpha_runtime(effective.get("rqalpha_runtime"))
         llm_env_status = _llm_env_status(ai_workflow["provider_profile"])
-        market_provider_config = _normalize_market_provider(effective.get("market_provider"))
-        effective["market_provider"] = market_provider_config
-        market_provider_status = ExternalMarketProviderRepository(
-            base_url=market_provider_config["base_url"],
-            provider_name=market_provider_config["provider_name"],
-            timeout_seconds=market_provider_config["timeout_seconds"],
-            enabled=market_provider_config["enabled"],
-            endpoint_spec=market_provider_config["endpoint_spec"],
-        ).provider_status()
+        effective.pop("market_provider", None)
         rqalpha_runtime_status = RqalphaPackageRuntime.probe_status()
         return {
             "data_sources": [
-                {"name": "external_market_provider", "enabled": market_provider_status["enabled"], "priority": 5, "mode": "open-http", "status": market_provider_status["status"]},
                 {"name": "ricequant", "enabled": False, "priority": 10, "mode": "boundary-defined", "status": "待确认真实授权与密钥"},
                 {"name": "local_demo_cache", "enabled": True, "priority": 1, "mode": "demo", "status": "已用于 MVP 验证"},
                 {"name": "news_provider", "enabled": False, "priority": 30, "mode": "placeholder", "status": "TradingAgents 风格新闻流占位"},
@@ -109,186 +89,12 @@ class ConfigCenterService:
             ],
             "cache_policy": {"metadata_store": "sqlite", "factor_store": "sqlite", "runtime_store": "sqlite", "ttl_seconds": 60},
             "llm_provider_status": llm_env_status,
-            "market_provider_status": market_provider_status,
             "rqalpha_runtime_status": rqalpha_runtime_status,
-            "security_notes": ["不在配置状态 API 中返回密钥、口令或令牌。", "真实外部数据源和 LLM 接入前必须完成人工确认。", "外部 LLM 仅在 SCQ_LLM_BASE_URL、SCQ_LLM_API_KEY、SCQ_LLM_MODEL 同时配置时调用。", "外部行情仅在 SCQ_MARKET_PROVIDER_BASE_URL 与 SCQ_MARKET_PROVIDER_API_KEY 同时配置时调用。", "真实 rqalpha 包未安装或未批准执行真实策略包时会回退本地 SQLite runtime。"],
+            "security_notes": ["不在配置状态 API 中返回密钥、口令或令牌。", "真实外部数据源和 LLM 接入前必须完成人工确认。", "外部 LLM 仅在 SCQ_LLM_BASE_URL、SCQ_LLM_API_KEY、SCQ_LLM_MODEL 同时配置时调用。", "真实 rqalpha 包未安装或未批准执行真实策略包时会回退本地 SQLite runtime。"],
         }
 
     def get_backtest_profiles(self) -> dict[str, Any]:
         return self._manager.get_backtest_profiles()
-
-    def preflight_market_provider(self, *, symbol: str, start_date: str | None = None, end_date: str | None = None) -> dict[str, Any]:
-        config = _normalize_market_provider(self._effective_market_provider_settings())
-        provider = ExternalMarketProviderRepository(
-            base_url=config["base_url"],
-            provider_name=config["provider_name"],
-            timeout_seconds=config["timeout_seconds"],
-            enabled=config["enabled"],
-            endpoint_spec=config["endpoint_spec"],
-        )
-        requested_symbol = str(symbol or "000001.XSHE")
-        requested_start = start_date or "2020-01-01"
-        requested_end = end_date or requested_start
-        rows = list(provider.fetch_price_history(requested_symbol, requested_start, requested_end))
-        status = provider.provider_status()
-        sample = [dict(row) for row in rows[:3]]
-        field_coverage = _market_preflight_field_coverage(sample)
-        serialized = json.dumps({"status": status, "sample": sample}, ensure_ascii=False)
-        secret_values = [value for value in (os.environ.get("SCQ_MARKET_PROVIDER_API_KEY"),) if value]
-        return {
-            "status": "passed" if rows and status.get("last_call", {}).get("status") == "success" else "needs_attention",
-            "symbol": requested_symbol,
-            "start_date": requested_start,
-            "end_date": requested_end,
-            "row_count": len(rows),
-            "sample_rows": sample,
-            "field_coverage": field_coverage,
-            "provider_status": status,
-            "endpoint_spec": status.get("endpoint_spec", {}),
-            "checks": {
-                "base_url_configured": bool(status.get("base_url_configured")),
-                "api_key_configured": bool(status.get("api_key_configured")),
-                "provider_call_success": status.get("last_call", {}).get("status") == "success",
-                "rows_returned": bool(rows),
-                "required_fields_present": all(field_coverage.values()) if field_coverage else False,
-                "secret_leak_detected": any(secret in serialized for secret in secret_values),
-            },
-            "non_persistent": True,
-        }
-
-    def list_market_provider_sync_tasks(self) -> list[dict[str, Any]]:
-        self._load_market_provider_sync_tasks()
-        return [self._public_sync_task(task) for task in self._market_sync_tasks.values()]
-
-    def create_market_provider_sync_task(
-        self,
-        *,
-        symbols: list[str] | None = None,
-        start_date: str = "2020-01-01",
-        end_date: str = "2020-01-02",
-        interval_seconds: int | None = None,
-    ) -> dict[str, Any]:
-        self._load_market_provider_sync_tasks()
-        normalized_symbols = _normalize_sync_symbols(symbols)
-        normalized_start = str(start_date or "2020-01-01")
-        normalized_end = str(end_date or normalized_start)
-        interval = _normalize_interval_seconds(interval_seconds)
-        self._market_sync_task_counter += 1
-        task_id = f"market-sync-{self._market_sync_task_counter:04d}"
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        task = {
-            "task_id": task_id,
-            "dataset": "price_history",
-            "symbols": normalized_symbols,
-            "date_window": {"start_date": normalized_start, "end_date": normalized_end},
-            "cursor_by_symbol": {},
-            "status": "created",
-            "retry_count": 0,
-            "run_count": 0,
-            "row_count": 0,
-            "sample_rows": [],
-            "last_error": None,
-            "provider_status": {},
-            "schedule": {"mode": "fixed_interval" if interval else "manual", "interval_seconds": interval},
-            "created_at": now,
-            "updated_at": now,
-            "last_run_at": None,
-            "next_run_hint": _next_run_hint(now, interval),
-            "checks": {},
-        }
-        self._market_sync_tasks[task_id] = task
-        self._save_market_provider_sync_tasks()
-        return self._public_sync_task(task)
-
-    def get_market_provider_sync_task(self, task_id: str) -> dict[str, Any]:
-        self._load_market_provider_sync_tasks()
-        task = self._market_sync_tasks.get(str(task_id))
-        return self._public_sync_task(task) if task else {"task_id": str(task_id), "status": "not_found"}
-
-    def run_market_provider_sync_task(self, task_id: str) -> dict[str, Any]:
-        self._load_market_provider_sync_tasks()
-        task = self._market_sync_tasks.get(str(task_id))
-        if task is None:
-            return {"task_id": str(task_id), "status": "not_found"}
-        return self._execute_market_provider_sync_task(task, manual_retry=False)
-
-    def retry_market_provider_sync_task(self, task_id: str) -> dict[str, Any]:
-        self._load_market_provider_sync_tasks()
-        task = self._market_sync_tasks.get(str(task_id))
-        if task is None:
-            return {"task_id": str(task_id), "status": "not_found"}
-        task["retry_count"] = int(task.get("retry_count") or 0) + 1
-        return self._execute_market_provider_sync_task(task, manual_retry=True)
-
-    def _execute_market_provider_sync_task(self, task: dict[str, Any], *, manual_retry: bool) -> dict[str, Any]:
-        config = _normalize_market_provider(self._effective_market_provider_settings())
-        provider = ExternalMarketProviderRepository(
-            base_url=config["base_url"],
-            provider_name=config["provider_name"],
-            timeout_seconds=config["timeout_seconds"],
-            enabled=config["enabled"],
-            endpoint_spec=config["endpoint_spec"],
-        )
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        task["status"] = "running"
-        task["run_count"] = int(task.get("run_count") or 0) + 1
-        task["last_run_at"] = now
-        task["updated_at"] = now
-        task["last_error"] = None
-        all_rows: list[dict[str, Any]] = []
-        next_cursors: dict[str, str] = {}
-        window = task.get("date_window") if isinstance(task.get("date_window"), dict) else {}
-        cursor_by_symbol = task.get("cursor_by_symbol") if isinstance(task.get("cursor_by_symbol"), dict) else {}
-        try:
-            for symbol in task.get("symbols", []):
-                start = _cursor_start_date(cursor_by_symbol.get(symbol), str(window.get("start_date") or "2020-01-01"))
-                end = str(window.get("end_date") or start)
-                rows = [dict(row) for row in provider.fetch_price_history(str(symbol), start, end)]
-                all_rows.extend({"symbol": symbol, **row} for row in rows)
-                cursor = _latest_row_date(rows)
-                if cursor:
-                    next_cursors[str(symbol)] = cursor
-                if rows:
-                    self._market_bar_store.upsert_price_bars(
-                        symbol=str(symbol),
-                        rows=rows,
-                        source="market_provider_sync_task",
-                        synced_at=now,
-                    )
-        except Exception as error:  # pragma: no cover - user-configured provider safety net.
-            task["status"] = "failed"
-            task["last_error"] = f"{type(error).__name__}: {error}"
-        status = provider.provider_status()
-        field_coverage = _market_preflight_field_coverage(all_rows[:5])
-        serialized = json.dumps({"provider_status": status, "sample_rows": all_rows[:5]}, ensure_ascii=False)
-        secret_values = [value for value in (os.environ.get("SCQ_MARKET_PROVIDER_API_KEY"),) if value]
-        success = bool(all_rows) and status.get("last_call", {}).get("status") == "success" and task.get("status") != "failed"
-        if success:
-            cursor_by_symbol.update(next_cursors)
-            task["cursor_by_symbol"] = cursor_by_symbol
-            task["status"] = "completed"
-            task["last_error"] = None
-        elif task.get("status") != "failed":
-            last_call = status.get("last_call", {}) if isinstance(status.get("last_call"), dict) else {}
-            task["status"] = "skipped" if last_call.get("status") == "skipped" else "needs_attention"
-            task["last_error"] = last_call.get("reason") or status.get("status") or "provider_returned_no_rows"
-        task["row_count"] = len(all_rows)
-        task["sample_rows"] = all_rows[:5]
-        task["provider_status"] = status
-        task["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        task["next_run_hint"] = _next_run_hint(task["updated_at"], task.get("schedule", {}).get("interval_seconds"))
-        task["checks"] = {
-            "base_url_configured": bool(status.get("base_url_configured")),
-            "api_key_configured": bool(status.get("api_key_configured")),
-            "provider_call_success": status.get("last_call", {}).get("status") == "success",
-            "rows_returned": bool(all_rows),
-            "cursor_advanced": bool(success and next_cursors),
-            "required_fields_present": all(field_coverage.values()) if field_coverage else False,
-            "secret_leak_detected": any(secret in serialized for secret in secret_values),
-            "manual_retry": manual_retry,
-        }
-        self._save_market_provider_sync_tasks()
-        return self._public_sync_task(task)
 
     def get_a_share_scheduler_status(self) -> dict[str, Any]:
         if self._a_share_scheduler is None:
@@ -373,44 +179,10 @@ class ConfigCenterService:
         if self._a_share_scheduler is None:
             return {"status": "unsupported", "reason": "a_share_scheduler_not_configured"}
         return dict(self._a_share_scheduler.recover_interrupted_jobs())
-    def _load_market_provider_sync_tasks(self) -> None:
-        if not self._sync_task_path.exists():
-            self._market_sync_tasks = {}
-            self._market_sync_task_counter = 0
-            return
-        try:
-            raw = json.loads(self._sync_task_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            self._market_sync_tasks = {}
-            self._market_sync_task_counter = 0
-            return
-        rows = raw.get("tasks") if isinstance(raw, dict) else []
-        tasks = {}
-        for item in rows if isinstance(rows, list) else []:
-            if isinstance(item, dict) and item.get("task_id"):
-                tasks[str(item["task_id"])] = item
-        self._market_sync_tasks = tasks
-        self._market_sync_task_counter = max([_sync_task_counter_from_id(task_id) for task_id in tasks] or [0])
 
-    def _save_market_provider_sync_tasks(self) -> None:
-        self._sync_task_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"tasks": list(self._market_sync_tasks.values()), "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-        self._sync_task_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def _public_sync_task(self, task: dict[str, Any]) -> dict[str, Any]:
-        public = json.loads(json.dumps(task, ensure_ascii=False, default=str))
-        return public
-
-    def _effective_market_provider_settings(self) -> dict[str, Any]:
-        draft = self._load_runtime_draft()
-        effective = self._manager.get_effective_runtime_settings(
-            defaults={"market_provider": {"enabled": False, "provider_name": "open-http-market-provider", "base_url": "", "timeout_seconds": 8, "endpoint_spec": _default_market_endpoint_spec()}},
-            file_settings=draft.get("settings", {}),
-        )
-        provider = effective.get("market_provider") if isinstance(effective, dict) else {}
-        return provider if isinstance(provider, dict) else {}
     def save_runtime_draft(self, settings: dict[str, Any]) -> dict[str, Any]:
         safe_settings = self._remove_sensitive_fields(settings)
+        safe_settings.pop("market_provider", None)
         draft = {"settings": safe_settings, "saved_at": datetime.now(timezone.utc).isoformat(), "source": "web-mvp-config-center"}
         self._draft_path.parent.mkdir(parents=True, exist_ok=True)
         self._draft_path.write_text(json.dumps(draft, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -451,8 +223,9 @@ class ConfigCenterService:
             return {"settings": {}, "saved_at": None, "source": "unreadable-draft"}
         if not isinstance(raw, dict):
             return {"settings": {}, "saved_at": None, "source": "invalid-draft"}
-        settings = raw.get("settings") if isinstance(raw.get("settings"), dict) else {}
-        return {"settings": self._remove_sensitive_fields(settings), "saved_at": raw.get("saved_at"), "source": raw.get("source")}
+        settings = self._remove_sensitive_fields(raw.get("settings") if isinstance(raw.get("settings"), dict) else {})
+        settings.pop("market_provider", None)
+        return {"settings": settings, "saved_at": raw.get("saved_at"), "source": raw.get("source")}
 
     def _remove_sensitive_fields(self, settings: dict[str, Any]) -> dict[str, Any]:
         blocked = ("key", "secret", "token", "password", "passwd", "credential")
@@ -472,23 +245,6 @@ class ConfigCenterService:
 
 
 
-def _normalize_market_provider(value: Any) -> dict[str, Any]:
-    raw = value if isinstance(value, dict) else {}
-    try:
-        timeout = float(raw.get("timeout_seconds", 8))
-    except (TypeError, ValueError):
-        timeout = 8.0
-    timeout = max(1.0, min(timeout, 60.0))
-    return {
-        "enabled": bool(raw.get("enabled", False)),
-        "provider_name": str(raw.get("provider_name") or "open-http-market-provider"),
-        "base_url": str(raw.get("base_url") or ""),
-        "timeout_seconds": timeout,
-        "api_key_policy": "env_only_SCQ_MARKET_PROVIDER_API_KEY",
-        "endpoint_spec": _normalize_market_endpoint_spec(raw.get("endpoint_spec")),
-    }
-
-
 def _normalize_rqalpha_runtime(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     mode = str(raw.get("execution_mode") or "probe_then_local_fallback")
@@ -498,8 +254,10 @@ def _normalize_rqalpha_runtime(value: Any) -> dict[str, Any]:
         "execution_mode": mode,
         "prefer_real_package": bool(raw.get("prefer_real_package", False)),
         "local_capabilities": ["package_probe", "strategy_library", "parameter_schema", "local_sqlite_backtest", "report_persistence", "fallback_trace"],
-        "pending_real_capabilities": ["rqalpha_data_bundle", "strategy_file_execution", "commission_slippage_model", "benchmark_alignment", "external_provider_e2e"],
+        "pending_real_capabilities": ["rqalpha_data_bundle", "strategy_file_execution", "commission_slippage_model", "benchmark_alignment"],
     }
+
+
 def _llm_env_status(provider_profile: str | None) -> dict[str, Any]:
     profile = str(provider_profile or "local-demo-tradingagents-style")
     external = profile in {"openai-compatible", "dashscope-compatible", "external-openai-compatible", "real-llm-provider"}
@@ -518,135 +276,3 @@ def _llm_env_status(provider_profile: str | None) -> dict[str, Any]:
         "missing": missing if external else [],
         "status": "ready" if enabled else ("fallback_to_local_demo" if external else "local_demo"),
     }
-
-
-
-
-
-
-def _default_market_endpoint_spec() -> dict[str, Any]:
-    return {
-        "price_history_path": "/price-history",
-        "price_history_rows_path": "rows",
-        "trading_calendar_path": "/trading-calendar",
-        "trading_calendar_days_path": "days",
-        "field_mapping": {
-            "date": ["date", "trade_date"],
-            "open": ["open", "open_price"],
-            "high": ["high", "high_price"],
-            "low": ["low", "low_price"],
-            "close": ["close", "close_price"],
-            "volume": ["volume", "vol"],
-        },
-        "pagination": {"enabled": False, "page_param": "page", "page_size_param": "page_size", "page_size": 200, "next_cursor_path": "next_cursor", "next_cursor_param": "cursor", "max_pages": 1},
-        "retry": {"max_attempts": 1},
-    }
-
-
-def _normalize_market_endpoint_spec(value: Any) -> dict[str, Any]:
-    raw = value if isinstance(value, dict) else {}
-    default = _default_market_endpoint_spec()
-    spec = dict(default)
-    for key in ("price_history_path", "price_history_rows_path", "trading_calendar_path", "trading_calendar_days_path"):
-        if raw.get(key):
-            spec[key] = str(raw[key])
-    field_mapping = raw.get("field_mapping") if isinstance(raw.get("field_mapping"), dict) else {}
-    normalized_mapping: dict[str, list[str]] = {}
-    for key, fallback in default["field_mapping"].items():
-        value = field_mapping.get(key)
-        if isinstance(value, str):
-            aliases = [item.strip() for item in value.split(",") if item.strip()]
-        elif isinstance(value, list):
-            aliases = [str(item).strip() for item in value if str(item).strip()]
-        else:
-            aliases = []
-        normalized_mapping[key] = aliases or list(fallback)
-    spec["field_mapping"] = normalized_mapping
-    pagination = raw.get("pagination") if isinstance(raw.get("pagination"), dict) else {}
-    retry = raw.get("retry") if isinstance(raw.get("retry"), dict) else {}
-    try:
-        page_size = int(pagination.get("page_size", default["pagination"]["page_size"]))
-    except (TypeError, ValueError):
-        page_size = default["pagination"]["page_size"]
-    try:
-        max_pages = int(pagination.get("max_pages", default["pagination"]["max_pages"]))
-    except (TypeError, ValueError):
-        max_pages = default["pagination"]["max_pages"]
-    try:
-        max_attempts = int(retry.get("max_attempts", default["retry"]["max_attempts"]))
-    except (TypeError, ValueError):
-        max_attempts = default["retry"]["max_attempts"]
-    spec["pagination"] = {
-        "enabled": bool(pagination.get("enabled", default["pagination"]["enabled"])),
-        "page_param": str(pagination.get("page_param") or default["pagination"]["page_param"]),
-        "page_size_param": str(pagination.get("page_size_param") or default["pagination"]["page_size_param"]),
-        "page_size": max(1, min(page_size, 5000)),
-        "next_cursor_path": str(pagination.get("next_cursor_path") or default["pagination"]["next_cursor_path"]),
-        "next_cursor_param": str(pagination.get("next_cursor_param") or default["pagination"]["next_cursor_param"]),
-        "max_pages": max(1, min(max_pages, 50)),
-    }
-    spec["retry"] = {"max_attempts": max(1, min(max_attempts, 5))}
-    return spec
-
-
-
-
-def _market_preflight_field_coverage(rows: list[dict[str, Any]]) -> dict[str, bool]:
-    required = ("date", "open", "high", "low", "close", "volume")
-    if not rows:
-        return {field: False for field in required}
-    return {field: all(row.get(field) not in (None, "") for row in rows) for field in required}
-
-
-def _normalize_sync_symbols(symbols: list[str] | None) -> list[str]:
-    values = symbols if isinstance(symbols, list) else []
-    normalized = []
-    for value in values:
-        symbol = str(value).strip()
-        if symbol and symbol not in normalized:
-            normalized.append(symbol)
-    return normalized[:50] or ["000001.XSHE"]
-
-
-def _normalize_interval_seconds(value: int | None) -> int | None:
-    if value in (None, ""):
-        return None
-    try:
-        seconds = int(value)
-    except (TypeError, ValueError):
-        return None
-    if seconds <= 0:
-        return None
-    return max(30, min(seconds, 86400))
-
-
-def _next_run_hint(iso_timestamp: str, interval_seconds: int | None) -> str | None:
-    interval = _normalize_interval_seconds(interval_seconds)
-    if not interval:
-        return None
-    try:
-        current = datetime.fromisoformat(str(iso_timestamp).replace("Z", "+00:00"))
-    except ValueError:
-        current = datetime.now(timezone.utc)
-    return (current + timedelta(seconds=interval)).isoformat(timespec="seconds")
-
-
-def _cursor_start_date(cursor: Any, fallback: str) -> str:
-    cursor_text = str(cursor or "").strip()
-    if not cursor_text:
-        return fallback
-    try:
-        return (datetime.fromisoformat(cursor_text).date() + timedelta(days=1)).isoformat()
-    except ValueError:
-        return fallback
-
-
-def _latest_row_date(rows: list[dict[str, Any]]) -> str | None:
-    dates = [str(row.get("date") or "").strip() for row in rows if row.get("date")]
-    return max(dates) if dates else None
-
-def _sync_task_counter_from_id(task_id: str) -> int:
-    try:
-        return int(str(task_id).rsplit("-", 1)[-1])
-    except ValueError:
-        return 0

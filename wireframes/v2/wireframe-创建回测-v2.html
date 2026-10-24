@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=1440, initial-scale=1"><title>创建回测 · 低保真线框 v2</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+* { box-sizing:border-box; }
+:root { color-scheme:light; --white:#FFFFFF; --light:#F5F5F5; --line:#DDDDDD; --muted:#999999; --ink:#333333; }
+body { margin:0; background:var(--light); color:var(--ink); font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; min-width:1200px; }
+button,input,select,textarea { font:inherit; color:var(--ink); }
+button,a,input,select,textarea,summary { outline-offset:3px; }
+:focus-visible { outline:2px solid var(--ink); }
+button,.button { border:1px solid var(--muted); background:var(--white); padding:7px 12px; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:36px; }
+button:hover,.button:hover { background:var(--line); }
+button:active,.button:active { background:var(--muted); }
+button.primary,.button.primary { background:var(--ink); color:var(--white); border-color:var(--ink); }
+button.primary:hover { opacity:.85; }
+button:disabled { opacity:.4; cursor:not-allowed; }
+a { color:var(--ink); text-underline-offset:3px; }
+h1,h2,h3,p { margin:0; }
+h1 { font-size:24px; font-weight:600; } h2 { font-size:20px; font-weight:600; } h3 { font-size:16px; font-weight:600; }
+small,.small { font-size:12px; } .muted { color:var(--ink); } .hint { font-size:12px; margin-top:5px; }
+.shell { width:100%; max-width:1600px; margin:auto; display:grid; grid-template-columns:224px minmax(0,1fr); }
+.sidebar { position:sticky; top:0; height:100vh; overflow:auto; border-right:1px solid var(--line); background:var(--white); padding:20px 12px; }
+.brand { display:flex; align-items:center; gap:10px; margin:0 8px 24px; font-size:16px; font-weight:600; }
+.icon { display:inline-block; width:16px; height:16px; background:var(--muted); flex-shrink:0; }
+.avatar { width:24px; height:24px; border-radius:50%; background:var(--muted); display:inline-block; }
+.sidebar details { margin-bottom:10px; } .sidebar summary { padding:8px; font-size:14px; font-weight:600; cursor:pointer; }
+.sidebar a { display:block; padding:8px 10px 8px 22px; text-decoration:none; font-size:12px; border:1px solid var(--white); }
+.sidebar a:hover { background:var(--light); } .sidebar a.active { background:var(--line); border-color:var(--muted); font-weight:600; }
+.workspace { min-width:0; } .topbar { padding:16px 28px; background:var(--white); border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:16px; }
+.top-actions { display:flex; align-items:center; gap:10px; } .main { padding:24px 28px; min-height:calc(100vh - 150px); }
+.page-heading { margin-bottom:20px; display:flex; justify-content:space-between; gap:20px; align-items:flex-start; }
+.page-heading p { margin-top:8px; } .badge { border:1px solid var(--muted); padding:2px 7px; font-size:12px; white-space:nowrap; background:var(--light); display:inline-block; }
+.state-controls { background:var(--white); border:1px dashed var(--muted); padding:12px; margin-bottom:20px; display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.state-controls label { display:flex; align-items:center; gap:6px; font-size:12px; }
+.tabs { display:flex; gap:0; border-bottom:1px solid var(--muted); margin-bottom:20px; }
+.tabs button { border-bottom:0; } .tabs button[aria-selected="true"] { background:var(--ink); color:var(--white); }
+.module { border:1px solid var(--line); background:var(--white); margin-bottom:20px; min-width:0; }
+.module-head { border-bottom:1px solid var(--line); padding:14px 16px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.module-body { padding:16px; min-width:0; } details.module > summary { padding:14px 16px; cursor:pointer; font-size:16px; font-weight:600; }
+.purpose { font-size:12px; color:var(--ink); margin-top:2px; }
+.metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.metric { border:1px solid var(--line); background:var(--light); padding:16px; }
+.metric strong { display:block; font-size:20px; margin-top:6px; }
+.toolbar,.actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; } .toolbar { margin-bottom:12px; }
+.toolbar input { width:200px; } input,select,textarea { border:1px solid var(--muted); background:var(--white); padding:7px 9px; min-height:36px; max-width:100%; border-radius:0; }
+input[type="checkbox"] { width:16px; height:16px; min-height:16px; padding:0; accent-color:var(--ink); }
+.form-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+.field { display:flex; flex-direction:column; gap:6px; min-width:0; } .field.wide { grid-column:1/-1; } .field label { font-weight:600; }
+.field textarea { min-height:88px; resize:vertical; } .form-actions { margin-top:18px; border-top:1px solid var(--line); padding-top:14px; }
+.field-error { font-size:12px; font-weight:600; min-height:0; } [aria-invalid="true"] { border:2px solid var(--ink); background:var(--light); }
+.notice { padding:12px 14px; border:1px solid var(--muted); background:var(--light); margin:12px 0; }
+.notice:empty { display:none; } .table-scroll { overflow:auto; width:100%; }
+table { border-collapse:collapse; width:100%; font-size:12px; }
+th,td { border:1px solid var(--line); padding:9px 10px; text-align:left; vertical-align:middle; min-width:85px; }
+th { background:var(--light); font-weight:600; white-space:nowrap; } th button { border:0; background:var(--light); padding:0; min-height:24px; font-size:12px; }
+td:first-child,th:first-child { width:36px; min-width:36px; text-align:center; }
+td:last-child { min-width:140px; } td button,td a.button { font-size:12px; padding:4px 7px; min-height:28px; margin:2px; }
+tr:hover td { background:var(--light); } tr.selected td { background:var(--line); }
+.pagination { display:flex; justify-content:space-between; align-items:center; margin-top:12px; font-size:12px; }
+.bulkbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:10px; background:var(--light); margin-bottom:12px; border:1px solid var(--line); }
+.empty { border:1px dashed var(--muted); padding:36px 20px; text-align:center; }
+.empty h3 { margin-bottom:8px; } .skeleton { background:var(--line); height:24px; margin:10px 0; animation:pulse 1s infinite alternate; }
+@keyframes pulse { to { opacity:.4; } }
+.progress-track { width:100%; height:16px; background:var(--line); border:1px solid var(--muted); margin:12px 0; }
+.progress-bar { background:var(--ink); height:100%; transition:width .2s; }
+.progress-line { display:flex; justify-content:space-between; gap:12px; } .log { padding:12px; margin:12px 0; background:var(--light); font-size:12px; max-height:160px; overflow:auto; }
+.chart { position:relative; background:var(--light); border:1px solid var(--line); min-height:220px; margin-top:12px; padding:12px; }
+.chart svg { width:100%; height:200px; display:block; } .chart-meta { display:flex; justify-content:space-between; font-size:12px; }
+.tree { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; } .tree details { border:1px solid var(--line); padding:12px; background:var(--light); }
+.tree summary { cursor:pointer; } .tree button { margin-top:8px; width:100%; justify-content:flex-start; }
+.tree button.selected { background:var(--line); border-color:var(--ink); }
+.code { width:100%; background:var(--light); border:1px solid var(--muted); padding:16px; font:14px/1.7 system-ui,sans-serif; white-space:pre-wrap; overflow:auto; min-height:140px; }
+.footer { padding:16px 28px; display:flex; justify-content:space-between; gap:16px; border-top:1px solid var(--line); background:var(--white); font-size:12px; }
+dialog { color:var(--ink); background:var(--white); border:1px solid var(--ink); padding:0; width:680px; max-height:85vh; }
+dialog::backdrop { background:var(--999,#999999); opacity:.6; } dialog.drawer { margin:0 0 0 auto; width:600px; height:100vh; max-height:100vh; }
+.dialog-head { display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--line); }
+.dialog-body { padding:20px; overflow:auto; max-height:calc(85vh - 150px); } .drawer .dialog-body { max-height:calc(100vh - 140px); }
+.dialog-foot { padding:14px 20px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px; }
+.detail-list { display:grid; grid-template-columns:130px 1fr; gap:0; margin:0; }
+.detail-list dt,.detail-list dd { margin:0; padding:10px; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
+.detail-list dt { background:var(--light); } .toast { position:fixed; bottom:24px; right:24px; background:var(--ink); color:var(--white); border:1px solid var(--ink); padding:14px 18px; max-width:500px; z-index:20; }
+.selected-context { margin-bottom:16px; padding:10px 14px; background:var(--line); }
+.state-sample { font-size:12px; padding:5px 8px; min-height:28px; } .sample-hover { background:var(--line); } .sample-active { background:var(--muted); }
+[hidden] { display:none !important; }
+/* Module: CoreScopeVisibility */
+[data-core-hidden="true"] { display:none !important; }
+</style></head><body>
+<!-- Module: AppShell -->
+<div class="shell">
+<!-- Module: SidebarNavigation -->
+<aside class="sidebar"><div class="brand"><span class="icon" aria-hidden="true"></span><span>量化研究系统<br><small>可交互线框 v2</small></span></div><nav aria-label="主导航"><details><summary>市场数据</summary><a data-market-tab="个股行情" href="wireframe-数据资产浏览-v2.html?tab=%E4%B8%AA%E8%82%A1%E8%A1%8C%E6%83%85">个股行情</a><a data-market-tab="行业板块" href="wireframe-数据资产浏览-v2.html?tab=%E8%A1%8C%E4%B8%9A%E6%9D%BF%E5%9D%97">行业板块</a><a data-market-tab="概念板块" href="wireframe-数据资产浏览-v2.html?tab=%E6%A6%82%E5%BF%B5%E6%9D%BF%E5%9D%97">概念板块</a><a data-market-tab="新闻公告" href="wireframe-数据资产浏览-v2.html?tab=%E6%96%B0%E9%97%BB%E5%85%AC%E5%91%8A">新闻公告</a></details><details><summary>数据中心</summary><a href="wireframe-数据源与路由-v2.html">P03 数据源与路由</a><a href="wireframe-同步任务-v2.html">P04 同步任务</a><a href="wireframe-质量与修复-v2.html">P05 质量与修复</a><a href="wireframe-更新记录-v2.html">P07 更新记录</a></details><details><summary>数据集</summary><a href="wireframe-策略数据集与指标-v2.html">P13 策略数据集与指标</a><a href="wireframe-数据集详情-v2.html">P14 数据集详情</a></details><details><summary>因子分析</summary><a href="wireframe-因子库-v2.html">P08 因子库</a><a href="wireframe-新建因子研究-v2.html">P09 新建因子研究</a><a href="wireframe-因子研究任务-v2.html">P10 因子研究任务</a><a href="wireframe-因子研究结果-v2.html">P11 因子研究结果</a><a href="wireframe-因子制品与优化-v2.html">P12 因子制品与优化</a></details><details open><summary>策略回测</summary><a href="wireframe-策略库与编辑-v2.html">P15 策略库与编辑</a><a href="wireframe-创建回测-v2.html" class="active" aria-current="page">P16 创建回测</a><a href="wireframe-回测任务-v2.html">P17 回测任务</a><a href="wireframe-研究实验-v2.html">P18 研究实验</a><a href="wireframe-回测结果详情-v2.html">P19 回测结果详情</a><a href="wireframe-回测分析与复盘-v2.html">P20 回测分析与复盘</a></details></nav></aside>
+<div class="workspace">
+<!-- Module: TopBar -->
+<header class="topbar"><div><div class="small">策略回测 / 创建回测</div><strong>本地量化研究 · 原型工作区</strong></div><div class="top-actions"><button data-action="help">交互说明</button><span class="avatar" aria-hidden="true"></span><span>示例研究员</span></div></header>
+<!-- Module: MainContent -->
+<main class="main"><div class="page-heading"><div><h1>创建回测</h1><p>配置单股、逐股独立账户或资产组合回测。</p></div><span class="badge">P16 · v2 · 1440px</span></div>
+<!-- Module: PrototypeStateControl -->
+<section class="state-controls" aria-label="原型状态控制"><strong>状态演示</strong><label>页面状态<select id="scenario"><option value="default">默认</option><option value="loading">加载</option><option value="empty">空</option><option value="error">错误</option><option value="success">成功</option><option value="disabled">禁用</option></select></label><label>操作结果<select id="outcome-mode"><option value="success">模拟成功</option><option value="failure">模拟失败</option></select></label><button class="state-sample sample-hover" data-action="help">hover 示例</button><button class="state-sample sample-active" data-action="help">active 示例</button><button class="state-sample" data-action="sample-selected" aria-pressed="false">选中示例</button><button class="state-sample" disabled>禁用示例</button></section>
+<div class="notice" id="page-state-notice" role="status" hidden></div><div class="selected-context" id="context" hidden></div>
+<!-- Module: PageTabs -->
+<nav class="tabs" role="tablist" aria-label="页面标签"><button role="tab" aria-selected="true" data-tab="单股测试">单股测试</button><button role="tab" aria-selected="false" data-tab="独立账户逐股">独立账户逐股</button><button role="tab" aria-selected="false" data-tab="资产组合">资产组合</button></nav>
+<!-- Module: BacktestCommon -->
+<section class="module" id="module-BacktestCommon" ><div class="module-head"><div><h2>公共回测配置</h2><p class="purpose">用途：配置表单</p></div><span class="badge">模拟数据</span></div><div class="module-body" id="body-BacktestCommon"></div></section>
+
+<!-- Module: SingleBacktest -->
+<section class="module" id="module-SingleBacktest" ><div class="module-head"><div><h2>单股测试参数</h2><p class="purpose">用途：配置表单</p></div><span class="badge">模拟数据</span></div><div class="module-body" id="body-SingleBacktest"></div></section>
+
+<!-- Module: IndependentBacktest -->
+<section class="module" id="module-IndependentBacktest" hidden><div class="module-head"><div><h2>独立账户逐股参数</h2><p class="purpose">用途：配置表单</p></div><span class="badge">模拟数据</span></div><div class="module-body" id="body-IndependentBacktest"></div></section>
+
+<!-- Module: PortfolioBacktest -->
+<section class="module" id="module-PortfolioBacktest" hidden><div class="module-head"><div><h2>资产组合参数</h2><p class="purpose">用途：配置表单</p></div><span class="badge">模拟数据</span></div><div class="module-body" id="body-PortfolioBacktest"></div></section>
+
+<!-- Module: BacktestProgress -->
+<section class="module" id="module-BacktestProgress" ><div class="module-head"><div><h2>当前任务状态</h2><p class="purpose">用途：状态监控</p></div><span class="badge">模拟数据</span></div><div class="module-body" id="body-BacktestProgress"></div></section>
+
+<!-- Module: BacktestLinks -->
+<section class="module" id="module-BacktestLinks" ><div class="module-head"><div><h2>任务与结果入口</h2><p class="purpose">用途：关联页面入口</p></div><span class="badge">模拟数据</span></div><div class="module-body" id="body-BacktestLinks"></div></section>
+
+</main>
+<!-- Module: Footer -->
+<footer class="footer"><span id="storage-note">线框 v2 · 占位数据 · 仅前端模拟</span><div class="actions"><a href="wireframe-策略库与编辑-v2.html">上一页</a><a href="wireframe-回测任务-v2.html">下一页</a><button data-action="reset-all">重置模拟数据</button></div></footer>
+</div></div>
+<!-- Module: ModalHost -->
+<dialog id="dialog" aria-labelledby="dialog-title"><div class="dialog-head"><h2 id="dialog-title">确认操作</h2><button data-action="close-dialog" aria-label="关闭弹窗">关闭</button></div><div class="dialog-body" id="dialog-body"></div><div class="dialog-foot"><button data-action="close-dialog">返回</button><button class="primary" id="dialog-confirm" data-action="confirm">确认</button></div></dialog>
+<!-- Module: DrawerHost -->
+<dialog class="drawer" id="drawer" aria-labelledby="drawer-title"><div class="dialog-head"><h2 id="drawer-title">详情</h2><button data-action="close-drawer" aria-label="关闭抽屉">关闭</button></div><div class="dialog-body" id="drawer-body"></div></dialog>
+<!-- Module: ToastRegion -->
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script>
+"use strict";
+const PAGE = {"id": "P16", "title": "创建回测", "group": "策略回测", "goal": "配置单股、逐股独立账户或资产组合回测。", "modules": [{"id": "BacktestCommon", "title": "公共回测配置", "kind": "form", "fields": [{"label": "策略名称", "value": "示例策略 A", "type": "text", "options": [], "required": true}, {"label": "策略版本", "value": "v2", "type": "text", "options": [], "required": true}, {"label": "开始日期", "value": "2024-01-02", "type": "date", "options": [], "required": true}, {"label": "结束日期", "value": "2024-12-31", "type": "date", "options": [], "required": true}, {"label": "初始资金", "value": 1000000, "type": "number", "options": [], "required": true}, {"label": "复权口径", "value": "前复权", "type": "select", "options": ["不复权", "前复权", "后复权"], "required": true}, {"label": "基准", "value": "沪深300", "type": "text", "options": [], "required": true}, {"label": "佣金率", "value": 0.0003, "type": "number", "options": [], "required": true}, {"label": "最低佣金", "value": 5, "type": "number", "options": [], "required": true}, {"label": "税费率", "value": 0.0005, "type": "number", "options": [], "required": true}, {"label": "滑点率", "value": 0.0005, "type": "number", "options": [], "required": true}], "submit": "保存公共参数"}, {"id": "SingleBacktest", "title": "单股测试参数", "kind": "form", "fields": [{"label": "证券代码", "value": "000001", "type": "stock", "options": [], "required": true}, {"label": "任务名称", "value": "示例单股测试 A", "type": "text", "options": [], "required": true}], "submit": "创建并执行回测", "tab": "单股测试", "operation": "backtest", "saveTable": "BacktestTasks"}, {"id": "IndependentBacktest", "title": "独立账户逐股参数", "kind": "form", "fields": [{"label": "股票池", "value": "指定股票", "type": "select", "options": ["全部股票", "指定股票", "指数成分"], "required": true}, {"label": "证券代码列表", "value": "000001,600000,000002", "type": "text", "options": [], "required": true}, {"label": "每股初始资金", "value": 100000, "type": "number", "options": [], "required": true}, {"label": "并发数", "value": 2, "type": "number", "options": [], "required": true}, {"label": "失败处理", "value": "继续其他股票", "type": "select", "options": ["继续其他股票", "停止任务"], "required": true}], "submit": "创建并执行回测", "tab": "独立账户逐股", "operation": "backtest", "saveTable": "BacktestTasks"}, {"id": "PortfolioBacktest", "title": "资产组合参数", "kind": "form", "fields": [{"label": "证券代码列表", "value": "000001,600000,000002", "type": "text", "options": [], "required": true}, {"label": "最大持仓数", "value": 10, "type": "number", "options": [], "required": true}, {"label": "单股权重上限", "value": 0.1, "type": "number", "options": [], "required": true}, {"label": "调仓周期", "value": "每月", "type": "select", "options": ["每日", "每周", "每月"], "required": true}, {"label": "权重方式", "value": "等权", "type": "select", "options": ["等权", "信号加权"], "required": true}], "submit": "创建并执行回测", "tab": "资产组合", "operation": "backtest", "saveTable": "BacktestTasks"}, {"id": "BacktestProgress", "title": "当前任务状态", "kind": "progress"}, {"id": "BacktestLinks", "title": "任务与结果入口", "kind": "links", "links": [["查看全部回测任务", "P17"], ["查看结果", "P19"]]}], "tabs": ["单股测试", "独立账户逐股", "资产组合"]};
+const NAV = [{"id": "P06", "title": "市场数据", "group": "市场数据", "file": "wireframe-数据资产浏览-v2.html"}, {"id": "P03", "title": "数据源与路由", "group": "数据中心", "file": "wireframe-数据源与路由-v2.html"}, {"id": "P04", "title": "同步任务", "group": "数据中心", "file": "wireframe-同步任务-v2.html"}, {"id": "P05", "title": "质量与修复", "group": "数据中心", "file": "wireframe-质量与修复-v2.html"}, {"id": "P07", "title": "更新记录", "group": "数据中心", "file": "wireframe-更新记录-v2.html"}, {"id": "P13", "title": "策略数据集与指标", "group": "数据集", "file": "wireframe-策略数据集与指标-v2.html"}, {"id": "P14", "title": "数据集详情", "group": "数据集", "file": "wireframe-数据集详情-v2.html"}, {"id": "P08", "title": "因子库", "group": "因子分析", "file": "wireframe-因子库-v2.html"}, {"id": "P09", "title": "新建因子研究", "group": "因子分析", "file": "wireframe-新建因子研究-v2.html"}, {"id": "P10", "title": "因子研究任务", "group": "因子分析", "file": "wireframe-因子研究任务-v2.html"}, {"id": "P11", "title": "因子研究结果", "group": "因子分析", "file": "wireframe-因子研究结果-v2.html"}, {"id": "P12", "title": "因子制品与优化", "group": "因子分析", "file": "wireframe-因子制品与优化-v2.html"}, {"id": "P15", "title": "策略库与编辑", "group": "策略回测", "file": "wireframe-策略库与编辑-v2.html"}, {"id": "P16", "title": "创建回测", "group": "策略回测", "file": "wireframe-创建回测-v2.html"}, {"id": "P17", "title": "回测任务", "group": "策略回测", "file": "wireframe-回测任务-v2.html"}, {"id": "P18", "title": "研究实验", "group": "策略回测", "file": "wireframe-研究实验-v2.html"}, {"id": "P19", "title": "回测结果详情", "group": "策略回测", "file": "wireframe-回测结果详情-v2.html"}, {"id": "P20", "title": "回测分析与复盘", "group": "策略回测", "file": "wireframe-回测分析与复盘-v2.html"}];
+const STORE_KEY = 'scq-wireframe-v2';
+const memoryStore = {};
+let store;
+try { store = JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch { store = {}; }
+store.tables ||= {}; store.forms ||= {}; store.events ||= []; store.context ||= {};
+const viewState = {};
+let activeTab = PAGE.tabs[0] || '';
+let scenario = 'default';
+let outcomeMode = 'success';
+let selectedNode = '';
+let job = null;
+let jobTimer = null;
+let confirmation = null;
+let dialogSubmit = null;
+let toastTimer;
+const q = (selector, root=document) => root.querySelector(selector);
+const qa = (selector, root=document) => [...root.querySelectorAll(selector)];
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const urlFor = id => NAV.find(p => p.id===id)?.file || NAV[0].file;
+const modules = () => PAGE.modules;
+const moduleById = id => modules().find(m => m.id===id);
+const field = (label,value='',type='text',options=[],required=true) => ({label,value,type,options,required});
+const REASON = field('处理依据','','textarea');
+function persist() { try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch { q('#storage-note').textContent='当前浏览器使用临时模拟状态'; } }
+function notify(message) { const target=q('#toast'); target.textContent=message; target.hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>target.hidden=true,4000); }
+function audit(action, object) { store.events.unshift({action,object,time:new Date().toLocaleString('zh-CN')}); store.events=store.events.slice(0,100); persist(); }
+function statusFor(i) { return ['已完成','待执行','运行中','失败','已暂停'][i%5]; }
+function sampleValue(column,i,m) {
+  if(column==='状态') return m.id==='R3Evidence'?'研究完成·未验收':statusFor(i);
+  if(column==='进度') return [100,0,45,60,35][i%5]+'%';
+  if(column==='方向') return i%2?'买入':'卖出';
+  if(column==='模式') return ['单股测试','独立账户逐股','资产组合'][i%3];
+  if(column.includes('证券代码')) return ['000001','600000','000002','600036','000651','600519'][i%6];
+  if(column==='复权口径') return ['不复权','前复权','后复权'][i%3];
+  if(column.includes('是否可空')) return i%2?'是':'否';
+  if(column.includes('日期')||column.includes('时间')||column.includes('覆盖结束')||column.includes('最近测试')||column.includes('覆盖开始')) return '2024-12-'+String(28-i%20).padStart(2,'0')+(column.includes('时间')?' 16:00':'');
+  if(column.includes('收益')||column.includes('超额')||column.includes('涨跌幅')) return ((i%9-3)*1.21).toFixed(2)+'%';
+  if(column.includes('率')||column.includes('回撤')||column==='权重') return (i%4===0?'0.12':String(6+i%20))+ '%';
+  if(column.includes('IC')||column==='Sharpe') return (0.012+(i%5)*0.015).toFixed(3);
+  if(column.includes('价')||column==='指标值') return (10.1+(i%8)*.53).toFixed(2);
+  if(column==='显著性') return '未计算';
+  if(column.includes('数据类型')) return ['string','date','number'][i%3];
+  if(column==='版本'||column==='最新版本') return 'v'+(i%3+1);
+  if(column.includes('完整退出')) return '17';
+  if(column.includes('留出期')) return '48';
+  if(/数量|次数|条数|行数|股票数|样本数|分数|轮数|最少历史/.test(column)) return String(100+i*17);
+  if(column.includes('额')||column.includes('现金')||column.includes('资产')||column.includes('市值')) return (100000+i*1250).toLocaleString();
+  if(column.includes('优先级')) return String(i+1);
+  if(column==='严重程度') return ['提示','警告','严重'][i%3];
+  if(column==='消费范围') return ['策略可用','因子研究','仅治理'][i%3];
+  if(column==='兼容性') return i%3?'同口径':'待复核';
+  if(column.includes('名称')||column==='模块'||column==='功能'||column==='角色'||column==='评估维度'||column==='字段名称') return m.labels?.[i%m.labels.length] || '示例'+column.replace('名称','')+' '+String.fromCharCode(65+i%26);
+  if(column==='说明'||column.includes('依据')||column.includes('原因')||column.includes('观点')||column.includes('结论')) return i%5===3?'示例：需要核对数据范围':'示例记录，供交互演示';
+  if(column==='参数') return 'window=20';
+  if(column.includes('数据集')) return ['股票日线','交易日历','证券目录'][i%3];
+  return '示例'+column+' '+(i+1);
+}
+function rowsFor(m) {
+  if(!store.tables[m.id]) store.tables[m.id]=Array.from({length:m.count || 0},(_,i)=>({id:m.id+'-'+String(i+1).padStart(3,'0'), ...Object.fromEntries(m.columns.map(c=>[c,sampleValue(c,i,m)]))}));
+  const rows=store.tables[m.id];
+  rows.forEach((row,i)=>m.columns.forEach(c=>{if(row[c]===undefined)row[c]=sampleValue(c,i,m);}));
+  return rows;
+}
+function getView(id) { return viewState[id] ||= {search:'',status:'',sort:'',desc:false,page:1,size:8,selected:new Set()}; }
+function placeholder(state) {
+  if(state==='loading')return '<div role="status" class="empty"><h3>正在加载模拟数据</h3><div class="skeleton"></div><div class="skeleton"></div><button data-action="reset-state">完成加载</button></div>';
+  if(state==='error')return '<div role="alert" class="empty"><h3>数据加载失败</h3><p>示例原因：连接超时。可以重试。</p><button data-action="reset-state">重试</button></div>';
+  return '<div class="empty"><h3>暂无匹配数据</h3><p>请调整筛选条件，或恢复默认示例。</p><button data-action="reset-state">恢复示例</button></div>';
+}
+function renderTable(m) {
+  const target=q('#body-'+m.id); const s=getView(m.id);
+  const rows=rowsFor(m);
+  const statuses=[...new Set(rows.map(r=>r['状态']).filter(Boolean))];
+  let filtered=rows.filter(r=>(!s.search||Object.values(r).some(v=>String(v).toLowerCase().includes(s.search.toLowerCase())))&&(!s.status||r['状态']===s.status));
+  if(s.sort) filtered.sort((a,b)=>{
+    const av=String(a[s.sort]??''),bv=String(b[s.sort]??'');
+    const an=Number(av.replace(/[,％%]/g,'')),bn=Number(bv.replace(/[,％%]/g,''));
+    const result=av.trim()&&bv.trim()&&Number.isFinite(an)&&Number.isFinite(bn)?an-bn:av.localeCompare(bv,'zh-CN',{numeric:true});
+    return result*(s.desc?-1:1);
+  });
+  const pages=Math.max(1,Math.ceil(filtered.length/s.size)); s.page=Math.min(s.page,pages);
+  const shown=filtered.slice((s.page-1)*s.size,s.page*s.size);
+  const toolbar=`<form class="toolbar" data-table-filter="${m.id}"><input name="search" aria-label="搜索${esc(m.title)}" value="${esc(s.search)}" placeholder="搜索名称、代码或任意字段"><select name="status" aria-label="状态筛选"><option value="">全部状态</option>${statuses.map(v=>`<option ${s.status===v?'selected':''}>${esc(v)}</option>`).join('')}</select><button type="submit">查询</button><button type="button" data-action="clear-filter" data-module="${m.id}">重置</button><button type="button" data-action="refresh-table" data-module="${m.id}">刷新</button><button type="button" data-action="export-table" data-module="${m.id}">导出</button></form>`;
+  const bulk=`<div class="bulkbar"><span>已选 ${s.selected.size} 条</span>${(m.bulk||['查看选中','删除选中']).map(a=>`<button data-action="bulk" data-command="${esc(a)}" data-module="${m.id}" ${s.selected.size?'':'disabled'}>${esc(a)}</button>`).join('')}</div>`;
+  let content;
+  if(['loading','empty','error'].includes(scenario)) content=placeholder(scenario);
+  else if(!filtered.length)content=placeholder('empty');
+  else content=`<div class="table-scroll"><table aria-label="${esc(m.title)}"><thead><tr><th><input type="checkbox" aria-label="选择本页" data-select-page="${m.id}" ${shown.length&&shown.every(r=>s.selected.has(r.id))?'checked':''}></th>${m.columns.map(c=>`<th aria-sort="${s.sort===c?(s.desc?'descending':'ascending'):'none'}"><button data-action="sort" data-module="${m.id}" data-column="${esc(c)}">${esc(c)} ${s.sort===c?(s.desc?'↓':'↑'):'↕'}</button></th>`).join('')}<th>操作</th></tr></thead><tbody>${shown.map(r=>`<tr class="${s.selected.has(r.id)?'selected':''}"><td><input type="checkbox" aria-label="选择 ${esc(r.id)}" data-row-select="${m.id}" data-row="${r.id}" ${s.selected.has(r.id)?'checked':''}></td>${m.columns.map(c=>`<td>${c==='状态'?'<span class="badge">'+esc(r[c])+'</span>':esc(r[c])}</td>`).join('')}<td>${m.actions.map(a=>`<button data-action="row" data-module="${m.id}" data-row="${r.id}" data-command="${esc(a)}" ${rowDisabled(r,a)?'disabled':''}>${esc(a)}</button>`).join('')}</td></tr>`).join('')}</tbody></table></div>`;
+  target.innerHTML=toolbar+bulk+content+`<div class="pagination"><span>共 ${filtered.length} 条 · 第 ${s.page} / ${pages} 页</span><div class="actions"><select aria-label="每页条数" data-page-size="${m.id}">${[8,16,32].map(n=>`<option value="${n}" ${n===s.size?'selected':''}>每页 ${n} 条</option>`).join('')}</select><button data-action="prev" data-module="${m.id}" ${s.page===1?'disabled':''}>上一页</button><button data-action="next" data-module="${m.id}" ${s.page>=pages?'disabled':''}>下一页</button></div></div>`;
+}
+function rowDisabled(r,a) {
+  if(a==='暂停')return r['状态']!=='运行中';
+  if(a==='继续')return r['状态']!=='已暂停';
+  if(a==='重试')return !['失败','已暂停'].includes(r['状态']);
+  if(a==='执行')return r['状态']==='运行中';
+  if(a==='删除')return r['状态']==='运行中';
+  return false;
+}
+function fieldHTML(f,index,owner,value) {
+  const id=owner+'-field-'+index;
+  const required=f.required?'required':'';
+  const attrs=`id="${id}" name="${esc(f.label)}" aria-label="${esc(f.label)}" ${required}`;
+  let control;
+  if(f.type==='select')control=`<select ${attrs}>${f.options.map(o=>`<option ${String(value)===String(o)?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+  else if(['textarea','json','expression','code'].includes(f.type))control=`<textarea ${attrs} rows="${f.type==='code'?8:3}">${esc(value)}</textarea>`;
+  else control=`<input ${attrs} type="${['date','number','url'].includes(f.type)?f.type:'text'}" ${f.type==='number'?'min="0" step="any"':''} value="${esc(value)}" placeholder="${esc(f.label)}：示例值">`;
+  return `<div class="field ${['textarea','json','code','expression'].includes(f.type)?'wide':''}"><label for="${id}">${esc(f.label)}${f.required?' *':''}</label>${control}<span class="field-error" id="${id}-error"></span></div>`;
+}
+function actionButton(label,id) { return `<button type="button" data-action="module" data-module="${id}" data-command="${esc(label)}">${esc(label)}</button>`; }
+function renderForm(m) {
+  const saved=store.forms[m.id]||{};
+  q('#body-'+m.id).innerHTML=`<form data-config-form="${m.id}" novalidate><div class="form-grid">${m.fields.map((f,i)=>fieldHTML(f,i,m.id,saved[f.label]??f.value)).join('')}</div><div class="actions form-actions"><button class="primary" type="submit">${esc(m.submit)}</button>${(m.buttons||[]).map(b=>actionButton(b,m.id)).join('')}<button type="button" data-action="reset-form" data-module="${m.id}">恢复默认</button></div><p class="hint">* 为必填项 · 填写错误后会在字段下显示原因。</p><div class="notice" role="status" id="notice-${m.id}"></div></form>`;
+}
+function chartHTML(m) {
+  return `<div class="toolbar"><label>显示区间 <select data-chart-range="${m.id}" aria-label="${esc(m.title)}区间"><option>近 1 年</option><option>近 3 月</option><option>近 1 月</option></select></label>${m.drill?'<button data-action="panorama">查看所选交易日全景</button>':actionButton('查看图表数据',m.id)}</div><div class="chart"><div class="chart-meta"><span>图表占位 · ${esc(m.title)}</span><span>单位：示例值</span></div><svg viewBox="0 0 800 180" role="img" aria-label="${esc(m.title)}灰阶占位图"><path d="M40 10 V150 H770" fill="none" stroke="#999999"/><path d="M40 50 H770 M40 100 H770" fill="none" stroke="#DDDDDD"/>${m.chartType==='kline'?Array.from({length:18},(_,i)=>`<g><line x1="${60+i*39}" x2="${60+i*39}" y1="${45+i%4*8}" y2="${130-i%5*7}" stroke="#333333"/><rect x="${51+i*39}" y="${60+i%4*8}" width="18" height="24" fill="${i%2?'#999999':'#DDDDDD'}" stroke="#333333"/></g>`).join(''):'<polyline data-series="primary" points="40,125 100,110 160,118 220,75 280,90 340,70 400,82 460,42 520,63 580,38 640,49 700,22 770,30" fill="none" stroke="#333333" stroke-width="2"/><polyline points="40,135 100,130 160,122 220,118 280,115 340,107 400,100 460,112 520,91 580,86 640,94 700,78 770,70" fill="none" stroke="#999999" stroke-width="2" stroke-dasharray="6 4"/>'}<text x="40" y="175" fill="#333333" font-size="12">开始日期</text><text x="695" y="175" fill="#333333" font-size="12">结束日期</text></svg><div class="chart-meta"><span>实线：示例对象 A · 虚线：示例对象 B</span><span class="chart-range-label">近 1 年</span></div></div>`;
+}
+function renderModule(m) {
+  const target=q('#body-'+m.id);
+  if(m.kind==='table')return renderTable(m);
+  if(m.kind==='form')return renderForm(m);
+  if(m.kind==='metrics')target.innerHTML=`<div class="metrics">${m.items.map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('')}</div>`;
+  if(m.kind==='links')target.innerHTML=`<div class="actions">${m.links.map(([label,id])=>`<a class="button" href="${esc(urlFor(id))}">${esc(label)} →</a>`).join('')}</div>`;
+  if(m.kind==='text')target.innerHTML=`<p>${esc(m.text)}</p><div class="actions form-actions">${(m.buttons||[]).map(b=>actionButton(b,m.id)).join('')}</div>`;
+  if(m.kind==='code')target.innerHTML=`${m.editable?`<textarea class="code" aria-label="策略代码" data-code-editor="${m.id}" spellcheck="false">${esc(store.forms[m.id]?.code??m.code)}</textarea>`:`<pre class="code" data-code-output="${m.id}">${esc(m.code)}</pre>`}<div class="actions form-actions">${(m.buttons||[]).map(b=>actionButton(b,m.id)).join('')}</div><div role="status" class="notice" id="notice-${m.id}"></div>`;
+  if(m.kind==='tree')target.innerHTML=`<div class="tree">${m.nodes.map((n,i)=>`<details ${i<2?'open':''}><summary>${esc(n.split(' / ')[0])}</summary><button data-action="tree" data-node="${esc(n)}">${esc(n.split(' / ').slice(1).join(' / ')||n)}</button></details>`).join('')}</div><div role="status" class="notice tree-feedback">请选择目录项</div>`;
+  if(m.kind==='chart')target.innerHTML=chartHTML(m);
+  if(m.kind==='progress')target.innerHTML=progressHTML();
+}
+function progressHTML() {
+  if(!job)return '<div class="empty"><h3>尚未启动任务</h3><p>提交本页表单或在任务列表选择执行，查看模拟进度。</p></div>';
+  return `<div class="progress-line"><strong>${esc(job.title)}</strong><span class="badge">${esc(job.status)}</span></div><div class="progress-track" role="progressbar" aria-label="任务进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${job.percent}"><div class="progress-bar" style="width:${job.percent}%"></div></div><div class="progress-line"><span>${esc(job.phase)}</span><span>${job.percent}%</span></div><div class="log">${job.logs.map(esc).join('<br>')}</div><div class="actions">${job.status==='运行中'?'<button data-action="pause-job">暂停</button><button data-action="stop-job">停止</button>':''}${job.status==='已暂停'?'<button data-action="resume-job">继续</button>':''}${job.status==='失败'||job.status==='已停止'?'<button data-action="retry-job">重试任务</button>':''}${job.status==='已完成'?'<button data-action="close-dialog">完成</button>':''}</div>`;
+}
+function showDrawer(title,body) { q('#drawer-title').textContent=title;q('#drawer-body').innerHTML=body;if(!q('#drawer').open)q('#drawer').showModal(); }
+function showDialog(title,body,submit,label='确认') {
+  q('#dialog').dataset.job='false';
+  q('#dialog-title').textContent=title;q('#dialog-body').innerHTML=body;
+  q('#dialog-confirm').textContent=label;q('#dialog-confirm').hidden=!submit;q('#dialog-confirm').disabled=false;
+  dialogSubmit=submit;if(!q('#dialog').open)q('#dialog').showModal();
+}
+function closeDialog() { q('#dialog').close();dialogSubmit=null; }
+function detailsHTML(row) { return '<dl class="detail-list">'+Object.entries(row).map(([k,v])=>`<dt>${esc(k==='id'?'记录编号':k)}</dt><dd>${esc(typeof v==='object'?JSON.stringify(v):v)}</dd>`).join('')+'</dl>'; }
+function getFormValues(m) {
+  const formEl=q(`[data-config-form="${m.id}"]`);const values={};let valid=true;
+  m.fields.forEach((f,i)=>{
+    const el=q('#'+m.id+'-field-'+i);const value=el.value.trim();values[f.label]=value;
+    let error='';
+    if(f.required&&!value)error='请填写'+f.label;
+    else if(f.type==='number'&&(Number(value)<0||!Number.isFinite(Number(value))))error='请输入有效的非负数';
+    else if(f.type==='stock'&&!/^\d{6}$/.test(value))error='请输入 6 位证券代码';
+    else if(f.type==='url'&&value&&!/^https?:\/\/[^\s]+$/.test(value))error='请输入有效的 http 或 https 地址';
+    else if(f.type==='json')try{JSON.parse(value);}catch{error='JSON 格式错误，请检查引号和括号';}
+    else if(f.type==='expression'&&(!/[a-z]/i.test(value)||/[;{}]|__|import\s/i.test(value)))error='表达式示例格式错误';
+    el.setAttribute('aria-invalid',String(Boolean(error)));q('#'+m.id+'-field-'+i+'-error').textContent=error;
+    if(error)valid=false;
+  });
+  if(values['开始日期']&&values['结束日期']&&values['开始日期']>values['结束日期']) {
+    const i=m.fields.findIndex(f=>f.label==='结束日期');q('#'+m.id+'-field-'+i+'-error').textContent='结束日期不能早于开始日期';q('#'+m.id+'-field-'+i).setAttribute('aria-invalid','true');valid=false;
+  }
+  if(!valid){formEl.querySelector('[aria-invalid="true"]')?.focus();notify('提交未完成，请检查标出的字段');return null;}
+  return values;
+}
+function addRow(tableId,values,status='待执行') {
+  if(!tableId)return null;
+  const tableModule=moduleById(tableId)||{id:tableId,columns:Object.keys(values).concat(['状态','更新时间']),count:0};
+  const row={id:tableId+'-'+Date.now(),...values,'状态':status,'更新时间':new Date().toLocaleString('zh-CN')};
+  tableModule.columns.forEach(c=>{if(row[c]===undefined)row[c]=sampleValue(c,0,tableModule);});
+  rowsFor(tableModule).unshift(row);persist();return row;
+}
+function busy(button,title,done) {
+  const before=button?.textContent;if(button){button.disabled=true;button.textContent=title;}
+  setTimeout(()=>{if(button){button.disabled=scenario==='disabled';button.textContent=before;}if(outcomeMode==='failure'){notify(title.replace('中...','')+'失败：示例连接超时，请重试');done?.(false);}else done?.(true);},800);
+}
+function submitForm(m,button) {
+  let values=getFormValues(m);if(!values)return;
+  if(m.operation==='backtest'){
+    const common=getFormValues(moduleById('BacktestCommon'));if(!common)return;
+    values={...common,...values,'模式':m.tab};
+  }
+  const previous=store.forms[m.id]||{};
+  store.forms[m.id]={...values,_preflight:previous._preflight,_validated:previous._validated};persist();
+  const operation=m.operation||'save';
+  if(operation==='preflightCreate'&&!store.forms[m.id]._preflight){q('#notice-'+m.id).textContent='请先执行预检，再创建任务。';notify('需要先通过预检');return;}
+  if(operation==='validateSave'&&!store.forms[m.id]._validated){notify('请先校验代码，再保存版本');q('#notice-'+m.id).textContent='尚未完成代码校验';return;}
+  if(['sync','scan','backtest','research'].includes(operation)){
+    showDialog('确认'+m.submit,`<p>本次将模拟以下任务范围：</p>${detailsHTML(values)}<p class="notice">确认后显示执行进度。所有操作只更新原型模拟数据。</p>`,()=>{
+      const row=addRow(m.saveTable,values,'运行中');startJob(m.submit,m.saveTable,row?.id);audit(m.submit,values);},'确认并开始');return;
+  }
+  if(operation==='preview'){
+    showDrawer('执行范围预览',detailsHTML({...values,'预计处理':'示例 600 条','预计耗时':'示例 2 分钟','状态':'待确认'})+'<div class="actions form-actions"><button class="primary" data-action="preview-start" data-module="'+m.id+'">确认并执行</button></div>');return;
+  }
+  if(operation==='export')return exportReport(values);
+  busy(button,'提交中...',ok=>{
+    q('#notice-'+m.id).textContent=ok?m.submit+'成功：模拟数据已更新。':'提交失败：示例服务暂不可用，输入已保留。';
+    if(!ok)return;
+    if(operation==='query'){modules().filter(x=>x.kind==='table').forEach(x=>{getView(x.id).page=1;renderTable(x);});notify('查询完成，显示当前模拟数据');}
+    else if(operation==='compare')showDrawer('同口径对比结果',detailsHTML({...values,'检查结果':'同模式、同数据范围','对象 A 收益':'示例 8.2%','对象 B 收益':'示例 6.1%','结论':'示例对象 A 收益较高，回撤需继续比较'}));
+    else {addRow(m.saveTable,values,operation==='preflightCreate'?'待执行':'已完成');renderTables();notify(m.submit+'成功');}
+    audit(m.submit,values);
+  });
+}
+function renderTables(){modules().filter(m=>m.kind==='table').forEach(renderTable);applyDisabled();}
+function renderProgress(){modules().filter(m=>m.kind==='progress').forEach(renderModule);if(q('#dialog').open&&q('#dialog').dataset.job==='true')q('#dialog-body').innerHTML=progressHTML();}
+function syncJobRow(){const row=store.tables[job?.tableId]?.find(r=>r.id===job.rowId);if(row){row['状态']=job.status;row['进度']=job.percent+'%';persist();}renderTables();}
+function startJob(title,tableId,rowId){
+  clearInterval(jobTimer);job={title,tableId,rowId,percent:0,status:'运行中',phase:'准备数据',logs:['任务已创建','范围已确认']};
+  showDialog('状态监控',progressHTML(),null);q('#dialog').dataset.job='true';tickJob();renderProgress();syncJobRow();
+}
+function tickJob(){clearInterval(jobTimer);jobTimer=setInterval(()=>{
+  if(job.status!=='运行中')return;
+  job.percent=Math.min(100,job.percent+10);job.phase=job.percent<40?'处理输入':job.percent<80?'计算与检查':'整理结果';
+  job.logs.push(job.percent+'% · '+job.phase);
+  if(outcomeMode==='failure'&&job.percent>=60){job.status='失败';job.phase='示例执行失败：数据项暂不可用';job.logs.push('可切换模拟结果后重试');clearInterval(jobTimer);notify('任务失败，可重试');}
+  else if(job.percent===100){job.status='已完成';job.phase='执行完成，结果已生效';clearInterval(jobTimer);notify(job.title+'完成');audit('任务完成',job.title);}
+  syncJobRow();renderProgress();
+},300);}
+function confirmChange(title,body,done){showDialog(title,body,()=>{if(outcomeMode==='failure'){notify('操作失败：示例错误，原记录已保留');return;}done();closeDialog();renderTables();audit(title,'模拟选中记录');notify(title+'完成');});}
+function editRows(m,rows,action){
+  const first=rows[0];const fields=action==='编辑修正'?[field('修正值',first['原始值']||'10.20'),REASON]:m.columns.filter(c=>!['更新时间','进度'].includes(c)).map(c=>field(c,first[c]));
+  if(rows.length>1&&!fields.some(f=>f.label==='处理依据'))fields.push(REASON);
+  showDialog(action+' · '+rows.length+' 条',`<form id="edit-record" novalidate><div class="form-grid">${fields.map((f,i)=>fieldHTML(f,i,'edit',f.value)).join('')}</div><div class="notice" id="edit-error"></div></form>`,()=>{
+    const values=Object.fromEntries(new FormData(q('#edit-record')));
+    if(fields.some(f=>f.required&&!String(values[f.label]||'').trim())){q('#edit-error').textContent='请填写所有必填字段';return;}
+    if(outcomeMode==='failure'){q('#edit-error').textContent='模拟保存失败，输入已保留，可再次提交。';return;}
+    rows.forEach(r=>{Object.assign(r,values);if(action.includes('纠错')||action==='编辑修正')r['状态']='已完成';});
+    persist();closeDialog();renderTables();notify(action+'成功');audit(action,rows.map(r=>r.id));
+  },'保存并确认');
+}
+function rowAction(m,row,action,button){
+  if(['打开结果','打开报告','打开验收页','进入任务','创建回测','查看完整报告','代码示例','配置研究'].includes(action)) {
+    const target=action==='配置研究'?'P09':action==='创建回测'?'P16':action==='查看完整报告'?'P20':m.target||'P19';
+    store.context=row;persist();location.href=urlFor(target)+'?item='+encodeURIComponent(row.id);return;
+  }
+  if(action==='查看详情'&&m.target==='P14'){store.context=row;persist();location.href=urlFor('P14')+'?item='+encodeURIComponent(row.id);return;}
+  if(action==='编辑'||action==='编辑修正')return editRows(m,[row],action);
+  if(action==='删除')return confirmChange('删除记录',`<p>确认删除模拟记录 ${esc(row.id)}？</p>`,()=>{store.tables[m.id]=rowsFor(m).filter(r=>r.id!==row.id);getView(m.id).selected.delete(row.id);persist();});
+  if(action==='连接测试')return connectionTest(button,row['数据源名称']||'示例连接');
+  if(['执行','重试','重拉'].includes(action)){showDialog('确认'+action,detailsHTML(row),()=>startJob(action+'：'+row.id,m.id,row.id),'确认并开始');return;}
+  if(action==='暂停'||action==='继续'){
+    row['状态']=action==='暂停'?'已暂停':'运行中';persist();renderTables();
+    if(job?.rowId===row.id){job.status=row['状态'];if(action==='继续')tickJob();renderProgress();}
+    else if(action==='继续')startJob('继续：'+row.id,m.id,row.id);
+    notify('任务'+action+'成功');return;
+  }
+  if(action==='启用或停用'||action==='归档'||action==='恢复')return confirmChange('确认'+action,detailsHTML(row),()=>{row['状态']=action==='归档'?'已归档':action==='恢复'?'已完成':row['状态']==='已停用'?'已启用':'已停用';persist();});
+  if(action==='上移'||action==='下移'){
+    const rows=rowsFor(m),i=rows.indexOf(row),j=i+(action==='上移'?-1:1);
+    if(j<0||j>=rows.length)return notify('已经到达边界');
+    [rows[i],rows[j]]=[rows[j],rows[i]];rows.forEach((r,k)=>r['优先级']=String(k+1));persist();renderTable(m);notify('顺序已更新');return;
+  }
+  if(action==='选择制品'){store.context=row;persist();const f=moduleById('OptimizationConfig');if(f){q('#'+f.id+'-field-0').value=row['制品名称']||row.id;q('#module-'+f.id).scrollIntoView({behavior:'smooth'});}notify('已选择 '+row.id);return;}
+  if(action==='导入策略草稿')return importStrategy(row);
+  if(action==='加入对比'){store.compare ||= [];if(!store.compare.includes(row.id))store.compare.push(row.id);persist();notify('已加入对比，共 '+store.compare.length+' 项');return;}
+  if(action==='导出')return download(row.id+'.json',JSON.stringify(row,null,2),'application/json');
+  if(action==='查看当日全景')return panorama(row['日期']);
+  if(action==='查看行情'){q('#module-PriceChart')?.scrollIntoView({behavior:'smooth'});notify('已定位 '+(row['证券代码']||row.id)+' 的示例行情');return;}
+  if(action==='载入版本'){store.context=row;persist();setTab('代码与参数');notify('已载入 '+row['版本']);return;}
+  showDrawer(action+' · '+row.id,detailsHTML(row)+`<details class="module" style="margin-top:16px"><summary>来源与处理历史</summary><div class="module-body"><p>来源：示例数据源 A；记录为原型占位数据。</p><p>历史：创建 → 核对 → 当前状态。</p></div></details>`);
+}
+function bulkAction(m,action){
+  const s=getView(m.id);const rows=rowsFor(m).filter(r=>s.selected.has(r.id));if(!rows.length)return notify('请先选择记录');
+  if(action==='查看选中')return showDrawer('已选 '+rows.length+' 条',rows.map(detailsHTML).join('<hr>'));
+  if(action==='导出选中')return download('选中记录.json',JSON.stringify(rows,null,2),'application/json');
+  if(action==='删除选中')return confirmChange(action,`<p>将删除已选的 ${rows.length} 条模拟记录。</p>`,()=>{store.tables[m.id]=rowsFor(m).filter(r=>!s.selected.has(r.id));s.selected.clear();persist();});
+  const correction=action.includes('纠错');
+  const fields=[REASON,...(correction?[field('统一修正值','10.20')]:[])];
+  showDialog(action,`<p>本次仅处理已选 ${rows.length} 条记录。</p><p class="small">${rows.map(r=>esc(r.id)).join('、')}</p><form id="bulk-form"><div class="form-grid">${fields.map((f,i)=>fieldHTML(f,i,'bulk',f.value)).join('')}</div><div class="notice" id="bulk-error"></div></form>`,()=>{
+    const data=Object.fromEntries(new FormData(q('#bulk-form')));if(fields.some(f=>!String(data[f.label]||'').trim())){q('#bulk-error').textContent='请填写处理依据和修正值';return;}
+    if(outcomeMode==='failure'){q('#bulk-error').textContent='模拟处理失败，选中记录保持原状态。';return;}
+    rows.forEach(r=>{r['状态']=action==='暂缓处理'?'已隔离':action==='记录不可用'?'不可用':'已完成';r['处理依据']=data['处理依据'];if(correction)r['原始值']=data['统一修正值'];});persist();s.selected.clear();closeDialog();renderTables();notify(action+'成功：'+rows.length+' 条');audit(action,rows.map(r=>r.id));
+  },'确认处理选中项');
+}
+function connectionTest(button,name){
+  showDrawer('连接测试',`<p role="status" id="connection-status">测试中... ${esc(name)}</p><div class="skeleton"></div>`);
+  busy(button,'测试中...',ok=>{q('#drawer-body').innerHTML=`<p id="connection-status" role="status">${ok?'连接成功':'连接失败'}：${esc(name)}</p><p class="notice">${ok?'示例能力：股票日线、交易日历；示例耗时：120ms。':'示例原因：连接超时。请调整参数后重试。'}</p><button data-action="test-again">重新测试</button>`;notify(ok?'连接测试成功':'连接测试失败');audit('连接测试',ok?'成功':'失败');});
+}
+function panorama(date='2024-12-20'){showDrawer('交易日全景 · '+date,['行业热力图','概念热力图','行业资金流','概念资金流','新闻与公告'].map(t=>`<section class="module"><div class="module-head"><h3>${t}</h3></div><div class="module-body"><p>${t}：示例数据 A、示例数据 B。</p><div class="chart" style="min-height:72px">灰阶图表／数据占位</div></div></section>`).join(''));}
+function download(name,content,type='text/plain'){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([content],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);notify('已导出 '+name);}
+function exportReport(values){
+  const format=values['导出格式']||'JSON';
+  if(format==='JSON')download('示例报告.json',JSON.stringify(values,null,2),'application/json');
+  else if(format==='HTML')download('示例报告.html','<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>示例报告</title><body><h1>示例研究报告</h1><p>原型模拟数据</p>'+detailsHTML(values)+'</body></html>','text/html');
+  else showDialog('模拟 '+format+' 导出完成','<p>示例报告已进入导出完成状态。</p><p>原型用于确认导出流程、文件格式选择和反馈方式。</p>',null);
+}
+function importStrategy(row={}){store.forms.StrategyCode={code:'def generate_target_weights(bars, parameters):\n    # 从示例数据或因子导入\n    return [0.2 for bar in bars]'};store.context=row;persist();showDialog('策略草稿已导入',`<p>示例策略已保存到原型草稿。</p><a class="button primary" href="${urlFor('P15')}?tab=${encodeURIComponent('代码与参数')}">打开策略编辑</a>`,null);}
+function moduleAction(m,action,button){
+  if(action==='连接测试')return connectionTest(button,m.title);
+  if(action==='执行预检'){
+    const values=getFormValues(m);if(!values)return;store.forms[m.id]={...values};
+    busy(button,'预检中...',ok=>{store.forms[m.id]._preflight=ok;persist();q('#notice-'+m.id).textContent=ok?'预检通过，可创建任务。':'预检失败：示例数据范围不足。';notify(ok?'预检通过':'预检失败');});return;
+  }
+  if(action.includes('校验')){
+    const values=m.kind==='form'?getFormValues(m):{};if(!values)return;
+    const code=q('[data-code-editor]')?.value||m.code||'';
+    const valid=(!code||code.includes('generate_target_weights'))&&!/\b(eval|exec)\s*\(/.test(code);
+    busy(button,'校验中...',ok=>{
+      const passed=ok&&valid;store.forms.StrategyMetadata={...(store.forms.StrategyMetadata||{}),_validated:passed};
+      if(m.kind==='form')store.forms[m.id]={...values,_validated:passed};persist();
+      const note=q('#notice-'+m.id);if(note)note.textContent=passed?'校验通过，可保存版本。':'校验失败：请检查入口函数和字段格式。';notify(passed?'校验通过':'校验失败');
+    });return;
+  }
+  if(action==='复制代码'){
+    const text=q(`[data-code-editor="${m.id}"]`)?.value||q(`[data-code-output="${m.id}"]`)?.textContent||m.code||'';
+    if(navigator.clipboard?.writeText)navigator.clipboard.writeText(text).then(()=>notify('代码已复制')).catch(()=>showDrawer('复制代码',`<textarea class="code" aria-label="可复制代码">${esc(text)}</textarea>`));
+    else showDrawer('复制代码',`<textarea class="code" aria-label="可复制代码">${esc(text)}</textarea>`);return;
+  }
+  if(action==='导入策略草稿')return importStrategy();
+  if(action==='创建回测'){location.href=urlFor('P16');return;}
+  if(action==='查看完整报告'){location.href=urlFor('P20');return;}
+  if(action==='清理模拟缓存')return confirmChange('清理模拟缓存','<p>仅清理本原型缓存标记，保留模拟业务记录。</p>',()=>{store.cacheCleared=true;persist();});
+  if(action==='生成报告包'||action==='保存报告快照'){addRow(action==='生成报告包'?'ReportPackages':'ReportSnapshots',{'报告包名称':'示例复盘报告','快照名称':'示例复盘快照'},'已完成');notify(action+'成功，可在报告资产查看');return;}
+  if(action==='探测运行时')return connectionTest(button,'示例本地运行时');
+  if(action==='生成策略声明'){q(`[data-code-output="${m.id}"]`).textContent='factor_inputs = {"example_factor": {"artifact_id": "示例选中制品", "field": "aligned_value"}}';notify('策略声明已生成');return;}
+  showDrawer(action,detailsHTML({'模块':m.title,'对象':'示例对象 A','范围':'2024-01-02 至 2024-12-31','状态':'模拟证据已就绪'})+'<p class="notice">此处展示所选对象的明细、来源和操作记录。</p>');
+}
+function setTab(tab){if(!PAGE.tabs.includes(tab))return;activeTab=tab;qa('[data-tab]').forEach(b=>{b.setAttribute('aria-selected',String(b.dataset.tab===tab));b.tabIndex=b.dataset.tab===tab?0:-1;});modules().forEach(m=>q('#module-'+m.id).hidden=Boolean(m.tab&&m.tab!==tab));const u=new URL(location.href);u.searchParams.set('tab',tab);history.replaceState({},'',u);}
+function applyDisabled(){qa('main button,main input,main select,main textarea').forEach(el=>{if(el.closest('.state-controls'))return;if(scenario==='disabled'){if(!el.disabled)el.dataset.scenarioDisabled='true';el.disabled=true;}else if(el.dataset.scenarioDisabled){el.disabled=false;delete el.dataset.scenarioDisabled;}});}
+document.addEventListener('submit',event=>{
+  const filter=event.target.closest('[data-table-filter]');if(filter){event.preventDefault();const s=getView(filter.dataset.tableFilter);s.search=filter.elements.search.value;s.status=filter.elements.status.value;s.page=1;renderTable(moduleById(filter.dataset.tableFilter));return;}
+  const formEl=event.target.closest('[data-config-form]');if(formEl){event.preventDefault();const m=moduleById(formEl.dataset.configForm);const previous=store.forms[m.id]||{};const flags={_preflight:previous._preflight,_validated:previous._validated};const values=getFormValues(m);if(!values)return;store.forms[m.id]={...values,...flags};submitForm(m,event.submitter);}
+});
+document.addEventListener('change',event=>{
+  const el=event.target;
+  if(el.id==='scenario'){
+    scenario=el.value;renderTables();const notice=q('#page-state-notice');
+    notice.hidden=['default','disabled'].includes(scenario);
+    notice.innerHTML=scenario==='success'?'操作成功：当前展示模拟成功状态。':placeholder(scenario);
+    applyDisabled();return;
+  }
+  if(el.id==='outcome-mode'){outcomeMode=el.value;notify(outcomeMode==='success'?'后续操作将模拟成功':'后续操作将模拟失败');return;}
+  if(el.dataset.rowSelect){const s=getView(el.dataset.rowSelect);el.checked?s.selected.add(el.dataset.row):s.selected.delete(el.dataset.row);renderTable(moduleById(el.dataset.rowSelect));}
+  if(el.dataset.selectPage){const id=el.dataset.selectPage,s=getView(id);qa(`input[data-row-select="${id}"]`).forEach(x=>el.checked?s.selected.add(x.dataset.row):s.selected.delete(x.dataset.row));renderTable(moduleById(id));}
+  if(el.dataset.pageSize){const s=getView(el.dataset.pageSize);s.size=Number(el.value);s.page=1;renderTable(moduleById(el.dataset.pageSize));}
+  if(el.dataset.chartRange){const parent=el.closest('.module-body');q('.chart-range-label',parent).textContent=el.value;const line=q('[data-series="primary"]',parent);if(line)line.setAttribute('transform',el.selectedIndex===0?'translate(0,0)':`translate(0,${el.selectedIndex*9})`);notify('图表区间已切换为 '+el.value);}
+});
+document.addEventListener('input',event=>{
+  const formEl=event.target.closest('[data-config-form]');if(formEl){const id=formEl.dataset.configForm;store.forms[id] ||= {};store.forms[id]._preflight=false;store.forms[id]._validated=false;}
+  if(event.target.dataset.codeEditor){store.forms[event.target.dataset.codeEditor]={code:event.target.value};store.forms.StrategyMetadata ||= {};store.forms.StrategyMetadata._validated=false;persist();}
+});
+document.addEventListener('click',event=>{
+  const tab=event.target.closest('[data-tab]');if(tab){setTab(tab.dataset.tab);return;}
+  const button=event.target.closest('[data-action]');if(!button||button.disabled)return;
+  const action=button.dataset.action,m=moduleById(button.dataset.module),s=m?getView(m.id):null;
+  if(action==='close-dialog'){closeDialog();q('#dialog').dataset.job='false';return;}
+  if(action==='close-drawer'){q('#drawer').close();return;}
+  if(action==='reset-state'){scenario='default';q('#scenario').value='default';q('#page-state-notice').hidden=true;modules().filter(x=>x.kind==='table').forEach(x=>{getView(x.id).search='';getView(x.id).status='';getView(x.id).page=1;});renderTables();return;}
+  if(action==='confirm'){dialogSubmit?.();return;}
+  if(action==='clear-filter'){Object.assign(s,{search:'',status:'',page:1});renderTable(m);return;}
+  if(action==='refresh-table'){busy(button,'加载中...',ok=>{if(ok){renderTable(m);notify('数据已刷新');}});return;}
+  if(action==='export-table'){download(m.title+'.json',JSON.stringify(rowsFor(m),null,2),'application/json');return;}
+  if(action==='sort'){s.desc=s.sort===button.dataset.column?!s.desc:false;s.sort=button.dataset.column;renderTable(m);return;}
+  if(action==='prev'||action==='next'){s.page+=action==='next'?1:-1;renderTable(m);return;}
+  if(action==='row'){const row=rowsFor(m).find(r=>r.id===button.dataset.row);if(row)rowAction(m,row,button.dataset.command,button);return;}
+  if(action==='bulk'){bulkAction(m,button.dataset.command);return;}
+  if(action==='module'){moduleAction(m,button.dataset.command,button);return;}
+  if(action==='reset-form'){delete store.forms[m.id];persist();renderForm(m);notify('表单已恢复默认');return;}
+  if(action==='tree'){selectedNode=button.dataset.node;qa('[data-action="tree"]').forEach(b=>b.classList.toggle('selected',b===button));const feedback=q('.tree-feedback',button.closest('.module-body'));feedback.textContent='已选择：'+selectedNode;if(selectedNode.includes('待接入'))showDrawer('数据暂不可用','<p>资产名称：示例海外指数。当前目录状态：待接入。</p><a class="button" href="'+urlFor('P03')+'">查看数据源配置</a>');else notify('目录已选中：'+selectedNode);return;}
+  if(action==='panorama'){panorama();return;}
+  if(action==='preview-start'){q('#drawer').close();const values=store.forms[m.id]||{};showDialog('确认执行预览范围',detailsHTML(values),()=>{const row=addRow(m.saveTable,values,'运行中');startJob(m.title,m.saveTable,row?.id);},'确认并开始');return;}
+  if(action==='test-again'){connectionTest(button,'示例连接');return;}
+  if(action==='pause-job'&&job){job.status='已暂停';job.logs.push('用户暂停');clearInterval(jobTimer);syncJobRow();renderProgress();return;}
+  if(action==='resume-job'&&job){job.status='运行中';tickJob();syncJobRow();renderProgress();return;}
+  if(action==='stop-job'&&job){job.status='已停止';job.phase='任务已停止';clearInterval(jobTimer);syncJobRow();renderProgress();return;}
+  if(action==='retry-job'&&job){job.status='运行中';job.percent=0;job.logs=['开始重试'];tickJob();syncJobRow();renderProgress();return;}
+  if(action==='sample-selected'){button.setAttribute('aria-pressed',String(button.getAttribute('aria-pressed')!=='true'));button.classList.toggle('sample-active');notify('选中状态已切换');return;}
+  if(action==='reset-all'){confirmChange('重置原型模拟数据','<p>清除本套线框的修改、草稿和任务，恢复初始占位数据。</p>',()=>{store={tables:{},forms:{},events:[],context:{}};persist();location.reload();});return;}
+  if(action==='help'){showDrawer('原型交互说明','<p>在顶部选择页面状态和操作成功／失败。表格支持搜索、状态筛选、排序、分页、多选。表单有必填校验。所有任务使用模拟进度，左右导航链接可直接跳转。</p><p class="notice">建议在 1440px 桌面窗口查看。页面使用相同的原型专用存储键保持草稿和任务。</p>');return;}
+});
+document.addEventListener('keydown',event=>{if(event.target.matches('[data-tab]')&&['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();const i=PAGE.tabs.indexOf(activeTab),next=(i+(event.key==='ArrowRight'?1:-1)+PAGE.tabs.length)%PAGE.tabs.length;setTab(PAGE.tabs[next]);q('[data-tab][aria-selected="true"]').focus();}});
+qa('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog){const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();}}));
+q('#dialog').addEventListener('close',()=>{q('#dialog').dataset.job='false';});
+modules().forEach(renderModule);
+const params=new URLSearchParams(location.search);
+if(PAGE.tabs.length)setTab(PAGE.tabs.includes(params.get('tab'))?params.get('tab'):PAGE.tabs[0]);
+if(params.get('item')){q('#context').hidden=false;q('#context').textContent='当前对象：'+(Object.values(store.context).find(v=>typeof v==='string'&&v.includes('示例'))||params.get('item'));}
+persist();
+window.Wireframe={page:PAGE.id, store, getJob:()=>job, getScenario:()=>scenario};
+</script>
+</body></html>

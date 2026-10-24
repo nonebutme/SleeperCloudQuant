@@ -1,0 +1,401 @@
+#page-factor {
+  min-width: 0;
+}
+
+.factor-workspace {
+  display: grid;
+  gap: var(--q-space-3, 16px);
+  min-width: 0;
+}
+
+.factor-definition-detail p {
+  margin: 0;
+  color: var(--q-text-2);
+}
+
+.factor-report-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--q-space-2, 8px);
+}
+
+.factor-report-context {
+  margin: 0 0 var(--q-space-3, 16px);
+  padding: 8px 12px;
+  border-left: 3px solid var(--q-primary);
+  background: var(--q-bg-zebra);
+  color: var(--q-text-2);
+  font-size: 13px;
+}
+
+.factor-view-tabs {
+  display: flex;
+  gap: var(--q-space-2, 8px);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--q-border);
+}
+
+.factor-view-tabs button {
+  flex: 0 0 auto;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+}
+
+.factor-view-tabs button.is-active {
+  color: var(--q-primary);
+  border-bottom-color: var(--q-primary);
+  font-weight: 700;
+}
+
+.factor-view[hidden] {
+  display: none !important;
+}
+
+.factor-view,
+.factor-view > .panel {
+  min-width: 0;
+}
+
+.factor-summary-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: var(--q-space-3, 16px) 0;
+}
+
+.factor-config-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--q-space-3, 16px);
+}
+
+.factor-config-grid label,
+.factor-task-toolbar label {
+  display: grid;
+  gap: var(--q-space-1, 4px);
+  min-width: 0;
+  color: var(--q-text-2);
+  font-size: 13px;
+}
+
+.factor-config-grid input,
+.factor-config-grid select,
+.factor-task-toolbar select {
+  width: 100%;
+  min-width: 0;
+}
+
+.factor-config-grid .factor-check {
+  display: flex;
+  align-items: center;
+  gap: var(--q-space-2, 8px);
+  min-height: 38px;
+  padding-top: 20px;
+}
+
+.factor-check input {
+  width: auto;
+  min-width: auto;
+  min-height: auto;
+}
+
+.factor-wide {
+  grid-column: 1 / -1;
+}
+
+.factor-form-actions,
+.factor-task-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--q-space-2, 8px);
+}
+
+.factor-definition-detail {
+  display: grid;
+  gap: var(--q-space-2, 8px);
+  margin-bottom: var(--q-space-3, 16px);
+  padding: var(--q-space-3, 16px);
+  border: 1px solid var(--q-border);
+  border-left: 4px solid var(--q-primary);
+  background: var(--q-bg-zebra);
+}
+
+.factor-definition-detail div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--q-space-2, 8px);
+}
+
+.factor-definition-detail code {
+  overflow-wrap: anywhere;
+  color: var(--q-primary);
+}
+
+.factor-definition-detail small,
+#page-factor table small {
+  color: var(--q-text-3);
+}
+
+.factor-inline-alert {
+  margin: var(--q-space-3, 16px) 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--q-warning) 45%, var(--q-border));
+  background: color-mix(in srgb, var(--q-warning) 8%, var(--q-bg-card));
+  color: var(--q-text-1);
+}
+
+.factor-report-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--q-space-3, 16px);
+  margin-bottom: var(--q-space-3, 16px);
+}
+
+.factor-report-grid article,
+.factor-view > .panel > article {
+  min-width: 0;
+}
+
+.factor-report-grid h4,
+.factor-view > .panel > article h4,
+.factor-chart-card h4 {
+  margin: 0 0 var(--q-space-2, 8px);
+}
+
+.factor-chart-card {
+  padding: var(--q-space-3, 16px);
+  border: 1px solid var(--q-border);
+  background: var(--q-bg-zebra);
+}
+
+.factor-series-chart {
+  min-height: 220px;
+  overflow: hidden;
+  border: 1px solid var(--q-border);
+  background: var(--q-bg-card);
+}
+
+.factor-series-chart svg {
+  display: block;
+  width: 100%;
+  min-width: 460px;
+  height: 220px;
+}
+
+#page-factor .table-wrap {
+  max-width: 100%;
+}
+
+#page-factor .app-vtable-host {
+  max-width: 100%;
+}
+
+@media (max-width: 980px) {
+  .factor-config-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .factor-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 741px) {
+  .factor-report-heading-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .factor-config-grid,
+  .factor-report-grid,
+  .factor-summary-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .factor-task-toolbar {
+    display: grid;
+  }
+
+  .factor-series-chart {
+    overflow-x: auto;
+  }
+
+  #page-factor .table-wrap {
+    overflow: hidden;
+  }
+}
+
+.factor-create-panel {
+  margin: 0 0 var(--q-space-4);
+  padding: var(--q-space-3) var(--q-space-4);
+  border: 1px solid var(--q-border);
+  border-radius: var(--q-radius-md);
+  background: var(--q-bg-subtle);
+}
+
+.factor-context-filter {
+  min-width: min(34rem, 100%);
+}
+
+.factor-profile-dialog {
+  width: min(72rem, calc(100vw - 2 * var(--q-space-4)));
+  max-height: calc(100vh - 2 * var(--q-space-4));
+  padding: var(--q-space-4);
+  border: 1px solid var(--q-border);
+  border-radius: var(--q-radius-md);
+  background: var(--q-bg-card);
+  color: var(--q-text-1);
+  box-shadow: var(--q-shadow-card);
+  overflow: auto;
+}
+
+.factor-profile-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.factor-profile-tabs {
+  display: flex;
+  gap: var(--q-space-2);
+  margin: 0 0 var(--q-space-3);
+  border-bottom: 1px solid var(--q-border);
+}
+
+.factor-profile-tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--q-text-2);
+}
+
+.factor-profile-tabs button.is-active {
+  border-bottom-color: var(--q-primary);
+  color: var(--q-primary);
+  font-weight: 700;
+}
+
+.factor-profile-panel[hidden] {
+  display: none !important;
+}
+
+.factor-profile-section-heading,
+.factor-profile-actions,
+.factor-development-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--q-space-3);
+}
+
+.factor-profile-section-heading h4,
+.factor-profile-section-heading p {
+  margin: 0;
+}
+
+.factor-profile-section-heading p {
+  margin-top: var(--q-space-1);
+  color: var(--q-text-2);
+}
+
+.factor-profile-actions {
+  justify-content: flex-end;
+  margin-top: var(--q-space-4);
+  padding-top: var(--q-space-3);
+  border-top: 1px solid var(--q-border);
+}
+
+.factor-profile-report-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--q-space-3);
+}
+
+.factor-create-panel summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--q-text-primary);
+}
+
+.factor-definition-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--q-space-3);
+  margin-top: var(--q-space-3);
+}
+
+.factor-definition-form label,
+.factor-definition-form label span {
+  display: grid;
+  gap: var(--q-space-1);
+}
+
+.factor-expression-field,
+.factor-description-field,
+.factor-definition-actions,
+#factor-definition-output {
+  grid-column: 1 / -1;
+}
+
+.factor-definition-form textarea {
+  resize: vertical;
+  min-height: 76px;
+  font-family: var(--q-font-mono);
+}
+
+.factor-definition-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--q-space-2);
+}
+
+#factor-definition-output {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 980px) {
+  .factor-definition-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 741px) {
+  .factor-definition-form { grid-template-columns: 1fr; }
+  .factor-profile-section-heading,
+  .factor-profile-actions,
+  .factor-development-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .factor-profile-actions button,
+  .factor-development-actions button {
+    width: 100%;
+  }
+}
+.research-credibility-banner {
+  margin: var(--space-3, 12px) 0;
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border: 1px solid var(--warning-border, #a66f16);
+  border-left-width: 4px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--warning-bg, rgba(166, 111, 22, 0.12));
+  color: var(--text-primary, inherit);
+  line-height: 1.55;
+}
+/* Stage 92 artifact and optimization workspace */
+.factor-artifact-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--q-space-4);
+  margin-top: var(--q-space-4);
+}
+.factor-artifact-grid > article { min-width: 0; }
+#factor-artifact-detail { margin: var(--q-space-3) 0; }
+#factor-strategy-declaration-output,
+#factor-optimization-report-output,
+#factor-optimization-preflight-output {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+@media (max-width: 980px) {
+  .factor-artifact-grid { grid-template-columns: 1fr; }
+}

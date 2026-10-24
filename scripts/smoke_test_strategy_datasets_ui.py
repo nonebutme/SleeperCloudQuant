@@ -15,9 +15,10 @@ def main() -> None:
     html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "web" / "strategy-datasets.js").read_text(encoding="utf-8")
     styles = (ROOT / "web" / "strategy-datasets.css").read_text(encoding="utf-8")
-    require(html, ('src="/strategy-datasets.js?v=4"',), "HTML entry")
+    import re
+    assert re.search(r'src="/strategy-datasets\.js\?v=[^\"]+"', html), "HTML entry missing"
     require(script, (
-        'button.dataset.page = "strategy-datasets"', "sd-categories", "sd-card-grid",
+        '.nav-tab[data-page=\'strategy-datasets\']', "sd-categories", "sd-card-grid",
         'data-sd-tab="about"', 'data-sd-tab="documentation"',
         'data-sd-tab="research"', 'data-sd-tab="examples"',
         "数据概览", "使用文档", "研究分析", "代码示例",
@@ -30,7 +31,7 @@ def main() -> None:
         ".sd-tabs", "@media (max-width: 980px)",
         ".sd-workbench-code", 'grid-template-columns: 48px minmax(0, 1fr)',
     ), "responsive styles")
-    assert script.count('addEventListener("click", () => openCatalog())') == 1
+    assert script.count('addEventListener("click", () => openCatalog().catch(showError))') == 2
     print("[strategy-datasets-ui] passed")
 
 

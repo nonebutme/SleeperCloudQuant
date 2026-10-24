@@ -43,9 +43,6 @@ def main() -> None:
     html = (root / "web" / "index.html").read_text(encoding="utf-8")
     for marker in [
         "configureStage76InformationArchitecture",
-        "策略工作台",
-        "创建回测任务",
-        "任务工作台",
         "submitSingleBacktestTask",
         "loadStage76Tasks",
         "capabilities",
@@ -81,7 +78,6 @@ def main() -> None:
         "legacyVersionSection",
         "versionSelectorBlock.append(versionHistory)",
         "stage76-code-resize-handle",
-        "stage76-sidebar-subnav",
         'data-stage76-form-action="analysis"',
         '"function-call"',
     ]:
@@ -96,8 +92,16 @@ def main() -> None:
     assert 'if(task.mode==="single") { activatePage("reporting")' not in app_js
     for marker in [".stage76-workspace-nav", ".stage76-task-row", ".stage76-result-tabs", ".stage76-report-hero", ".stage76-task-pager", "Stage 76.2 PC density", "Stage 76.3 unified forms", ".stage76-mode-form", ".stage76-mode-task-state", "Stage 76.4 strategy editor", ".stage76-code-editor-shell", "Stage 76.5 compact current-task strip", "Stage 76.6 strategy guide", "Stage 76.7 restored version selector", "Stage 76.9 sidebar workspace navigation"]:
         assert marker in css, marker
-    assert "/app.js?v=780" in html and "/styles.css?v=769" in html
-    assert "/report-ui.js?v=780" in html and "/report-ui.css?v=780" in html
+    assert "/app.js?v=921" in html and "/styles.css?v=920" in html
+    assert 'id="stage76-workspace-nav"' in html
+    assert 'stage76-sidebar-subnav' in html
+    assert 'data-stage76-workspace="strategy"' in html
+    assert 'data-stage76-workspace="create"' in html
+    assert 'data-stage76-workspace="tasks"' in html
+    assert 'data-stage76-workspace="research"' in html
+    assert 'data-stage76-workspace="results"' in html
+    assert 'data-route-page="reporting" data-nav-context="backtest"' in html
+    assert "/report-ui.js?v=871" in html and "/report-ui.css?v=871" in html
 
     with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
         service = SingleBacktestTaskService(_BacktestService(), Path(temp_dir) / "single.sqlite3")

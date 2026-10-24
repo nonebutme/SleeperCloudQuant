@@ -23,7 +23,7 @@ def main() -> None:
     assert 'id="market-query-form"' not in html
     assert 'id="backtest-asset-directory-form"' not in html
     assert "/m4_asset_browser.css?v=1" in html
-    assert "/m4_asset_browser.js?v=1" in html
+    assert "/m4_asset_browser.js?v=2" in html
     assert 'class="dc-m4-layout"' in html
     assert html.count("data-m4-node") >= 25
     for label in ("沪深 A 股", "沪深300", "恒生指数", "MSCI全球", "资产负债表", "行业分类", "新闻公告"):

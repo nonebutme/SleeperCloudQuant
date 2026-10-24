@@ -26,15 +26,6 @@
       link.href = "/strategy-datasets.css?v=2";
       document.head.append(link);
     }
-    if (!$(".nav-tab[data-page='strategy-datasets']")) {
-      const button = document.createElement("button");
-      button.className = "nav-tab";
-      button.type = "button";
-      button.dataset.page = "strategy-datasets";
-      button.textContent = "策略数据集";
-      const factor = $(".nav-tab[data-page='factor']");
-      factor?.before(button);
-    }
     if (!$("#page-strategy-datasets")) {
       const section = document.createElement("section");
       section.id = "page-strategy-datasets";
@@ -72,10 +63,18 @@
         </div>`;
       $("#page-factor")?.before(section);
     }
-    if (typeof pageTitles !== "undefined") pageTitles["strategy-datasets"] = "策略数据集";
+    if (typeof pageTitles !== "undefined") pageTitles["strategy-datasets"] = "策略数据集与指标";
   }
 
+  let catalogLoadPromise = null;
   async function loadCatalog() {
+    if (catalogLoadPromise) return catalogLoadPromise;
+    catalogLoadPromise = loadCatalogData();
+    try { return await catalogLoadPromise; }
+    finally { catalogLoadPromise = null; }
+  }
+
+  async function loadCatalogData() {
     const params = new URLSearchParams();
     if (state.layerId) params.set("layer_id", state.layerId);
     const search = $("#sd-search")?.value.trim();
@@ -133,6 +132,7 @@
   }
 
   async function openDetail(datasetId) {
+    if (typeof activatePage === "function") activatePage("strategy-datasets", false, true, "datasets");
     const payload = await api(`/api/strategy-datasets/${encodeURIComponent(datasetId)}`);
     state.selected = payload.result;
     state.tab = "about";
@@ -144,6 +144,7 @@
     url.searchParams.set("page", "strategy-datasets");
     url.searchParams.set("dataset", datasetId);
     history.replaceState({}, "", url);
+    syncDatasetNavigation("detail");
   }
 
   function renderDetailHero() {
@@ -161,6 +162,13 @@
     const url = new URL(location.href);
     url.searchParams.delete("dataset");
     history.replaceState({}, "", url);
+    syncDatasetNavigation("catalog");
+  }
+
+  function syncDatasetNavigation(view) {
+    $$('[data-strategy-dataset-view]').forEach((button) => button.classList.toggle("is-active", button.dataset.strategyDatasetView === view));
+    const pageTitle = $("#page-title");
+    if (pageTitle) pageTitle.textContent = view === "detail" ? "数据集详情" : "策略数据集与指标";
   }
 
   function activateTab(tab) {
@@ -283,7 +291,9 @@
 
   function bind() {
     ensureShell();
-    $(".nav-tab[data-page='strategy-datasets']")?.addEventListener("click", () => openCatalog());
+    $(".nav-tab[data-page='strategy-datasets']")?.addEventListener("click", () => openCatalog().catch(showError));
+    $('[data-strategy-dataset-view="catalog"]')?.addEventListener("click", () => openCatalog().catch(showError));
+    $('[data-strategy-dataset-view="detail"]')?.addEventListener("click", () => openNavigationDetail().catch(showError));
     $("#sd-search")?.addEventListener("input", debounce(() => loadCatalog().catch(showError), 220));
     $("#sd-status")?.addEventListener("change", () => loadCatalog().catch(showError));
     $("#sd-scope")?.addEventListener("change", () => loadCatalog().catch(showError));
@@ -295,8 +305,17 @@
   }
 
   async function openCatalog() {
-    if (typeof activatePage === "function") activatePage("strategy-datasets");
+    if (typeof activatePage === "function") activatePage("strategy-datasets", false, true, "datasets");
+    showCatalog();
     await loadCatalog();
+  }
+
+  async function openNavigationDetail() {
+    if (typeof activatePage === "function") activatePage("strategy-datasets", false, true, "datasets");
+    if (!state.products.length) await loadCatalog();
+    const datasetId = state.selected?.dataset_id || initialParams.get("dataset") || state.products[0]?.dataset_id;
+    if (!datasetId) throw new Error("当前没有可查看的数据集详情");
+    await openDetail(datasetId);
   }
 
   function debounce(fn, wait) {

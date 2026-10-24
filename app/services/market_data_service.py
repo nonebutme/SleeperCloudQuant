@@ -272,6 +272,7 @@ class MarketDataService:
         start_date: str,
         end_date: str,
         benchmark: str | None = None,
+        data_version_id: str | None = None,
     ) -> dict[str, Any]:
         """Resolve the immutable canonical release before a backtest starts."""
 
@@ -284,6 +285,7 @@ class MarketDataService:
                 start_date=start_date,
                 end_date=end_date,
                 benchmark=benchmark,
+                data_version_id=data_version_id,
             )
         )
 

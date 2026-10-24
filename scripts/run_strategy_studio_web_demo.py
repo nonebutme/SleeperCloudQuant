@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import mimetypes
 import os
@@ -13,6 +14,11 @@ from _project_bootstrap import ensure_project_root_on_sys_path
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Strategy Studio 开发候选服务；日常请双击根目录 启动系统.cmd")
+    parser.add_argument("--developer-mode", action="store_true", help="显式启动独立开发候选服务（默认 8020）")
+    args = parser.parse_args()
+    if not args.developer_mode:
+        parser.error("日常入口为 启动系统.cmd → http://127.0.0.1:8010/；开发测试须显式指定 --developer-mode")
     ensure_project_root_on_sys_path()
 
     from app.runtime.http_adapter import DispatchError, dispatch_request

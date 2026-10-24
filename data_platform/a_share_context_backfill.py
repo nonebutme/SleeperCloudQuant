@@ -15,11 +15,13 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from data_platform.a_share_sync_scheduler import GlobalRateLimiter
+from data_platform.security_master_history import build_security_master_intervals
 from data_platform.storage.a_share_governance_store import AShareGovernanceStore
 
 
 CONTEXT_SCHEMA_VERSION = "78.3.0"
 REMOTE_DATASETS = (
+    "security_master_intervals",
     "security_lifecycle_events",
     "corporate_action_events",
     "security_suspensions",
@@ -40,6 +42,7 @@ class AShareContextBackfill:
         database_path: str | Path,
         *,
         provider: Any,
+        security_master_provider: Any | None = None,
         requests_per_minute: int = 60,
         max_workers: int = 4,
         retry_count: int = 3,
@@ -49,6 +52,7 @@ class AShareContextBackfill:
     ) -> None:
         self.database_path = Path(database_path)
         self.provider = provider
+        self.security_master_provider = security_master_provider or provider
         self.governance_store = AShareGovernanceStore(self.database_path)
         self.max_workers = max(1, min(int(max_workers), 16))
         self.retry_count = max(1, int(retry_count))
@@ -61,6 +65,8 @@ class AShareContextBackfill:
         )
         if hasattr(provider, "request_gate"):
             provider.request_gate = self._rate_limiter.acquire
+        if hasattr(self.security_master_provider, "request_gate"):
+            self.security_master_provider.request_gate = self._rate_limiter.acquire
         self._run_lock = threading.Lock()
 
     def ensure_schema(self) -> None:
@@ -137,24 +143,35 @@ class AShareContextBackfill:
         end_date: str,
         symbols: Sequence[str] | None = None,
         all_current: bool = False,
+        historical_only: bool = False,
         datasets: Sequence[str] = ALL_DATASETS,
     ) -> dict[str, Any]:
         self.ensure_schema()
-        if bool(symbols) == bool(all_current):
-            raise ValueError("provide symbols or set all_current=true, but not both")
+        if sum((bool(symbols), bool(all_current), bool(historical_only))) != 1:
+            raise ValueError(
+                "provide symbols, set all_current=true, or set historical_only=true"
+            )
         selected = _datasets(datasets)
-        symbol_rows = self._symbols(symbols if not all_current else None)
+        symbol_rows = self._symbols(
+            symbols if not (all_current or historical_only) else None,
+            listing_scope="historical" if historical_only else "current",
+        )
         if not symbol_rows:
             raise RuntimeError("no symbols found for context backfill")
         open_dates = self._open_dates(start_date, end_date)
         if not open_dates:
             raise RuntimeError("no open trade dates found in requested range")
+        eligible_symbols = self._symbols_with_window_evidence(start_date, end_date)
+        symbol_rows = [row for row in symbol_rows if str(row["symbol"]) in eligible_symbols]
+        if not symbol_rows:
+            raise RuntimeError("no symbols overlap the requested context window")
 
         job_id = f"ctx-{uuid.uuid4().hex[:16]}"
         now = _utc_now()
         items: list[tuple[Any, ...]] = []
         for dataset in selected:
             if dataset in {
+                "security_master_intervals",
                 "security_lifecycle_events",
                 "corporate_action_events",
                 "security_trading_status_daily",
@@ -197,7 +214,13 @@ class AShareContextBackfill:
                 """,
                 (
                     job_id,
-                    "all_current" if all_current else ",".join(row["symbol"] for row in symbol_rows),
+                    (
+                        "all_current"
+                        if all_current
+                        else "historical_only"
+                        if historical_only
+                        else ",".join(row["symbol"] for row in symbol_rows)
+                    ),
                     start_date,
                     end_date,
                     _dump(selected),
@@ -381,7 +404,10 @@ class AShareContextBackfill:
         dataset = str(item["dataset"])
         item_key = str(item["item_key"])
         last_error: Exception | None = None
-        start_attempt = int(item["attempt_count"] or 0) + 1
+        start_attempt = min(
+            max(1, int(item["attempt_count"] or 0) + 1),
+            self.retry_count,
+        )
         for attempt in range(start_attempt, self.retry_count + 1):
             self._set_item_running(job_id, dataset, item_key, attempt)
             try:
@@ -438,6 +464,39 @@ class AShareContextBackfill:
                     symbol=str(item["symbol"])
                 )
             )
+        if dataset == "security_master_intervals":
+            symbol = str(item["symbol"])
+            if hasattr(self.security_master_provider, "assert_symbol_supported"):
+                self.security_master_provider.assert_symbol_supported(symbol)
+            expected_dates = self._expected_security_master_dates(
+                symbol=symbol,
+                start_date=str(item["start_date"]),
+                end_date=str(item["end_date"]),
+            )
+            if not expected_dates:
+                raise RuntimeError(
+                    f"security_master_expected_dates_empty: symbol={symbol}"
+                )
+            daily = list(
+                self.security_master_provider.fetch_daily_security_states(
+                    symbol=symbol,
+                    start_date=expected_dates[0],
+                    end_date=expected_dates[-1],
+                )
+            )
+            intervals = build_security_master_intervals(
+                daily,
+                expected_trade_dates=expected_dates,
+            )
+            for interval in intervals:
+                interval["evidence"] = {
+                    **dict(interval.get("evidence") or {}),
+                    "job_id": str(item["job_id"]),
+                    "requested_start_date": str(item["start_date"]),
+                    "requested_end_date": str(item["end_date"]),
+                    "expected_trade_date_count": len(expected_dates),
+                }
+            return intervals
         if dataset == "corporate_action_events":
             return list(
                 self.provider.fetch_corporate_actions(symbol=str(item["symbol"]))
@@ -454,6 +513,8 @@ class AShareContextBackfill:
         rows: Iterable[Mapping[str, Any]],
     ) -> int:
         materialized = list(rows)
+        if dataset == "security_master_intervals":
+            return self.governance_store.upsert_security_master_intervals(materialized)
         if dataset == "security_lifecycle_events":
             return self.governance_store.upsert_lifecycle_events(materialized)
         if dataset == "corporate_action_events":
@@ -705,7 +766,9 @@ class AShareContextBackfill:
             "metrics": metrics,
             "source_boundary": (
                 "AKShare public aggregation is a local-research candidate source; "
-                "commercial authorization and SLA are not asserted."
+                "Baostock 0.9.3 is used for historical daily ST states on SSE/SZSE; "
+                "SDK licensing does not establish upstream data commercial authorization "
+                "or SLA, and BSE is explicitly unsupported."
             ),
             "generated_at": _utc_now(),
         }
@@ -748,7 +811,9 @@ class AShareContextBackfill:
         self,
         job_id: str,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        cutoff = str(self.get_job(job_id)["end_date"])
+        job = self.get_job(job_id)
+        cutoff = str(job["end_date"])
+        requested_datasets = set(job["datasets"])
         with closing(self._connect(read_only=True)) as connection:
             item = connection.execute(
                 """
@@ -816,6 +881,25 @@ class AShareContextBackfill:
                     WHERE m.listing_status='current' AND f.trade_date<=?
                     """,
                     (cutoff,),
+                ).fetchone()[0]),
+                "security_master_interval_rows": int(connection.execute(
+                    """
+                    SELECT COUNT(*) FROM security_master_intervals s
+                    JOIN market_symbols m ON m.symbol=s.symbol
+                    WHERE m.listing_status='current' AND s.is_active=1 AND s.valid_from<=?
+                      AND COALESCE(s.valid_to, s.valid_from)>=?
+                    """,
+                    (cutoff, str(job["start_date"])),
+                ).fetchone()[0]),
+                "security_master_symbols": int(connection.execute(
+                    """
+                    SELECT COUNT(DISTINCT s.symbol)
+                    FROM security_master_intervals s
+                    JOIN market_symbols m ON m.symbol=s.symbol
+                    WHERE m.listing_status='current' AND s.is_active=1 AND s.valid_from<=?
+                      AND COALESCE(s.valid_to, s.valid_from)>=?
+                    """,
+                    (cutoff, str(job["start_date"])),
                 ).fetchone()[0]),
                 "invalid_factor_rows": int(connection.execute(
                     """
@@ -889,6 +973,19 @@ class AShareContextBackfill:
                 metrics["context_duplicate_groups"],
             ),
         ]
+        if "security_master_intervals" in requested_datasets:
+            checks.insert(
+                2,
+                _check(
+                    "point_in_time_security_master_full_market",
+                    metrics["security_master_symbols"] == current_symbols,
+                    {
+                        "covered_symbols": metrics["security_master_symbols"],
+                        "current_symbols": current_symbols,
+                        "interval_rows": metrics["security_master_interval_rows"],
+                    },
+                ),
+            )
         return checks, metrics
 
     def _version_members(self, job_id: str) -> list[dict[str, Any]]:
@@ -898,6 +995,7 @@ class AShareContextBackfill:
             "market_trade_calendar",
             "market_index_daily_prices",
             "security_lifecycle_events",
+            "security_master_intervals",
             "security_trading_status_daily",
             "corporate_action_events",
             "price_adjustment_factors",
@@ -907,6 +1005,7 @@ class AShareContextBackfill:
             "market_trade_calendar": "trade_date",
             "market_index_daily_prices": "trade_date",
             "security_lifecycle_events": "effective_from",
+            "security_master_intervals": "valid_from",
             "security_trading_status_daily": "trade_date",
             "corporate_action_events": "COALESCE(announcement_date, ex_date)",
             "price_adjustment_factors": "trade_date",
@@ -917,6 +1016,7 @@ class AShareContextBackfill:
         }
         context_datasets = {
             "security_lifecycle_events",
+            "security_master_intervals",
             "security_trading_status_daily",
             "corporate_action_events",
             "price_adjustment_factors",
@@ -935,9 +1035,11 @@ class AShareContextBackfill:
                     if adjustment:
                         conditions.append("adjustment=?")
                         values.append(adjustment)
+                    if dataset == "security_master_intervals":
+                        conditions.append("is_active=1")
                     conditions.append(f"{date_columns[dataset]}<=?")
                     values.append(str(job["end_date"]))
-                    if dataset in context_datasets:
+                    if dataset in context_datasets and dataset != "security_master_intervals":
                         conditions.append(
                             "symbol IN (SELECT symbol FROM market_symbols "
                             "WHERE listing_status='current')"
@@ -954,6 +1056,21 @@ class AShareContextBackfill:
                         """,
                         tuple(values),
                     ).fetchone()
+                    snapshot_refs: list[str] = []
+                    if dataset == "security_master_intervals":
+                        evidence_rows = connection.execute(
+                            f"SELECT evidence_json FROM {dataset} {where}",
+                            tuple(values),
+                        ).fetchall()
+                        parsed_refs: set[str] = set()
+                        for item in evidence_rows:
+                            try:
+                                evidence = json.loads(str(item["evidence_json"] or "{}"))
+                            except (TypeError, ValueError, json.JSONDecodeError):
+                                continue
+                            if isinstance(evidence, dict) and evidence.get("job_id"):
+                                parsed_refs.add(str(evidence["job_id"]))
+                        snapshot_refs = sorted(parsed_refs)
                     symbol_scope = (
                         "CN"
                         if dataset == "market_trade_calendar"
@@ -961,6 +1078,8 @@ class AShareContextBackfill:
                         if dataset == "market_index_daily_prices"
                         else "canonical_all_catalogued_a_shares"
                         if dataset == "market_daily_prices"
+                        else "all_catalogued_a_shares"
+                        if dataset == "security_master_intervals"
                         else "all_current_a_shares"
                     )
                     summary = {
@@ -988,20 +1107,89 @@ class AShareContextBackfill:
                                 if dataset == "corporate_action_events"
                                 else date_columns[dataset]
                             ),
+                            "snapshot_refs": (
+                                snapshot_refs
+                                if dataset == "security_master_intervals"
+                                else []
+                            ),
                         },
                     }
                     members.append({**summary, "content_hash": _hash_mapping(summary)})
         return members
+
+    def _expected_security_master_dates(
+        self,
+        *,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+    ) -> list[str]:
+        """Resolve the listed life span against the governed open calendar."""
+
+        with closing(self._connect(read_only=True)) as connection:
+            boundary = connection.execute(
+                """
+                SELECT
+                    COALESCE(
+                        (SELECT MIN(effective_from)
+                         FROM security_lifecycle_events
+                         WHERE symbol=? AND event_type='listed'
+                           AND effective_from IS NOT NULL),
+                        (SELECT MIN(trade_date) FROM market_daily_prices
+                         WHERE symbol=? AND adjustment='raw')
+                    ) AS listed_from,
+                    (SELECT MIN(effective_from)
+                     FROM security_lifecycle_events
+                     WHERE symbol=? AND event_type IN ('delisted','terminated')
+                       AND effective_from IS NOT NULL) AS delisted_from,
+                    (SELECT MAX(trade_date) FROM market_daily_prices
+                     WHERE symbol=? AND adjustment='raw') AS last_price_date,
+                    (SELECT listing_status FROM market_symbols
+                     WHERE symbol=?) AS catalog_listing_status
+                """,
+                (symbol, symbol, symbol, symbol, symbol),
+            ).fetchone()
+            if boundary is None or not boundary["listed_from"]:
+                return []
+            lower = max(str(start_date), str(boundary["listed_from"]))
+            historical = str(boundary["catalog_listing_status"] or "") != "current"
+            evidence_end = (
+                boundary["delisted_from"]
+                or (boundary["last_price_date"] if historical else None)
+                or end_date
+            )
+            upper = min(str(end_date), str(evidence_end))
+            if lower > upper:
+                return []
+            return [
+                str(row["trade_date"])
+                for row in connection.execute(
+                    """
+                    SELECT trade_date FROM market_trade_calendar
+                    WHERE market='CN' AND is_open=1
+                      AND trade_date BETWEEN ? AND ?
+                    ORDER BY trade_date
+                    """,
+                    (lower, upper),
+                ).fetchall()
+            ]
     def _symbols(
         self,
         requested: Sequence[str] | None,
+        *,
+        listing_scope: str = "current",
     ) -> list[dict[str, str]]:
         with closing(self._connect(read_only=True)) as connection:
             if requested is None:
+                condition = (
+                    "listing_status<>'current'"
+                    if listing_scope == "historical"
+                    else "listing_status='current'"
+                )
                 rows = connection.execute(
-                    """
+                    f"""
                     SELECT symbol FROM market_symbols
-                    WHERE listing_status='current' ORDER BY symbol
+                    WHERE {condition} ORDER BY symbol
                     """
                 ).fetchall()
             else:
@@ -1031,6 +1219,42 @@ class AShareContextBackfill:
                 ).fetchall()
             ]
 
+    def _symbols_with_window_evidence(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> set[str]:
+        """Return securities whose listed history overlaps the requested window."""
+
+        with closing(self._connect(read_only=True)) as connection:
+            rows = connection.execute(
+                """
+                SELECT m.symbol
+                FROM market_symbols m
+                WHERE EXISTS (
+                    SELECT 1 FROM market_daily_prices p
+                    WHERE p.symbol=m.symbol AND p.adjustment='raw'
+                      AND p.trade_date BETWEEN ? AND ?
+                ) OR (
+                    EXISTS (
+                        SELECT 1 FROM security_lifecycle_events e
+                        WHERE e.symbol=m.symbol AND e.event_type='listed'
+                          AND e.effective_from IS NOT NULL
+                          AND e.effective_from<=?
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM security_lifecycle_events e
+                        WHERE e.symbol=m.symbol
+                          AND e.event_type IN ('delisted','terminated')
+                          AND e.effective_from IS NOT NULL
+                          AND e.effective_from<?
+                    )
+                )
+                """,
+                (start_date, end_date, end_date, start_date),
+            ).fetchall()
+        return {str(row["symbol"]) for row in rows}
+
     def _pending_items(
         self,
         job_id: str,
@@ -1057,7 +1281,9 @@ class AShareContextBackfill:
             connection.execute(
                 """
                 UPDATE market_context_backfill_items
-                SET status='pending', updated_at=?
+                SET status='pending',
+                    attempt_count=MAX(0, attempt_count-1),
+                    updated_at=?
                 WHERE job_id=? AND status='running'
                 """,
                 (_utc_now(), job_id),

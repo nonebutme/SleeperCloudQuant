@@ -400,6 +400,9 @@ class SharedPortfolioTaskCreateRequestPayload:
     min_commission: float = 5.0
     tax_rate: float = 0.001
     slippage_rate: float = 0.0005
+    rebalance_policy: str | None = None
+    capacity_replacement_policy: str | None = None
+    max_single_position_weight: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,6 +441,7 @@ class BacktestModeTaskDirectoryQueryPayload:
     strategy_id: str = ""
     search: str = ""
     limit: int = 50
+    offset: int = 0
 
 
 @dataclass(frozen=True, slots=True)

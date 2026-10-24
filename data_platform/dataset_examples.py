@@ -98,24 +98,68 @@ def _research_source(dataset_id: str) -> str:
 def _strategy_example(dataset_id: str, fields: tuple[str, ...]) -> DatasetExample:
     auxiliary = dataset_id != "a_share_daily"
     requirements = ("a_share_daily", dataset_id) if auxiliary else (dataset_id,)
-    source = _index_regime_source(requirements) if dataset_id == "index_daily" else _moving_average_source(requirements)
+    if dataset_id == "factor_values":
+        source = _factor_value_source(requirements)
+        description = (
+            "调用示例固定读取 aligned_value；请通过指定 artifact_id 的策略声明导出"
+            "替换占位因子与制品后执行。"
+        )
+        parameters = {
+            "factor_artifacts": {
+                "replace_with_exported_factor_id": "replace_with_exact_artifact_id"
+            },
+            "factor_threshold": 0.0,
+            "position_size": 1.0,
+            "execution_price": "close",
+        }
+    else:
+        source = (
+            _index_regime_source(requirements)
+            if dataset_id == "index_daily"
+            else _moving_average_source(requirements)
+        )
+        description = (
+            "可直接导入当前 target-weights-v1 策略工作台。"
+            if not auxiliary
+            else "可导入策略工作台；辅助数据的运行时切片接入前按研究模板使用。"
+        )
+        parameters = {
+            "short_window": 5,
+            "long_window": 20,
+            "position_size": 1.0,
+            "execution_price": "close",
+        }
     return DatasetExample(
         example_id=f"{dataset_id}-strategy",
         dataset_id=dataset_id,
         kind="strategy",
         title=f"{_DATASET_TITLES[dataset_id]}策略模板",
-        description=(
-            "可直接导入当前 target-weights-v1 策略工作台。"
-            if not auxiliary
-            else "可导入策略工作台；辅助数据的运行时切片接入前按研究模板使用。"
-        ),
+        description=description,
         source_code=source,
         dataset_ids=requirements,
         required_fields=fields,
-        parameters={"short_window": 5, "long_window": 20, "position_size": 1.0, "execution_price": "close"},
+        parameters=parameters,
         assets={"symbols": ["000001.XSHE"], "universe_type": "explicit_symbols"},
         runtime_status="executable" if dataset_id in _EXECUTABLE_DATASETS else "template_only",
     )
+
+
+def _factor_value_source(dataset_ids: tuple[str, ...]) -> str:
+    return f'''DATASET_REQUIREMENTS = {list(dataset_ids)!r}
+FACTOR_REQUIREMENTS = ["replace_with_exported_factor_id"]
+FACTOR_VALUE_FIELD = "aligned_value"
+
+def generate_target_weights(bars, parameters):
+    threshold = float(parameters.get("factor_threshold", 0.0))
+    position_size = min(max(float(parameters.get("position_size", 1.0)), 0.0), 1.0)
+    weights = []
+    for bar in bars:
+        factor_rows = (bar.get("datasets") or {{}}).get("factor_values") or {{}}
+        factor_row = factor_rows.get("replace_with_exported_factor_id") or {{}}
+        value = factor_row.get(FACTOR_VALUE_FIELD)
+        weights.append(position_size if value is not None and float(value) > threshold else 0.0)
+    return weights
+'''
 
 
 def _moving_average_source(dataset_ids: tuple[str, ...]) -> str:

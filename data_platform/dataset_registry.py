@@ -19,11 +19,29 @@ _COMMON_FIELDS: dict[str, tuple[DatasetField, ...]] = {
         DatasetField("volume", "number", "成交量"),
         DatasetField("amount", "number", "成交额"),
     ),
+    "indicator_values": (
+        DatasetField("items", "object", "配置 ID 到指标值的映射", nullable=False),
+        DatasetField("trade_date", "date", "交易日", nullable=False),
+        DatasetField("available_at", "datetime", "当日数据可用时间", nullable=False),
+        DatasetField("status", "string", "全部声明指标的就绪状态", nullable=False),
+    ),
+    "factor_values": (
+        DatasetField("symbol", "string", "证券代码", nullable=False),
+        DatasetField("trade_date", "date", "交易日", nullable=False),
+        DatasetField("factor_id", "string", "因子标识", nullable=False),
+        DatasetField("artifact_id", "string", "不可变制品标识", nullable=False),
+        DatasetField("value", "number", "点时因子值", nullable=False),
+        DatasetField("aligned_value", "number", "方向对齐后的默认策略因子值", nullable=False),
+    ),
     "a_share_catalog": (
         DatasetField("symbol", "string", "\u8bc1\u5238\u4ee3\u7801", nullable=False),
         DatasetField("name", "string", "\u8bc1\u5238\u540d\u79f0", nullable=False),
         DatasetField("market", "string", "\u6240\u5c5e\u5e02\u573a", nullable=False),
         DatasetField("listing_status", "string", "\u4e0a\u5e02\u72b6\u6001", nullable=False),
+        DatasetField("risk_warning", "boolean", "风险警示状态", nullable=False),
+        DatasetField("valid_from", "date", "区间生效日", nullable=False),
+        DatasetField("valid_to", "date", "区间失效日"),
+        DatasetField("available_at", "datetime", "事实可用时间", nullable=False),
     ),
     "corporate_actions": (
         DatasetField("symbol", "string", "\u8bc1\u5238\u4ee3\u7801", nullable=False),
@@ -107,16 +125,15 @@ class DatasetRegistry:
             layer_id=str(record.get("layer_id") or ""),
             description=str(record.get("description") or ""),
             frequency="daily",
-            security_types=("equity",) if dataset_id.startswith("a_share") else (),
-            supported_adjustments=("raw", "qfq", "hfq") if dataset_id == "a_share_daily" else (),
+            security_types=("equity",) if dataset_id.startswith("a_share") or dataset_id in {"factor_values", "indicator_values"} else (),
+            supported_adjustments=("raw", "qfq", "hfq") if dataset_id in {"a_share_daily", "indicator_values"} else (),
             fields=_COMMON_FIELDS.get(dataset_id, ()),
             source_id=(str(record.get("producer_id") or "") or None),
             availability_status=str(record.get("availability_status") or "unavailable"),
             point_in_time_policy=(
                 "as_of_trade_date"
-                if dataset_id in {"a_share_catalog", "corporate_actions", "industry_classification", "industry_classification_repair", "index_components"}
+                if dataset_id in {"a_share_catalog", "corporate_actions", "industry_classification", "industry_classification_repair", "index_components", "factor_values", "indicator_values"}
                 else "not_applicable"
             ),
             schema_version=str(record.get("schema_version") or "v1"),
         )
-

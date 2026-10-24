@@ -357,6 +357,30 @@ class MarketPanoramaStore:
             ).fetchone()
         return self._job_payload(row) if row else {"status": "not_found", "job_id": job_id}
 
+    def list_job_items(self, job_id: str, *, status: str = "") -> list[dict[str, Any]]:
+        params: list[Any] = [str(job_id)]
+        predicate = " AND status=?" if status else ""
+        if status:
+            params.append(str(status))
+        with closing(self._connect(read_only=True)) as connection:
+            rows = connection.execute(
+                f"""SELECT job_id, dataset, item_key, status, row_count,
+                           error_message, updated_at
+                    FROM panorama_sync_items
+                    WHERE job_id=?{predicate}
+                    ORDER BY CASE status WHEN 'failed' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+                             dataset, item_key""",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def completed_item_keys(self, job_id: str, dataset: str) -> set[str]:
+        with closing(self._connect(read_only=True)) as connection:
+            rows = connection.execute(
+                "SELECT item_key FROM panorama_sync_items WHERE job_id=? AND dataset=? AND status='completed'",
+                (str(job_id), str(dataset)),
+            ).fetchall()
+        return {str(row["item_key"]) for row in rows}
     def start_job(self, job_id: str) -> None:
         now = _utc_now()
         with closing(self._connect()) as connection, connection:
@@ -406,11 +430,20 @@ class MarketPanoramaStore:
             status = "partial_failure"
         else:
             status = "published"
+        failure_message = None
+        if status == "partial_failure":
+            failed_items = self.list_job_items(job_id, status="failed")
+            grouped: dict[str, int] = {}
+            for item in failed_items:
+                message = str(item.get("error_message") or "unknown item failure")
+                grouped[message] = grouped.get(message, 0) + 1
+            top_message, top_count = max(grouped.items(), key=lambda pair: pair[1]) if grouped else ("unknown item failure", 0)
+            failure_message = f"{len(failed_items)} panorama items failed; most common ({top_count}): {top_message}"
         now = _utc_now()
         with closing(self._connect()) as connection, connection:
             connection.execute(
                 "UPDATE panorama_sync_jobs SET status=?, last_error=?, finished_at=?, updated_at=? WHERE job_id=?",
-                (status, error or ("one or more panorama items failed" if status == "partial_failure" else None), now, now, job_id),
+                (status, error or failure_message, now, now, job_id),
             )
         return self.get_job(job_id)
 
@@ -426,14 +459,33 @@ class MarketPanoramaStore:
         return bool(self.get_job(job_id).get("stop_requested"))
 
     def reset_job(self, job_id: str) -> dict[str, Any]:
+        """Prepare only failed panorama items for an explicit retry."""
+
         now = _utc_now()
         with closing(self._connect()) as connection, connection:
-            connection.execute("DELETE FROM panorama_sync_items WHERE job_id=?", (job_id,))
             connection.execute(
-                """UPDATE panorama_sync_jobs SET status='queued', total_items=0, completed_items=0,
-                   failed_items=0, quarantined_items=0, rows_written=0, last_error=NULL,
-                   stop_requested=0, started_at=NULL, finished_at=NULL, updated_at=? WHERE job_id=?""",
+                "DELETE FROM panorama_sync_items WHERE job_id=? AND status='failed' AND item_key='__dataset__'",
+                (job_id,),
+            )
+            connection.execute(
+                """UPDATE panorama_sync_items
+                   SET status='queued', error_message=NULL, updated_at=?
+                   WHERE job_id=? AND status='failed'""",
                 (now, job_id),
+            )
+            summary = connection.execute(
+                """SELECT COUNT(*) total,
+                          SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) completed,
+                          SUM(row_count) rows_written
+                   FROM panorama_sync_items WHERE job_id=?""",
+                (job_id,),
+            ).fetchone()
+            connection.execute(
+                """UPDATE panorama_sync_jobs SET status='queued', total_items=?, completed_items=?,
+                   failed_items=0, quarantined_items=0, rows_written=?, last_error=NULL,
+                   stop_requested=0, started_at=NULL, finished_at=NULL, updated_at=? WHERE job_id=?""",
+                (int(summary["total"] or 0), int(summary["completed"] or 0),
+                 int(summary["rows_written"] or 0), now, job_id),
             )
         return self.get_job(job_id)
 

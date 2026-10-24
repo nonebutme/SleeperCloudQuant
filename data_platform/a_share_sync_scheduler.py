@@ -9,6 +9,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
+from contextvars import copy_context
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -21,6 +22,7 @@ from data_platform.providers.a_share_sqlite_repository import (
 )
 from data_platform.storage.a_share_governance_store import AShareGovernanceStore
 from data_platform.storage.a_share_market_store import AShareMarketStore
+from data_platform.storage.data_center_store import DataCenterStore
 from data_platform.task_ids import new_task_id
 
 
@@ -177,6 +179,14 @@ class AShareSyncScheduler:
                 );
                 """
             )
+            self._ensure_column(
+                connection, "market_incremental_sync_jobs",
+                "effective_config_json", "TEXT NOT NULL DEFAULT '{}'",
+            )
+            self._ensure_column(
+                connection, "market_incremental_sync_jobs",
+                "actual_config_json", "TEXT NOT NULL DEFAULT '{}'",
+            )
             connection.execute(
                 """
                 INSERT OR IGNORE INTO market_schema_migrations
@@ -262,6 +272,7 @@ class AShareSyncScheduler:
         start_floor: str = "2015-01-05",
         selected_shards: Sequence[str] = (),
         gap_scan: bool = False,
+        effective_config: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.ensure_schema()
         target = date.fromisoformat(str(target_trade_date)).isoformat()
@@ -276,6 +287,15 @@ class AShareSyncScheduler:
             start_floor=start_floor,
             gap_scan=gap_scan,
         )
+        if mode == 'quality_refetch' and not gap_scan:
+            if not symbols:
+                raise ValueError('quality refetch requires explicit symbols')
+            start = date.fromisoformat(str(start_floor)).isoformat()
+            if start > target:
+                raise ValueError('quality refetch start must not exceed target')
+            # 纠错重拉包含已经存在但错误的行，不能用“无缺口”跳过。
+            tasks = [{'symbol': symbol, 'adjustment': adjustment, 'start_date': start, 'end_date': target}
+                     for symbol in sorted({_normalize_symbol(item) for item in symbols}) for adjustment in modes]
         if selected_shards:
             selected = {str(item) for item in selected_shards}
             tasks = [task for task in tasks if f"{task['symbol']}|{task['adjustment']}" in selected]
@@ -297,8 +317,8 @@ class AShareSyncScheduler:
                 INSERT INTO market_incremental_sync_jobs (
                     job_id, mode, schedule_key, status, target_trade_date,
                     symbol_scope, adjustments_json, total_items,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    effective_config_json, actual_config_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
                 """,
                 (
                     job_id,
@@ -309,6 +329,7 @@ class AShareSyncScheduler:
                     scope,
                     _dump(modes),
                     len(tasks),
+                    _dump(dict(effective_config or {})),
                     now,
                     now,
                 ),
@@ -403,6 +424,10 @@ class AShareSyncScheduler:
             target, symbols, all_current, _adjustments(adjustments), start_floor,
         )
     def run_job(self, job_id: str) -> dict[str, Any]:
+        from data_platform.maintenance_transaction import transaction_connection
+        if transaction_connection(self.database_path) is None:
+            from data_platform.data_maintenance import DataMaintenance
+            return DataMaintenance(self).run_existing(job_id)
         self.ensure_schema()
         with self._run_lock:
             job = self.get_job(job_id, include_items=True)
@@ -414,6 +439,11 @@ class AShareSyncScheduler:
                 "queued", "partial_failure", "failed", "interrupted"
             }:
                 raise RuntimeError(f"job is not runnable from status={job.get('status')}")
+            actual_config = self._apply_effective_config(job.get("effective_config") or {})
+            self.max_workers = 1
+            actual_config["max_workers"] = 1
+            actual_config["execution_policy"] = "atomic-maintenance-serial"
+            self._record_actual_config(job_id, actual_config)
             self._mark_job_running(job_id)
             self._refresh_target_suspensions(job)
             items = self._load_runnable_items(job_id)
@@ -421,9 +451,10 @@ class AShareSyncScheduler:
                 max_workers=max(1, min(self.max_workers, len(items) or 1)),
                 thread_name_prefix="a-share-sync",
             ) as executor:
-                futures = [executor.submit(self._run_item, item) for item in items]
+                futures = [executor.submit(copy_context().run, self._run_item, item) for item in items]
                 for future in as_completed(futures):
                     future.result()
+            self._materialize_normal_trading_statuses(job_id)
             summary = self._refresh_job_summary(job_id)
             if self.get_job(job_id).get("status") in {"stopping", "stopped"}:
                 self._finish_job(job_id, status="stopped", error="stop_requested")
@@ -630,6 +661,23 @@ class AShareSyncScheduler:
     def run_due(self, *, now: datetime | None = None) -> dict[str, Any]:
         """Run at most one missed daily schedule, including application-start catch-up."""
 
+        from data_platform.maintenance_transaction import maintenance_transaction, transaction_connection, record_activation
+        if transaction_connection(self.database_path) is None:
+            class UpdateBlocked(Exception):
+                pass
+            response = None
+            try:
+                with maintenance_transaction(self.database_path) as connection:
+                    response = self.run_due(now=now)
+                    if response.get('status') in {'failed','partial_failure','data_not_ready','needs_attention'}:
+                        raise UpdateBlocked()
+                    if response.get('status') == 'published':
+                        DataCenterStore(self.database_path).set_default_version(response['data_version_id'])
+                        record_activation(connection, 'scheduled-' + response['job_id'], response['data_version_id'])
+            except UpdateBlocked:
+                return {**response, 'effective_data_unchanged': True}
+            return response
+
         self.ensure_schema()
         settings = self._settings()
         tick_at = now or datetime.now(timezone.utc)
@@ -784,6 +832,51 @@ class AShareSyncScheduler:
             "target_trade_date": target_trade_date,
             "latest_index_date": latest_index,
         }
+
+    def reference_data_status(self, *, target_date: str = "") -> dict[str, Any]:
+        """Return the read-only reference-data coverage used by release gates."""
+
+        target = date.fromisoformat(str(target_date)).isoformat() if target_date else ""
+        target_bound = target or "9999-12-31"
+        with closing(self._connect(read_only=True)) as connection:
+            row = connection.execute(
+                """SELECT
+                       (SELECT MAX(updated_at) FROM market_symbols) AS catalog_updated_at,
+                       (SELECT COUNT(*) FROM market_symbols
+                        WHERE listing_status='current') AS current_symbol_count,
+                       (SELECT MAX(trade_date) FROM market_trade_calendar
+                        WHERE market='CN') AS calendar_latest_date,
+                       (SELECT MAX(trade_date) FROM market_trade_calendar
+                        WHERE market='CN' AND is_open=1 AND trade_date<=?)
+                           AS latest_open_trade_date,
+                       (SELECT MAX(trade_date) FROM market_index_daily_prices
+                        WHERE index_symbol='000300') AS latest_index_date,
+                       (SELECT MAX(trade_date) FROM security_trading_status_daily)
+                           AS latest_trading_status_observation
+                """,
+                (target_bound,),
+            ).fetchone()
+        payload = dict(row) if row is not None else {}
+        if target:
+            payload["target_date"] = target
+            payload["calendar_ready"] = str(
+                payload.get("calendar_latest_date") or ""
+            ) >= target
+            target_open = str(payload.get("latest_open_trade_date") or "")
+            payload["benchmark_ready"] = bool(
+                target_open
+                and target_open <= target
+                and str(payload.get("latest_index_date") or "") >= target_open
+            )
+            payload["status"] = (
+                "ready"
+                if payload["calendar_ready"] and payload["benchmark_ready"]
+                else "needs_refresh"
+            )
+        else:
+            payload["status"] = "ready"
+        return payload
+
     def start_background(self, *, poll_seconds: float = 60.0) -> dict[str, Any]:
         self.recover_interrupted_jobs()
         if self._thread and self._thread.is_alive():
@@ -1330,6 +1423,88 @@ class AShareSyncScheduler:
         } for row in dates]
         return self.governance_store.upsert_trading_statuses(rows)
 
+    def _materialize_normal_trading_statuses(self, job_id: str) -> int:
+        """Materialize point-in-time tradability for successful canonical price rows."""
+
+        observed_at = _utc_now()
+        written = 0
+        with closing(self._connect(read_only=True)) as connection:
+            cursor = connection.execute(
+                """SELECT DISTINCT prices.symbol, prices.trade_date
+                   FROM market_incremental_sync_items items
+                   JOIN market_daily_prices prices
+                     ON prices.symbol=items.symbol
+                    AND prices.adjustment=items.adjustment
+                    AND prices.trade_date BETWEEN items.start_date AND items.end_date
+                   LEFT JOIN security_trading_status_daily status
+                     ON status.symbol=prices.symbol AND status.trade_date=prices.trade_date
+                   WHERE items.job_id=? AND items.status='completed'
+                     AND status.symbol IS NULL
+                   ORDER BY prices.symbol, prices.trade_date""",
+                (str(job_id),),
+            )
+            while True:
+                rows = cursor.fetchmany(10_000)
+                if not rows:
+                    break
+                payload = [{
+                    "symbol": str(row["symbol"]),
+                    "trade_date": str(row["trade_date"]),
+                    "status": "normal",
+                    "is_tradable": True,
+                    "source": "canonical_market_daily_prices:positive_bar",
+                    "source_observed_at": observed_at,
+                    "evidence": {
+                        "job_id": str(job_id),
+                        "inference_rule": (
+                            "canonical_price_bar_implies_normal_trading_status"
+                        ),
+                    },
+                } for row in rows]
+                written += self.governance_store.upsert_trading_statuses(payload)
+        return written
+
+    def _is_first_open_day_suspended(
+        self, *, symbol: str, start_date: str, end_date: str,
+    ) -> bool:
+        """Require explicit suspension evidence on the first open day in a window."""
+
+        with closing(self._connect(read_only=True)) as connection:
+            row = connection.execute(
+                """SELECT 1
+                   FROM market_trade_calendar cal
+                   JOIN security_trading_status_daily status
+                     ON status.symbol=? AND status.trade_date=cal.trade_date
+                   WHERE cal.market='CN' AND cal.is_open=1
+                     AND cal.trade_date BETWEEN ? AND ?
+                     AND status.status='suspended' AND status.is_tradable=0
+                     AND cal.trade_date=(
+                         SELECT MIN(first_open.trade_date)
+                         FROM market_trade_calendar first_open
+                         WHERE first_open.market='CN' AND first_open.is_open=1
+                           AND first_open.trade_date BETWEEN ? AND ?
+                     )
+                   LIMIT 1""",
+                (
+                    _normalize_symbol(symbol), str(start_date), str(end_date),
+                    str(start_date), str(end_date),
+                ),
+            ).fetchone()
+        return row is not None
+
+    def _has_any_price_in_window(
+        self, *, symbol: str, start_date: str, end_date: str,
+    ) -> bool:
+        """Return whether any adjustment has a price inside the frozen window."""
+
+        with closing(self._connect(read_only=True)) as connection:
+            row = connection.execute(
+                """SELECT 1 FROM market_daily_prices
+                   WHERE symbol=? AND trade_date BETWEEN ? AND ? LIMIT 1""",
+                (_normalize_symbol(symbol), str(start_date), str(end_date)),
+            ).fetchone()
+        return row is not None
+
     def _run_item(self, item: Mapping[str, Any]) -> None:
         job_id = str(item["job_id"])
         symbol = str(item["symbol"])
@@ -1416,6 +1591,30 @@ class AShareSyncScheduler:
                             job_id, symbol, adjustment, result=result,
                         )
                         return
+                    if (
+                        self._is_first_open_day_suspended(
+                            symbol=symbol,
+                            start_date=str(item["start_date"]),
+                            end_date=str(item["end_date"]),
+                        )
+                        and self._is_target_suspended(symbol, str(item["end_date"]))
+                        and not self._has_any_price_in_window(
+                            symbol=symbol,
+                            start_date=str(item["start_date"]),
+                            end_date=str(item["end_date"]),
+                        )
+                    ):
+                        result.update({
+                            "status": "completed",
+                            "rows_received": 0,
+                            "rows_written": 0,
+                            "inferred_suspension_count": 0,
+                            "completion_reason": "suspended_increment_window_without_any_prices",
+                        })
+                        self._complete_item(
+                            job_id, symbol, adjustment, result=result,
+                        )
+                        return
                 if (
                     result.get("status") == "completed"
                     and rows_received <= 0
@@ -1468,6 +1667,10 @@ class AShareSyncScheduler:
                     self._sleep(backoff)
 
     def _validate_and_publish(self, job_id: str) -> dict[str, Any]:
+        from data_platform.maintenance_transaction import materialize_price_corrections, transaction_connection
+        active = transaction_connection(self.database_path)
+        if active is not None:
+            materialize_price_corrections(active)
         job = self.get_job(job_id)
         target = str(job["target_trade_date"])
         checks = self._quality_checks(job_id, target)
@@ -1492,9 +1695,21 @@ class AShareSyncScheduler:
                 for check in checks if not check["passed"]
             ]
             raise RuntimeError(f"quality gate failed: {';'.join(failed)}")
-        members = self._release_members(job_id, target)
+        readiness = DataCenterStore(self.database_path).release_readiness(
+            exempt_executor_id=job_id,
+        )
+        if readiness["status"] != "ready":
+            raise RuntimeError(
+                f"release readiness blocked: {_dump(readiness['checks'])}"
+            )
+        publication_target = target
+        if job.get('mode') == 'quality_refetch':
+            baseline = self.governance_store.fetch_current_published_data_version()
+            publication_target = max(target, str(baseline.get('as_of_trade_date') or target))
+        members = self._release_members(job_id, publication_target)
+        self._validate_release_member_consistency(members)
         release = self.governance_store.publish_data_version(
-            as_of_trade_date=target,
+            as_of_trade_date=publication_target,
             quality_report_id=quality_report_id,
             members=members,
             notes=f"stage78.2 incremental release job={job_id}",
@@ -1654,6 +1869,14 @@ WHERE i.job_id=? AND NOT EXISTS (
                 FROM market_index_daily_prices WHERE index_symbol='000300'
                 """
             ).fetchone()
+            trading_status = connection.execute(
+                """
+                SELECT COUNT(*) AS row_count,
+                       COUNT(DISTINCT symbol) AS symbol_count,
+                       MIN(trade_date) AS min_date, MAX(trade_date) AS max_date
+                FROM security_trading_status_daily
+                """
+            ).fetchone()
             current = connection.execute(
                 """
                 SELECT data_version_id FROM data_versions
@@ -1674,7 +1897,8 @@ WHERE i.job_id=? AND NOT EXISTS (
                       AND dataset NOT IN (
                           'market_daily_prices',
                           'market_trade_calendar',
-                          'market_index_daily_prices'
+                          'market_index_daily_prices',
+                          'security_trading_status_daily'
                       )
                     ORDER BY dataset, adjustment
                     """,
@@ -1730,6 +1954,31 @@ WHERE i.job_id=? AND NOT EXISTS (
                 "quality_status": "passed",
                 "details": {"incremental_job_id": job_id},
             })
+        members.append({
+            "dataset": "security_trading_status_daily",
+            "adjustment": "",
+            "symbol_scope": "canonical_all",
+            "row_count": int(trading_status["row_count"] or 0),
+            "symbol_count": int(trading_status["symbol_count"] or 0),
+            "min_date": trading_status["min_date"],
+            "max_date": trading_status["max_date"],
+            "source": "stage78.2-incremental-status-materialization",
+            "sync_run_ref": job_id,
+            "content_hash": _hash_mapping({
+                "dataset": "security_trading_status_daily",
+                "row_count": trading_status["row_count"],
+                "symbol_count": trading_status["symbol_count"],
+                "min_date": trading_status["min_date"],
+                "max_date": trading_status["max_date"],
+                "target": target,
+            }),
+            "quality_status": "passed",
+            "details": {
+                "incremental_job_id": job_id,
+                "availability_date": "trade_date",
+                "unknown_statuses_preserved": True,
+            },
+        })
         members.extend(
             {
                 "dataset": row["dataset"],
@@ -1748,6 +1997,93 @@ WHERE i.job_id=? AND NOT EXISTS (
             for row in carried
         )
         return members
+
+    def _validate_release_member_consistency(
+        self,
+        members: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Reject a release whose mutable member summaries differ from storage."""
+        mutable_datasets = {
+            "market_daily_prices",
+            "market_trade_calendar",
+            "market_index_daily_prices",
+            "security_trading_status_daily",
+        }
+        expected: dict[tuple[str, str], dict[str, Any]] = {}
+        duplicate_keys: list[str] = []
+        for member in members:
+            dataset = str(member.get("dataset") or "")
+            if dataset not in mutable_datasets:
+                continue
+            key = (dataset, str(member.get("adjustment") or ""))
+            if key in expected:
+                duplicate_keys.append(":".join(key))
+            expected[key] = {
+                "row_count": int(member.get("row_count") or 0),
+                "symbol_count": int(member.get("symbol_count") or 0),
+                "min_date": member.get("min_date"),
+                "max_date": member.get("max_date"),
+            }
+
+        with closing(self._connect(read_only=True)) as connection:
+            actual: dict[tuple[str, str], dict[str, Any]] = {}
+            for row in connection.execute(
+                """
+                SELECT adjustment, COUNT(*) AS row_count,
+                       COUNT(DISTINCT symbol) AS symbol_count,
+                       MIN(trade_date) AS min_date, MAX(trade_date) AS max_date
+                FROM market_daily_prices
+                GROUP BY adjustment
+                """
+            ).fetchall():
+                actual[("market_daily_prices", str(row["adjustment"] or ""))] = {
+                    "row_count": int(row["row_count"] or 0),
+                    "symbol_count": int(row["symbol_count"] or 0),
+                    "min_date": row["min_date"],
+                    "max_date": row["max_date"],
+                }
+            for dataset, predicate in (
+                ("market_trade_calendar", "market='CN'"),
+                ("market_index_daily_prices", "index_symbol='000300'"),
+                ("security_trading_status_daily", "1=1"),
+            ):
+                symbol_column = {
+                    "market_trade_calendar": "market",
+                    "market_index_daily_prices": "index_symbol",
+                    "security_trading_status_daily": "symbol",
+                }[dataset]
+                row = connection.execute(
+                    f"""
+                    SELECT COUNT(*) AS row_count,
+                           COUNT(DISTINCT {symbol_column}) AS symbol_count,
+                           MIN(trade_date) AS min_date, MAX(trade_date) AS max_date
+                    FROM {dataset} WHERE {predicate}
+                    """
+                ).fetchone()
+                actual[(dataset, "")] = {
+                    "row_count": int(row["row_count"] or 0),
+                    "symbol_count": int(row["symbol_count"] or 0),
+                    "min_date": row["min_date"],
+                    "max_date": row["max_date"],
+                }
+
+        differences = []
+        for key in sorted(set(expected) | set(actual)):
+            if expected.get(key) != actual.get(key):
+                differences.append({
+                    "member": ":".join(key),
+                    "manifest": expected.get(key),
+                    "physical": actual.get(key),
+                })
+        if duplicate_keys or differences:
+            raise RuntimeError(
+                "release member consistency blocked: "
+                + _dump({
+                    "duplicate_members": sorted(duplicate_keys),
+                    "differences": differences,
+                })
+            )
+
     def _job_stop_requested(self, job_id: str) -> bool:
         with closing(self._connect(read_only=True)) as connection:
             row = connection.execute(
@@ -1991,9 +2327,70 @@ WHERE i.job_id=? AND NOT EXISTS (
     def _job_payload(self, row: Mapping[str, Any]) -> dict[str, Any]:
         payload = dict(row)
         payload["adjustments"] = _load_json(payload.pop("adjustments_json"), [])
+        payload["effective_config"] = _load_json(
+            payload.pop("effective_config_json", "{}"), {}
+        )
+        payload["actual_config"] = _load_json(
+            payload.pop("actual_config_json", "{}"), {}
+        )
         return payload
 
+    def _apply_effective_config(self, config: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply the immutable per-job execution policy before any upstream call."""
+
+        selected = dict(config or {})
+        if not selected:
+            return {
+                "source": "scheduler_defaults",
+                "requests_per_minute": self._rate_limiter.requests_per_minute,
+                "max_workers": self.max_workers,
+                "retry_count": self.retry_count,
+                "backoff_seconds": self.base_backoff_seconds,
+            }
+        rpm = max(1, int(selected.get("requests_per_minute") or 1))
+        workers = max(1, min(int(selected.get("concurrency") or 1), 16))
+        retries = max(1, int(selected.get("retry_count") or 1))
+        backoff = max(0.0, float(selected.get("backoff_seconds") or 0.0))
+        self.max_workers = workers
+        self.retry_count = retries
+        self.base_backoff_seconds = backoff
+        self._rate_limiter = GlobalRateLimiter(rpm, sleep=self._sleep)
+        if self._provider_controls_rate:
+            self.provider.request_gate = self._rate_limiter.acquire
+        if hasattr(self.provider, "retry_count"):
+            self.provider.retry_count = retries
+        return {
+            **selected,
+            "source": "frozen_task_snapshot",
+            "requests_per_minute": rpm,
+            "max_workers": workers,
+            "retry_count": retries,
+            "backoff_seconds": backoff,
+        }
+
+    def _record_actual_config(self, job_id: str, config: Mapping[str, Any]) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                "UPDATE market_incremental_sync_jobs SET actual_config_json=?, updated_at=? WHERE job_id=?",
+                (_dump(dict(config)), _utc_now(), job_id),
+            )
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection, table: str, column: str, definition: str,
+    ) -> None:
+        existing = {
+            str(row["name"])
+            for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+        }
+        if column not in existing:
+            connection.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {definition}')
+
     def _connect(self, *, read_only: bool = False) -> sqlite3.Connection:
+        from data_platform.maintenance_transaction import transaction_connection
+        active = transaction_connection(self.database_path)
+        if active is not None:
+            return active
         if read_only:
             connection = sqlite3.connect(
                 f"file:{self.database_path.resolve().as_posix()}?mode=ro",

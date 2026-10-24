@@ -46,7 +46,10 @@ def main() -> None:
         status, payload = dispatch_request(
             app, method="GET", path="/api/data-center/quality/rules",
         )
-        assert status == 200 and len(payload["items"]) == 3
+        assert status == 200 and len(payload["items"]) == 4
+        assert "trading_status_semantics" in {
+            item["rule_id"] for item in payload["items"]
+        }
         status, payload = dispatch_request(
             app, method="POST", path="/api/data-center/quality/scans",
             body=json.dumps({

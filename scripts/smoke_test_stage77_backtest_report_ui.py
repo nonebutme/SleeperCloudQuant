@@ -13,9 +13,9 @@ def main() -> None:
     report_css = (ROOT / "web" / "report-ui.css").read_text(encoding="utf-8")
 
     for marker in [
-        "/report-ui.css?v=780",
-        "/report-ui.js?v=780",
-        "/app.js?v=780",
+        "/report-ui.css?v=871",
+        "/report-ui.js?v=871",
+        "/app.js?v=921",
     ]:
         assert marker in html, marker
 

@@ -25,6 +25,16 @@ def main() -> None:
     class AppHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path == "/api/system/health":
+                content = json.dumps({"application": "SleeperCloudQuant", "status": "ready",
+                                      "entrypoint": "main-web", "route_count": len(app.routes)}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
             if parsed.path.startswith("/api/"):
                 self._handle_api_request(method="GET", path=parsed.path, query=parsed.query, body=None)
                 return
@@ -99,6 +109,13 @@ def main() -> None:
                 return
             if target.is_dir():
                 target = target / "index.html"
+            if target == resolved_web_root / "strategy-studio.html":
+                # 候选页面依赖独立开发 API，主服务引导回已装配的正式策略页。
+                self.send_response(302)
+                self.send_header("Location", "/?page=backtest")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if not target.exists():
                 self.send_error(404)
                 return

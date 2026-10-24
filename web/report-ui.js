@@ -222,12 +222,14 @@
   }
 
   function benchmarkUsable(task, detail, metrics) {
-    const alignment = task?.config?.extra_config?.rqalpha_local?.benchmark_alignment
+    const alignment = detail?.benchmark_alignment?.mode
+      || task?.config?.extra_config?.rqalpha_local?.benchmark_alignment
       || task?.extra_config?.rqalpha_local?.benchmark_alignment
-      || detail?.extra_config?.rqalpha_local?.benchmark_alignment;
+      || detail?.extra_config?.rqalpha_local?.benchmark_alignment
+      || detail?.parameter_snapshot?.extra_config?.rqalpha_local?.benchmark_alignment;
     if (alignment === "zero_return") return false;
-    return finite(pick(metrics, ["benchmark_return", "benchmark_annualized_return"], null)) !== null
-      || Boolean(detail?.benchmark_curve?.length);
+    if (alignment === "same_symbol_buy_hold") return finite(metrics?.benchmark_return) !== null;
+    return detail?.benchmark_status === "ready" && (detail?.benchmark_curve?.length || 0) >= 2;
   }
 
   function svgMultiLine(definitions, options = {}) {
@@ -379,9 +381,18 @@
     if (name) name.textContent = task.name || task.task_id || task.run_id || "回测结果";
     const assetScope = task.symbol || summary.order_book_id || (task.universe_count != null ? `${task.universe_count} 只股票` : "-");
     if (meta) meta.textContent = `${start} — ${end} · ${task.strategy_binding?.strategy_id || summary.strategy_id || "策略"} · ${assetScope}`;
-    const benchmark = task.benchmark || task.config?.benchmark || result.benchmark || "未配置";
+    const alignment = result.benchmark_alignment?.mode
+      || task.config?.extra_config?.rqalpha_local?.benchmark_alignment
+      || task.extra_config?.rqalpha_local?.benchmark_alignment
+      || result.parameter_snapshot?.extra_config?.rqalpha_local?.benchmark_alignment;
+    const symbol = task.symbol || task.config?.symbol || summary.universe || "标的";
+    const benchmark = alignment === "same_symbol_buy_hold" ? `${symbol} 买入持有（非指数）`
+      : alignment === "zero_return" ? "零收益对照（非指数）"
+      : task.benchmark || task.config?.benchmark || result.benchmark || summary.benchmark || "未配置";
     if (benchmarkSelect) benchmarkSelect.innerHTML = `<option>${escapeHtml(benchmark)}</option>`;
-    if (benchmarkStatus) benchmarkStatus.textContent = benchmarkUsable(task, result, metrics) ? "真实基准已对齐" : "基准行情不可用";
+    if (benchmarkStatus) benchmarkStatus.textContent = alignment === "same_symbol_buy_hold" ? "同标的买入持有对照，未使用指数行情"
+      : alignment === "zero_return" ? "零收益对照，未使用指数行情"
+      : benchmarkUsable(task, result, metrics) ? "真实基准已对齐" : "缺少基准行情对齐证据";
   }
 
   function renderResult(task = {}, result = {}) {

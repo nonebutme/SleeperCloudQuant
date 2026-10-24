@@ -809,3 +809,54 @@ html:has(dialog[open]),html.scq-native-modal-open{overflow:hidden}
 dialog{z-index:1000}
 dialog::backdrop{background:rgba(17,24,39,.64)!important;backdrop-filter:blur(2px) saturate(.72);pointer-events:auto}
 html.scq-native-modal-open body::after{content:"";position:fixed;inset:0;z-index:2147483646;background:rgba(17,24,39,.64);backdrop-filter:blur(2px) saturate(.72);pointer-events:all}
+
+/* Stage 92 unified business navigation */
+.nav-tabs { align-content: start; }
+.sidebar-subnav {
+  display: grid;
+  gap: 4px;
+  margin: -2px 0 8px 12px;
+  padding: 4px 0 4px 12px;
+  border-left: 1px solid #3b5265;
+}
+.sidebar-subnav[hidden] { display: none !important; }
+.sidebar-subnav button {
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #bfcdd7;
+  text-align: left;
+  font-size: 13px;
+}
+.sidebar-subnav button:hover {
+  border-color: #344b5e;
+  background: #1d2d3b;
+  color: #fff;
+}
+.sidebar-subnav button.is-active {
+  border-color: #4b708c;
+  background: #264156;
+  color: #fff;
+  box-shadow: inset 3px 0 0 #70add2;
+}
+.nav-tab[aria-expanded]::after {
+  content: "›";
+  float: right;
+  transform: rotate(0deg);
+  transition: transform .16s ease;
+}
+.nav-tab[aria-expanded="true"]::after { transform: rotate(90deg); }
+@media (max-width: 900px) {
+  .sidebar-subnav {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0;
+    padding: 4px;
+    border-left: 0;
+  }
+}
+@media (max-width: 620px) {
+  .sidebar-subnav { grid-template-columns: 1fr; }
+}
